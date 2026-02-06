@@ -24,6 +24,12 @@ dependencies:
   # QR scanning for contact / identity sharing (future)
   mobile_scanner: any
 
+  # QR code rendering
+  qr_flutter: any
+
+  # Simple local persistence (web/mobile/desktop)
+  shared_preferences: any
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

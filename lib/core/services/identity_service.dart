@@ -27,6 +27,18 @@ class IdentityService {
 
   bool get isUnlocked => _identityKeyPair != null;
 
+  /// Returns the public address as a base64 string.
+  ///
+  /// If the identity is currently unlocked, this uses the in-memory public key.
+  /// Otherwise, it reads the persisted public key from secure storage.
+  Future<String?> getPublicAddressBase64() async {
+    final pk = _publicKey;
+    if (pk != null) {
+      return base64Encode(pk.bytes);
+    }
+    return _storage.read(key: _publicKeyKey);
+  }
+
   /// Creates a new identity and stores it encrypted.
   Future<void> createIdentity(String password) async {
     // 1) Generate Ed25519 identity keypair
