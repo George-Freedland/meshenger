@@ -1,0 +1,32 @@
+name: meshenger
+description: Offline Bluetooth-based messenger with crypto identity.
+publish_to: "none"
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Navigation
+  go_router: any
+
+  # Secure storage for encrypted keys
+  flutter_secure_storage: any
+
+  # Cryptographic primitives (Ed25519, X25519, etc.)
+  cryptography: any
+
+  # UUIDs for message / device identifiers
+  uuid: any
+
+  # QR scanning for contact / identity sharing (future)
+  mobile_scanner: any
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
