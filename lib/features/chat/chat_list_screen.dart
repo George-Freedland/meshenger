@@ -11,6 +11,7 @@ import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/transport_settings.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -24,9 +25,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
   List<Contact> _contacts = const <Contact>[];
   Set<String> _onlinePeers = const <String>{};
   bool _loading = true;
+  TransportMode _transportMode = MessengerService.instance.mode;
+  bool _switchingTransport = false;
 
   StreamSubscription<String>? _changesSub;
   StreamSubscription<Set<String>>? _peersSub;
+  StreamSubscription<TransportMode>? _transportSub;
 
   @override
   void initState() {
@@ -37,6 +41,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
       if (mounted) setState(() => _onlinePeers = peers);
     });
+    _transportSub =
+        MessengerService.instance.onTransportChanged.listen((mode) {
+      if (mounted) setState(() => _transportMode = mode);
+    });
     _onlinePeers = MessengerService.instance.onlinePeers;
   }
 
@@ -44,7 +52,32 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void dispose() {
     _changesSub?.cancel();
     _peersSub?.cancel();
+    _transportSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _setTransportMode(TransportMode mode) async {
+    if (_switchingTransport) return;
+    setState(() {
+      _switchingTransport = true;
+      _transportMode = mode;
+    });
+    await MessengerService.instance.setMode(mode);
+    if (!mounted) return;
+    setState(() => _switchingTransport = false);
+
+    final error = MessengerService.instance.transportError;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          error != null
+              ? 'Transport error: $error'
+              : mode == TransportMode.bluetooth
+                  ? 'Bluetooth transport active — no network needed'
+                  : 'LAN transport active — same Wi-Fi/hotspot required',
+        ),
+      ),
+    );
   }
 
   Future<void> _refresh() async {
@@ -471,6 +504,31 @@ class _ChatListScreenState extends State<ChatListScreen> {
       appBar: AppBar(
         title: const Text('Chats'),
         actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: SegmentedButton<TransportMode>(
+              style: const ButtonStyle(
+                visualDensity: VisualDensity.compact,
+              ),
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: TransportMode.bluetooth,
+                  icon: Icon(Icons.bluetooth, size: 18),
+                  tooltip: 'Bluetooth — works with no network at all',
+                ),
+                ButtonSegment(
+                  value: TransportMode.lan,
+                  icon: Icon(Icons.wifi, size: 18),
+                  tooltip: 'LAN — same Wi-Fi network or hotspot',
+                ),
+              ],
+              selected: {_transportMode},
+              onSelectionChanged: _switchingTransport
+                  ? null
+                  : (selection) => _setTransportMode(selection.first),
+            ),
+          ),
           IconButton(
             tooltip: 'My QR',
             icon: const Icon(Icons.qr_code),

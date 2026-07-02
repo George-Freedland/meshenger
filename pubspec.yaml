@@ -29,6 +29,7 @@ dependencies:
 
   # Simple local persistence (web/mobile/desktop)
   shared_preferences: any
+  bluetooth_low_energy: ^6.2.1
 
 dev_dependencies:
   flutter_test:

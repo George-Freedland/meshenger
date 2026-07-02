@@ -2,11 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:cryptography/cryptography.dart';
-
 import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
-import 'lan_transport.dart';
+import 'envelope_codec.dart';
+import 'mesh_transport.dart';
 
 /// Desktop/mobile LAN transport.
 ///
@@ -16,7 +15,7 @@ import 'lan_transport.dart';
 /// signed with the sender's Ed25519 identity key, and sent over a direct
 /// TCP connection. The receiver replies with an ack only after the
 /// signature verifies and decryption succeeds.
-class _IoLanTransport implements LanTransport {
+class _IoLanTransport implements MeshTransport {
   static const int discoveryPort = 45654;
   static const Duration announceInterval = Duration(seconds: 3);
   static const Duration peerTimeout = Duration(seconds: 10);
@@ -62,10 +61,7 @@ class _IoLanTransport implements LanTransport {
       throw StateError('Identity must be unlocked before starting transport');
     }
     _myAddress = address;
-
-    final agreementKeyPair = await identity.getAgreementKeyPair();
-    final agreementPublic = await agreementKeyPair.extractPublicKey();
-    _myX25519Base64 = base64Encode(agreementPublic.bytes);
+    _myX25519Base64 = await EnvelopeCodec.myX25519Base64();
 
     // Inbound message server on an ephemeral port (announced over UDP).
     _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
@@ -227,10 +223,10 @@ class _IoLanTransport implements LanTransport {
     if (peer == null || from == null) return false;
 
     try {
-      final envelope = await _encryptEnvelope(
+      final envelope = await EnvelopeCodec.encryptEnvelope(
         from: from,
         to: peerAddress,
-        peer: peer,
+        toX25519Base64: peer.x25519Base64,
         messageId: messageId,
         text: text,
         timestamp: timestamp,
@@ -259,46 +255,6 @@ class _IoLanTransport implements LanTransport {
     }
   }
 
-  Future<Map<String, Object?>> _encryptEnvelope({
-    required String from,
-    required String to,
-    required _PeerInfo peer,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-  }) async {
-    final sharedKey = await _sharedKeyWith(peer.x25519Base64);
-
-    final plaintext = utf8.encode(jsonEncode(<String, Object?>{
-      'id': messageId,
-      'text': text,
-      'ts': timestamp.millisecondsSinceEpoch,
-    }));
-
-    final algorithm = AesGcm.with256bits();
-    final secretBox = await algorithm.encrypt(plaintext, secretKey: sharedKey);
-
-    final nonceB64 = base64Encode(secretBox.nonce);
-    final cipherB64 = base64Encode(secretBox.cipherText);
-    final macB64 = base64Encode(secretBox.mac.bytes);
-    final myX = _myX25519Base64!;
-
-    final signature = await IdentityService.instance
-        .sign(utf8.encode('msg|$from|$to|$messageId|$nonceB64|$cipherB64|$macB64'));
-
-    return <String, Object?>{
-      't': 'msg',
-      'from': from,
-      'to': to,
-      'fromX': myX,
-      'id': messageId,
-      'nonce': nonceB64,
-      'cipher': cipherB64,
-      'mac': macB64,
-      'sig': base64Encode(signature.bytes),
-    };
-  }
-
   // ---------------------------------------------------------------------
   // Receiving
   // ---------------------------------------------------------------------
@@ -313,78 +269,30 @@ class _IoLanTransport implements LanTransport {
           .timeout(const Duration(seconds: 10));
 
       final decoded = jsonDecode(line);
-      if (decoded is! Map || decoded['t'] != 'msg') {
+      if (decoded is! Map) {
         socket.destroy();
         return;
       }
 
-      final from = decoded['from'] as String;
-      final to = decoded['to'] as String;
-      final fromX = decoded['fromX'] as String;
-      final id = decoded['id'] as String;
-      final nonceB64 = decoded['nonce'] as String;
-      final cipherB64 = decoded['cipher'] as String;
-      final macB64 = decoded['mac'] as String;
-      final sigB64 = decoded['sig'] as String;
-
-      if (to != _myAddress) {
-        socket.destroy();
-        return;
-      }
-
-      final valid = await IdentityService.verify(
-        message:
-            utf8.encode('msg|$from|$to|$id|$nonceB64|$cipherB64|$macB64'),
-        signatureBytes: base64Decode(sigB64),
-        publicKeyBase64: from,
+      final incoming = await EnvelopeCodec.decryptEnvelope(
+        decoded,
+        myAddress: _myAddress ?? '',
       );
-      if (!valid) {
+      if (incoming == null) {
         socket.destroy();
         return;
       }
 
-      final sharedKey = await _sharedKeyWith(fromX);
-      final algorithm = AesGcm.with256bits();
-      final plainBytes = await algorithm.decrypt(
-        SecretBox(
-          base64Decode(cipherB64),
-          nonce: base64Decode(nonceB64),
-          mac: Mac(base64Decode(macB64)),
-        ),
-        secretKey: sharedKey,
+      _messages.add(incoming);
+
+      socket.write(
+        '${jsonEncode(<String, Object?>{'t': 'ack', 'id': incoming.id})}\n',
       );
-
-      final body = jsonDecode(utf8.decode(plainBytes)) as Map;
-
-      _messages.add(IncomingMessage(
-        fromAddress: from,
-        id: body['id'] as String,
-        text: body['text'] as String,
-        timestamp: DateTime.fromMillisecondsSinceEpoch(
-          (body['ts'] as num).toInt(),
-        ),
-      ));
-
-      socket.write('${jsonEncode(<String, Object?>{'t': 'ack', 'id': id})}\n');
       await socket.flush();
       socket.destroy();
     } catch (_) {
       socket.destroy();
     }
-  }
-
-  Future<SecretKey> _sharedKeyWith(String theirX25519Base64) async {
-    final myKeyPair = await IdentityService.instance.getAgreementKeyPair();
-    final shared = await X25519().sharedSecretKey(
-      keyPair: myKeyPair,
-      remotePublicKey: SimplePublicKey(
-        base64Decode(theirX25519Base64),
-        type: KeyPairType.x25519,
-      ),
-    );
-    // Hash the raw ECDH output into a uniform AES key.
-    final hashed = await Sha256().hash(await shared.extractBytes());
-    return SecretKey(hashed.bytes);
   }
 }
 
@@ -402,4 +310,4 @@ class _PeerInfo {
   });
 }
 
-LanTransport createTransport() => _IoLanTransport();
+MeshTransport createTransport() => _IoLanTransport();

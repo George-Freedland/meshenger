@@ -13,7 +13,9 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 
 - **Identity onboarding**: create a new identity (password with strength meter + optional nickname) or unlock an existing one. The start screen shows just the two choices and fades to the relevant form.
 - **Contacts via QR**: share your public address as a QR code; add contacts by scanning or pasting an address.
-- **Offline LAN messaging (works today)**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required. This is how you test Windows ↔ Mac messaging right now (see below).
+- **Offline Bluetooth messaging (default)**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
+- **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
+- **Transport switch**: the Bluetooth/Wi‑Fi toggle in the chats screen switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
 - **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* and delivered automatically as soon as that peer appears on the network.
 
 ### Architecture: mesh, gateways, and coverage zones
@@ -196,7 +198,7 @@ flutter devices          # optional: list available targets
 flutter run -d chrome
 ```
 
-> Note: the browser cannot open raw UDP/TCP sockets, so the offline LAN transport is unavailable on web. The app runs fully (identity, contacts, QR, chats) and messages queue as *pending*; use a desktop or mobile build for actual offline delivery.
+> Note: the browser cannot open raw UDP/TCP sockets or act as a Bluetooth peripheral, so neither offline transport is available on web. The app runs fully (identity, contacts, QR, chats) and messages queue as *pending*; use a desktop or mobile build for actual offline delivery.
 
 ---
 
@@ -255,17 +257,21 @@ flutter run -d ios
 
 ### Test offline messaging: Windows laptop ↔ Mac laptop
 
-This works today, no internet required — both machines just need to be on the same local network (a home Wi‑Fi router works, and so does a phone hotspot with both laptops joined to it).
+This works today with **no network at all** — Bluetooth is the default transport, so the two machines only need to be within Bluetooth range (~10 m indoors) with Bluetooth turned on.
 
 1. **Run the app on both machines** from the project root:
    - Windows: `flutter run -d windows`
    - Mac: `flutter run -d macos`
 2. **Create an identity on each machine** (Create New Identity → password + optional nickname).
 3. **Exchange addresses**: on the Mac, open **My QR** (QR icon in the chats screen) and copy the public address; on Windows, open **Contacts → Add contact** and paste it (or scan the QR if the machine has a camera). Repeat in the other direction if you want two‑way chats initiated from either side.
-4. **Chat**: open the contact and press the message icon. The header shows a green **online** dot when the other laptop is discovered (this usually takes a few seconds). Send a message — it appears on the other machine immediately.
+4. **Chat**: open the contact and press the message icon. The header shows a green **online** dot when the other laptop is discovered (Bluetooth discovery can take ~10–20 seconds). Send a message — it appears on the other machine.
 5. **Test store‑and‑forward**: quit the app on the Mac, send messages from Windows (they show a ⏱ *pending* icon), then reopen the app on the Mac and unlock — the pending messages are delivered automatically and flip to ✓ *sent*.
 
-How it works: each device broadcasts a signed UDP announcement on port 45654; peers verify the signature, then deliver messages over a direct TCP connection, encrypted end‑to‑end (X25519 + AES‑256‑GCM) and signed (Ed25519). If discovery fails, check that both machines are on the same network and that your firewall allows the app to receive UDP on port 45654 (Windows shows a firewall prompt on first run — click **Allow**).
+**Switching transports**: the Bluetooth/Wi‑Fi toggle in the chats screen app bar selects the transport. LAN is faster and has more range if both machines are on the same Wi‑Fi network or phone hotspot; Bluetooth needs no infrastructure whatsoever.
+
+How it works (Bluetooth): each device advertises a Meshenger GATT service and scans for others. On discovery, a device reads the peer's signed announcement (Ed25519‑verified), then delivers messages as chunked GATT writes — end‑to‑end encrypted (X25519 + AES‑256‑GCM) and signed. The final write is only acknowledged after the receiver verifies and decrypts, so a ✓ means real delivery.
+
+How it works (LAN): each device broadcasts a signed UDP announcement on port 45654; peers verify the signature, then deliver messages over a direct TCP connection with the same end‑to‑end encryption. If discovery fails, check that both machines are on the same network and that your firewall allows the app to receive UDP on port 45654 (Windows shows a firewall prompt on first run — click **Allow**).
 
 ---
 
@@ -274,5 +280,6 @@ How it works: each device broadcasts a signed UDP announcement on port 45654; pe
 - **“No supported devices connected”** — run `flutter devices` and pick a target with `-d <device-id>`, or complete the platform setup above (emulator/simulator, Visual Studio, Xcode, etc.).
 - **Missing platform folder** — regenerate platform projects from the repo root with `flutter create .` (existing `lib/` code is preserved).
 - **Build errors after upgrading Flutter** — try `flutter clean`, then `flutter pub get`, then run again.
-- **Peers never show “online”** — confirm both devices are on the same network/subnet, allow the app through the OS firewall (UDP 45654 inbound), and note that some guest/public Wi‑Fi networks block device‑to‑device traffic ("client isolation"). A phone hotspot is a reliable fallback.
-- **macOS: network blocked** — the app sandbox needs the network client/server entitlements; they are already set in `macos/Runner/*.entitlements` in this repo. If you regenerate the macOS project with `flutter create .`, re‑add them.
+- **Peers never show “online” (Bluetooth)** — make sure Bluetooth is turned on on both machines and they are within range. The first discovery can take ~10–20 seconds. On macOS, approve the Bluetooth permission prompt on first run (re‑enable under **System Settings → Privacy & Security → Bluetooth** if declined).
+- **Peers never show “online” (LAN)** — confirm both devices are on the same network/subnet, allow the app through the OS firewall (UDP 45654 inbound), and note that some guest/public Wi‑Fi networks block device‑to‑device traffic ("client isolation"). A phone hotspot is a reliable fallback.
+- **macOS: network or Bluetooth blocked** — the app sandbox needs the network client/server and Bluetooth entitlements; they are already set in `macos/Runner/*.entitlements` in this repo. If you regenerate the macOS project with `flutter create .`, re‑add them.

@@ -13,9 +13,9 @@ class ChatStorage {
   Future<List<String>> listChats() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_chatsKey);
-    if (raw == null || raw.isEmpty) return const <String>[];
+    if (raw == null || raw.isEmpty) return <String>[];
     final decoded = jsonDecode(raw);
-    if (decoded is! List) return const <String>[];
+    if (decoded is! List) return <String>[];
     return decoded.whereType<String>().toList();
   }
 
@@ -42,9 +42,9 @@ class ChatStorage {
   Future<List<ChatMessage>> listMessages(String peerAddress) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_messagesKey(peerAddress));
-    if (raw == null || raw.isEmpty) return const <ChatMessage>[];
+    if (raw == null || raw.isEmpty) return <ChatMessage>[];
     final decoded = jsonDecode(raw);
-    if (decoded is! List) return const <ChatMessage>[];
+    if (decoded is! List) return <ChatMessage>[];
     return decoded
         .whereType<Map>()
         .map((m) => ChatMessage.fromJson(m.cast<String, Object?>()))

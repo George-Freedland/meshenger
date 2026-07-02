@@ -1,13 +1,13 @@
 import 'dart:async';
 
 import '../models/incoming_message.dart';
-import 'lan_transport.dart';
+import 'mesh_transport.dart';
 
 /// No-op transport for platforms without dart:io sockets (web).
 ///
 /// Messages queue as "pending" and the app stays fully usable; delivery
 /// requires a platform with socket support (desktop/mobile).
-class _StubLanTransport implements LanTransport {
+class _StubLanTransport implements MeshTransport {
   final _messages = StreamController<IncomingMessage>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
 
@@ -40,4 +40,4 @@ class _StubLanTransport implements LanTransport {
   }
 }
 
-LanTransport createTransport() => _StubLanTransport();
+MeshTransport createTransport() => _StubLanTransport();
