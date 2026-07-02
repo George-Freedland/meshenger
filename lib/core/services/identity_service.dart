@@ -13,7 +13,12 @@ class IdentityService {
   IdentityService._();
   static final IdentityService instance = IdentityService._();
 
-  static const _storage = FlutterSecureStorage();
+  // The macOS data-protection keychain requires a real Apple development
+  // signing certificate; ad-hoc signed local builds get errSecMissingEntitlement
+  // (-34018). The legacy file-based keychain works without one.
+  static const _storage = FlutterSecureStorage(
+    mOptions: MacOsOptions(usesDataProtectionKeychain: false),
+  );
 
   static const _publicKeyKey = 'identity_public_key';
   static const _encryptedPrivateKeyKey = 'identity_encrypted_private_key';
