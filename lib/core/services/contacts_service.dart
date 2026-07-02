@@ -13,10 +13,10 @@ class ContactsService {
   Future<List<Contact>> listContacts() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_contactsKey);
-    if (raw == null || raw.isEmpty) return const <Contact>[];
+    if (raw == null || raw.isEmpty) return <Contact>[];
 
     final decoded = jsonDecode(raw);
-    if (decoded is! List) return const <Contact>[];
+    if (decoded is! List) return <Contact>[];
 
     return decoded
         .whereType<Map>()
