@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/message.dart';
+
 class ChatStorage {
   ChatStorage._();
   static final ChatStorage instance = ChatStorage._();
@@ -36,6 +38,48 @@ class ChatStorage {
   }
 
   String _messagesKey(String peerAddress) => 'chat_messages_v1:$peerAddress';
+
+  Future<List<ChatMessage>> listMessages(String peerAddress) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_messagesKey(peerAddress));
+    if (raw == null || raw.isEmpty) return const <ChatMessage>[];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return const <ChatMessage>[];
+    return decoded
+        .whereType<Map>()
+        .map((m) => ChatMessage.fromJson(m.cast<String, Object?>()))
+        .toList();
+  }
+
+  Future<void> appendMessage(String peerAddress, ChatMessage message) async {
+    final messages = await listMessages(peerAddress);
+    if (messages.any((m) => m.id == message.id)) return;
+    messages.add(message);
+    await _writeMessages(peerAddress, messages);
+  }
+
+  Future<void> updateMessageStatus(
+    String peerAddress,
+    String messageId,
+    MessageStatus status,
+  ) async {
+    final messages = await listMessages(peerAddress);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    messages[idx] = messages[idx].copyWith(status: status);
+    await _writeMessages(peerAddress, messages);
+  }
+
+  Future<void> _writeMessages(
+    String peerAddress,
+    List<ChatMessage> messages,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _messagesKey(peerAddress),
+      jsonEncode(messages.map((m) => m.toJson()).toList()),
+    );
+  }
 
   Future<void> _writeChats(List<String> chats) async {
     final prefs = await SharedPreferences.getInstance();

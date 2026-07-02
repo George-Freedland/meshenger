@@ -4,10 +4,13 @@ import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import 'dart:async';
+
 import '../../core/models/contact.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
+import '../../core/services/messenger_service.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -19,12 +22,29 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   List<String> _chats = const <String>[];
   List<Contact> _contacts = const <Contact>[];
+  Set<String> _onlinePeers = const <String>{};
   bool _loading = true;
+
+  StreamSubscription<String>? _changesSub;
+  StreamSubscription<Set<String>>? _peersSub;
 
   @override
   void initState() {
     super.initState();
     _refresh();
+    _changesSub =
+        MessengerService.instance.onChanged.listen((_) => _refresh());
+    _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
+      if (mounted) setState(() => _onlinePeers = peers);
+    });
+    _onlinePeers = MessengerService.instance.onlinePeers;
+  }
+
+  @override
+  void dispose() {
+    _changesSub?.cancel();
+    _peersSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -332,7 +352,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               await ContactsService.instance.upsertContact(
                 contact.copyWith(nickname: nick.isEmpty ? null : nick),
               );
-              if (mounted) Navigator.pop(context);
+              if (context.mounted) Navigator.pop(context);
               await _refresh();
             },
             child: const Text('Save'),
@@ -477,7 +497,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     final nick = _nicknameFor(peer);
                     final title =
                         (nick != null && nick.trim().isNotEmpty) ? nick : _short(peer);
+                    final online = _onlinePeers.contains(peer);
                     return ListTile(
+                      leading: Icon(
+                        Icons.circle,
+                        size: 12,
+                        color: online ? Colors.greenAccent : Colors.grey,
+                      ),
                       title: Text(title),
                       subtitle: Text(_short(peer)),
                       onTap: () => context.go('/chat?peer=${Uri.encodeComponent(peer)}'),

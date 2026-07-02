@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/services/identity_service.dart';
+import '../../core/services/messenger_service.dart';
+import '../../core/services/profile_service.dart';
+
+enum _OnboardingStage { choice, create, unlock }
 
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -12,7 +16,10 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _nicknameController = TextEditingController();
   final ValueNotifier<bool> _isBusy = ValueNotifier<bool>(false);
+
+  _OnboardingStage _stage = _OnboardingStage.choice;
   String? _error;
   bool _obscurePassword = true;
 
@@ -25,8 +32,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   void dispose() {
     _passwordController.dispose();
+    _nicknameController.dispose();
     _isBusy.dispose();
     super.dispose();
+  }
+
+  void _selectStage(_OnboardingStage stage) {
+    setState(() {
+      _stage = stage;
+      _error = null;
+      _password = '';
+      _passwordController.clear();
+      _computeStrength('');
+    });
   }
 
   void _updatePassword(String value) {
@@ -114,6 +132,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     _isBusy.value = true;
     try {
       await IdentityService.instance.createIdentity(password);
+      await ProfileService.instance.setNickname(_nicknameController.text);
+      await MessengerService.instance.start();
       if (mounted) {
         context.go('/chats');
       }
@@ -138,6 +158,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         setState(() => _error = 'Incorrect password or no identity found');
         return;
       }
+      await MessengerService.instance.start();
       if (mounted) {
         context.go('/chats');
       }
@@ -148,129 +169,240 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
+  Widget _buildPasswordField({required bool isNew}) {
+    return TextField(
+      controller: _passwordController,
+      obscureText: _obscurePassword,
+      onChanged: isNew ? _updatePassword : null,
+      autofocus: true,
+      onSubmitted: (_) => isNew ? _handleCreateAccount() : _handleLogin(),
+      decoration: InputDecoration(
+        labelText: 'Password',
+        hintText: isNew ? 'Choose a strong password' : 'Enter your password',
+        suffixIcon: IconButton(
+          tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+          icon: Icon(
+            _obscurePassword ? Icons.visibility_off : Icons.visibility,
+          ),
+          onPressed: () {
+            setState(() {
+              _obscurePassword = !_obscurePassword;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildError(ThemeData theme) {
+    if (_error == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        _error!,
+        style: TextStyle(color: theme.colorScheme.error),
+      ),
+    );
+  }
+
+  Widget _buildBackButton() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        onPressed: () => _selectStage(_OnboardingStage.choice),
+        icon: const Icon(Icons.arrow_back, size: 18),
+        label: const Text('Back'),
+      ),
+    );
+  }
+
+  /// Initial stage: just the two choices.
+  Widget _buildChoiceStage(ThemeData theme) {
+    return Column(
+      key: const ValueKey('choice'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        FilledButton(
+          onPressed: () => _selectStage(_OnboardingStage.create),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text('Create New Identity'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton(
+          onPressed: () => _selectStage(_OnboardingStage.unlock),
+          child: const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text('Unlock Existing Identity'),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'Your identity is a cryptographic keypair. '
+          'Your password never leaves this device and is only used to unlock your private key.',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// New identity: password + strength indicator + optional nickname.
+  Widget _buildCreateStage(ThemeData theme) {
+    return Column(
+      key: const ValueKey('create'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildBackButton(),
+        const SizedBox(height: 8),
+        _buildPasswordField(isNew: true),
+        if (_password.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: _strengthProgress,
+              minHeight: 8,
+              backgroundColor: theme.colorScheme.onSurface.withValues(alpha: 0.2),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                _strengthColor ?? theme.colorScheme.primary,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Strength: $_strengthLabel',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: _strengthColor ?? theme.colorScheme.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _strengthDetail,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Tip: Use at least 11 characters with upper/lowercase, numbers, and symbols. '
+            'Offline attackers can try huge numbers of guesses per second.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        TextField(
+          controller: _nicknameController,
+          decoration: const InputDecoration(
+            labelText: 'Nickname (optional)',
+            hintText: 'Shown to contacts you share your address with',
+          ),
+        ),
+        _buildError(theme),
+        const SizedBox(height: 24),
+        ValueListenableBuilder<bool>(
+          valueListenable: _isBusy,
+          builder: (context, busy, _) {
+            return FilledButton(
+              onPressed: busy ? null : _handleCreateAccount,
+              child: Text(busy ? 'Working…' : 'Create Identity'),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  /// Existing identity: just the password field, no strength indicator.
+  Widget _buildUnlockStage(ThemeData theme) {
+    return Column(
+      key: const ValueKey('unlock'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildBackButton(),
+        const SizedBox(height: 8),
+        _buildPasswordField(isNew: false),
+        _buildError(theme),
+        const SizedBox(height: 24),
+        ValueListenableBuilder<bool>(
+          valueListenable: _isBusy,
+          builder: (context, busy, _) {
+            return FilledButton(
+              onPressed: busy ? null : _handleLogin,
+              child: Text(busy ? 'Working…' : 'Unlock'),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    final Widget stage = switch (_stage) {
+      _OnboardingStage.choice => _buildChoiceStage(theme),
+      _OnboardingStage.create => _buildCreateStage(theme),
+      _OnboardingStage.unlock => _buildUnlockStage(theme),
+    };
+
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Meshenger',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Offline, end-to-end encrypted mesh messenger.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onBackground.withOpacity(0.7),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                TextField(
-                  controller: _passwordController,
-                  obscureText: _obscurePassword,
-                  onChanged: _updatePassword,
-                  decoration: InputDecoration(
-                    labelText: 'Password',
-                    hintText: 'Choose a strong password',
-                    suffixIcon: IconButton(
-                      tooltip: _obscurePassword ? 'Show password' : 'Hide password',
-                      icon: Icon(
-                        _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
-                    ),
-                  ),
-                ),
-                if (_password.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(999),
-                    child: LinearProgressIndicator(
-                      value: _strengthProgress,
-                      minHeight: 8,
-                      backgroundColor: theme.colorScheme.onBackground.withOpacity(0.2),
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        _strengthColor ?? theme.colorScheme.primary,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                   Text(
-                    'Strength: $_strengthLabel',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: _strengthColor ?? theme.colorScheme.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _strengthDetail,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onBackground.withOpacity(0.7),
+                    'Meshenger',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Tip: Use at least 11 characters with upper/lowercase, numbers, and symbols. '
-                    'Offline attackers can try huge numbers of guesses per second.',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onBackground.withOpacity(0.6),
+                    'Offline, end-to-end encrypted mesh messenger.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
                     ),
                   ),
-                ],
-                if (_error != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    _error!,
-                    style: TextStyle(color: theme.colorScheme.error),
+                  const SizedBox(height: 24),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 250),
+                    switchInCurve: Curves.easeOut,
+                    switchOutCurve: Curves.easeIn,
+                    transitionBuilder: (child, animation) {
+                      return FadeTransition(opacity: animation, child: child);
+                    },
+                    layoutBuilder: (currentChild, previousChildren) {
+                      return Stack(
+                        alignment: Alignment.topCenter,
+                        children: [
+                          ...previousChildren,
+                          if (currentChild != null) currentChild,
+                        ],
+                      );
+                    },
+                    child: stage,
                   ),
                 ],
-                const SizedBox(height: 24),
-                ValueListenableBuilder<bool>(
-                  valueListenable: _isBusy,
-                  builder: (context, busy, _) {
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        FilledButton(
-                          onPressed: busy ? null : _handleCreateAccount,
-                          child: Text(busy ? 'Working…' : 'Create New Identity'),
-                        ),
-                        const SizedBox(height: 12),
-                        OutlinedButton(
-                          onPressed: busy ? null : _handleLogin,
-                          child: const Text('Unlock Existing Identity'),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'Your identity is a cryptographic keypair. '
-                  'Your password never leaves this device and is only used to unlock your private key.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onBackground.withOpacity(0.6),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),

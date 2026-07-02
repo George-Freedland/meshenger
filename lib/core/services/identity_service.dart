@@ -22,10 +22,62 @@ class IdentityService {
   // In-memory unlocked keys (for current session only).
   SimpleKeyPair? _identityKeyPair;
   SimplePublicKey? _publicKey;
+  SimpleKeyPair? _agreementKeyPair; // X25519, derived from identity seed
 
   SimplePublicKey? get publicKey => _publicKey;
 
   bool get isUnlocked => _identityKeyPair != null;
+
+  /// Signs [message] with the unlocked Ed25519 identity key.
+  Future<Signature> sign(List<int> message) async {
+    final keyPair = _identityKeyPair;
+    if (keyPair == null) {
+      throw StateError('Identity is locked');
+    }
+    return Ed25519().sign(message, keyPair: keyPair);
+  }
+
+  /// Verifies an Ed25519 [signature] over [message] made by [publicKeyBase64].
+  static Future<bool> verify({
+    required List<int> message,
+    required List<int> signatureBytes,
+    required String publicKeyBase64,
+  }) async {
+    try {
+      final publicKey = SimplePublicKey(
+        base64Decode(publicKeyBase64),
+        type: KeyPairType.ed25519,
+      );
+      return await Ed25519().verify(
+        message,
+        signature: Signature(signatureBytes, publicKey: publicKey),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// X25519 keypair for encryption key agreement, deterministically derived
+  /// from the identity seed so it is stable across sessions and devices only
+  /// need the Ed25519 address to authenticate it (announcements are signed).
+  Future<SimpleKeyPair> getAgreementKeyPair() async {
+    final existing = _agreementKeyPair;
+    if (existing != null) return existing;
+
+    final identity = _identityKeyPair;
+    if (identity == null) {
+      throw StateError('Identity is locked');
+    }
+
+    final seed = await identity.extractPrivateKeyBytes();
+    final derived = await Sha256().hash(<int>[
+      ...utf8.encode('meshenger-x25519-v1'),
+      ...seed,
+    ]);
+    final keyPair = await X25519().newKeyPairFromSeed(derived.bytes);
+    _agreementKeyPair = keyPair;
+    return keyPair;
+  }
 
   /// Returns the public address as a base64 string.
   ///

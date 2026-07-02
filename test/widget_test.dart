@@ -1,30 +1,29 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:meshenger/main.dart';
+import 'package:meshenger/app.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('Onboarding shows identity choice buttons',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const MeshengerApp());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('Meshenger'), findsOneWidget);
+    expect(find.text('Create New Identity'), findsOneWidget);
+    expect(find.text('Unlock Existing Identity'), findsOneWidget);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    // Choosing "Create New Identity" fades to the password + nickname form.
+    await tester.tap(find.text('Create New Identity'));
+    await tester.pumpAndSettle();
+    expect(find.text('Password'), findsOneWidget);
+    expect(find.text('Nickname (optional)'), findsOneWidget);
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    // Back, then "Unlock Existing Identity" shows only the password field.
+    await tester.tap(find.text('Back'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Unlock Existing Identity'));
+    await tester.pumpAndSettle();
+    expect(find.text('Password'), findsOneWidget);
+    expect(find.text('Nickname (optional)'), findsNothing);
   });
 }
