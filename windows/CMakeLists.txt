@@ -32,6 +32,12 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# MSVC in VS 2026 (v14.5x) errors on <experimental/coroutine>, which the
+# C++/WinRT code generated for bluetooth_low_energy_windows still uses.
+# This define restores the old (deprecated-but-working) behavior until the
+# plugin migrates to C++20 <coroutine>. Applies to all plugin subprojects.
+add_definitions(-D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
