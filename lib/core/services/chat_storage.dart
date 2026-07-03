@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/group_info.dart';
 import '../models/message.dart';
 
 /// Chat keys are either a peer address (1:1) or `group:{id}` (group chat).
@@ -36,39 +37,130 @@ class ChatStorage {
     }
   }
 
+  /// Removes a 1:1 chat and all its messages.
+  ///
+  /// For group chats, use [hideChat] or [leaveGroup] instead.
   Future<void> deleteChat(String chatKey) async {
+    if (isGroupChat(chatKey)) {
+      throw StateError('Use hideChat or leaveGroup for group chats');
+    }
     final prefs = await SharedPreferences.getInstance();
     final chats = await listChats();
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
-
     await prefs.remove(_messagesKey(chatKey));
-    if (isGroupChat(chatKey)) {
-      await prefs.remove(_groupInfoKey(groupIdOf(chatKey)));
+  }
+
+  /// Hides a group chat from the list without leaving the group. Message
+  /// history and membership are preserved; a new incoming message restores
+  /// the chat to the list.
+  Future<void> hideChat(String chatKey) async {
+    if (!isGroupChat(chatKey)) {
+      await deleteChat(chatKey);
+      return;
     }
+    final chats = await listChats();
+    chats.removeWhere((a) => a == chatKey);
+    await _writeChats(chats);
   }
 
   // ---------------------------------------------------------------------
-  // Group membership
+  // Group metadata
   // ---------------------------------------------------------------------
 
-  String _groupInfoKey(String groupId) => 'group_info_v1:$groupId';
+  String _groupMetaKey(String groupId) => 'group_meta_v2:$groupId';
 
-  /// Stores (or merges) the member list for a group.
-  Future<void> upsertGroupMembers(String groupId, List<String> members) async {
+  /// Legacy member-only storage (pre-admin/name support).
+  String _legacyGroupInfoKey(String groupId) => 'group_info_v1:$groupId';
+
+  Future<GroupInfo?> getGroupInfo(String groupId) async {
     final prefs = await SharedPreferences.getInstance();
-    final existing = await getGroupMembers(groupId);
-    final merged = <String>{...existing, ...members}.toList();
-    await prefs.setString(_groupInfoKey(groupId), jsonEncode(merged));
+    final raw = prefs.getString(_groupMetaKey(groupId));
+    if (raw != null && raw.isNotEmpty) {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return GroupInfo.fromJson(decoded.cast<String, Object?>());
+      }
+    }
+
+    // Migrate legacy member-list-only records.
+    final legacy = prefs.getString(_legacyGroupInfoKey(groupId));
+    if (legacy == null || legacy.isEmpty) return null;
+    final decoded = jsonDecode(legacy);
+    if (decoded is! List) return null;
+    final members = decoded.whereType<String>().toList();
+    if (members.isEmpty) return null;
+    final info = GroupInfo(
+      id: groupId,
+      adminAddress: members.first,
+      members: members,
+    );
+    await saveGroupInfo(info);
+    await prefs.remove(_legacyGroupInfoKey(groupId));
+    return info;
+  }
+
+  Future<void> saveGroupInfo(GroupInfo info) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_groupMetaKey(info.id), jsonEncode(info.toJson()));
+  }
+
+  /// Merges [members] into an existing group, or creates a minimal record
+  /// when learning membership from an incoming message.
+  Future<void> upsertGroupMembers(String groupId, List<String> members) async {
+    final existing = await getGroupInfo(groupId);
+    if (existing == null) {
+      await saveGroupInfo(GroupInfo(
+        id: groupId,
+        adminAddress: members.first,
+        members: members.toSet().toList(),
+      ));
+      return;
+    }
+    final merged = <String>{...existing.members, ...members}.toList();
+    await saveGroupInfo(existing.copyWith(members: merged));
   }
 
   Future<List<String>> getGroupMembers(String groupId) async {
+    final info = await getGroupInfo(groupId);
+    return info?.members ?? <String>[];
+  }
+
+  /// Removes this device from the group and deletes all local chat data.
+  Future<void> leaveGroup(String groupId, String myAddress) async {
+    final info = await getGroupInfo(groupId);
+    if (info == null) return;
+    final chatKey = groupChatKey(groupId);
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_groupInfoKey(groupId));
-    if (raw == null || raw.isEmpty) return <String>[];
-    final decoded = jsonDecode(raw);
-    if (decoded is! List) return <String>[];
-    return decoded.whereType<String>().toList();
+    final chats = await listChats();
+    chats.removeWhere((a) => a == chatKey);
+    await _writeChats(chats);
+    await prefs.remove(_messagesKey(chatKey));
+    await prefs.remove(_groupMetaKey(groupId));
+    await prefs.remove(_legacyGroupInfoKey(groupId));
+  }
+
+  /// Applies a remote group metadata update. Returns false when this device
+  /// is no longer a member (caller should treat as having left).
+  Future<bool> applyGroupEvent(GroupEvent event, String myAddress) async {
+    if (!event.members.contains(myAddress)) {
+      await leaveGroup(event.groupId, myAddress);
+      return false;
+    }
+
+    final existing = await getGroupInfo(event.groupId);
+    final name = event.action == 'rename'
+        ? event.name
+        : (event.name ?? existing?.name);
+    final info = GroupInfo(
+      id: event.groupId,
+      adminAddress: event.adminAddress,
+      name: name,
+      members: event.members,
+    );
+    await saveGroupInfo(info);
+    await ensureChatExists(groupChatKey(event.groupId));
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -108,8 +200,6 @@ class ChatStorage {
     await _writeMessages(chatKey, messages);
   }
 
-  /// Records that [deliveredTo] received the group message; flips the
-  /// message to "sent" once no members remain pending.
   Future<void> markGroupMessageDelivered(
     String chatKey,
     String messageId,

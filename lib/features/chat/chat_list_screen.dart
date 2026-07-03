@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import '../../core/models/contact.dart';
+import '../../core/models/group_info.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
@@ -25,7 +26,7 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   List<String> _chats = const <String>[];
   List<Contact> _contacts = const <Contact>[];
-  Map<String, List<String>> _groupMembers = const <String, List<String>>{};
+  Map<String, GroupInfo> _groupInfo = const <String, GroupInfo>{};
   Set<String> _onlinePeers = const <String>{};
   String? _myAddress;
 
@@ -92,11 +93,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final chats = await ChatStorage.instance.listChats();
     final contacts = await ContactsService.instance.listContacts();
 
-    final groupMembers = <String, List<String>>{};
+    final groupInfo = <String, GroupInfo>{};
     for (final chatKey in chats) {
       if (ChatStorage.isGroupChat(chatKey)) {
-        groupMembers[chatKey] = await ChatStorage.instance
-            .getGroupMembers(ChatStorage.groupIdOf(chatKey));
+        final info = await ChatStorage.instance
+            .getGroupInfo(ChatStorage.groupIdOf(chatKey));
+        if (info != null) groupInfo[chatKey] = info;
       }
     }
 
@@ -104,7 +106,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     setState(() {
       _chats = chats;
       _contacts = contacts;
-      _groupMembers = groupMembers;
+      _groupInfo = groupInfo;
       _loading = false;
     });
   }
@@ -594,6 +596,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final recipients = <String>[];
     final recipientController = TextEditingController();
     final messageController = TextEditingController();
+    final groupNameController = TextEditingController();
     String? error;
     var sending = false;
 
@@ -664,7 +667,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   await MessengerService.instance.sendText(chatKey, text);
                 }
               } else {
-                chatKey = await MessengerService.instance.createGroup(recipients);
+                chatKey = await MessengerService.instance.createGroup(
+                  recipients,
+                  name: groupNameController.text.trim(),
+                );
                 if (text.isNotEmpty) {
                   await MessengerService.instance.sendGroupText(chatKey, text);
                 }
@@ -741,6 +747,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                     onTap: () => addRecipient(c.address),
                                   ),
                               ],
+                            ),
+                          ),
+                        ],
+                        if (recipients.length > 1) ...[
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: groupNameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Group name (optional)',
+                              hintText: 'Only you can set this as admin',
                             ),
                           ),
                         ],
@@ -863,17 +879,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     Widget leading;
 
                     if (isGroup) {
-                      final members = _groupMembers[chatKey] ?? const <String>[];
-                      final others = members
-                          .where((a) => !_isMyAddress(a))
-                          .toList();
-                      title = others.isEmpty
-                          ? 'Group chat'
-                          : others.map(_contactLabel).join(', ');
+                      final info = _groupInfo[chatKey];
+                      final members = info?.members ?? const <String>[];
+                      final others =
+                          members.where((a) => !_isMyAddress(a)).toList();
+                      title = info?.displayTitle(_myAddress, _contactLabel) ??
+                          (others.isEmpty
+                              ? 'Group chat'
+                              : others.map(_contactLabel).join(', '));
                       final onlineCount =
                           others.where(_onlinePeers.contains).length;
                       subtitle =
-                          '${others.length + 1} members · $onlineCount online';
+                          '${members.length} members · $onlineCount online';
                       online = onlineCount > 0;
                       leading = Icon(
                         Icons.group,
@@ -900,10 +917,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       onTap: () =>
                           context.go('/chat?peer=${Uri.encodeComponent(chatKey)}'),
                       trailing: IconButton(
-                        tooltip: 'Delete chat',
+                        tooltip: isGroup ? 'Hide chat' : 'Delete chat',
                         icon: const Icon(Icons.delete_outline),
                         onPressed: () async {
-                          await ChatStorage.instance.deleteChat(chatKey);
+                          if (isGroup) {
+                            await ChatStorage.instance.hideChat(chatKey);
+                          } else {
+                            await ChatStorage.instance.deleteChat(chatKey);
+                          }
                           await _refresh();
                         },
                       ),

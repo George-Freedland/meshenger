@@ -219,6 +219,9 @@ class _IoLanTransport implements MeshTransport {
     required DateTime timestamp,
     String? groupId,
     List<String>? groupMembers,
+    String? groupAdmin,
+    String? groupName,
+    String? groupEvent,
   }) async {
     final peer = _peers[peerAddress];
     final from = _myAddress;
@@ -234,6 +237,9 @@ class _IoLanTransport implements MeshTransport {
         timestamp: timestamp,
         groupId: groupId,
         groupMembers: groupMembers,
+        groupAdmin: groupAdmin,
+        groupName: groupName,
+        groupEvent: groupEvent,
       );
 
       final socket = await Socket.connect(

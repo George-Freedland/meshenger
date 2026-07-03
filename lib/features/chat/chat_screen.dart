@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/models/contact.dart';
+import '../../core/models/group_info.dart';
 import '../../core/models/message.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
@@ -29,9 +31,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String? _nickname;
   bool _isContact = false;
+  GroupInfo? _groupInfo;
   List<ChatMessage> _messages = const <ChatMessage>[];
   List<Contact> _contacts = const <Contact>[];
-  List<String> _groupOthers = const <String>[];
   Set<String> _onlinePeers = const <String>{};
   bool _sending = false;
   String? _myAddress;
@@ -54,11 +56,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     if (key != null && key.isNotEmpty) {
       _changesSub = MessengerService.instance.onChanged.listen((chatKey) {
-        if (chatKey == key) _loadMessages();
+        if (chatKey == key) _load();
       });
       _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
-        if (!mounted) return;
-        setState(() => _onlinePeers = peers);
+        if (!mounted) setState(() => _onlinePeers = peers);
       });
       _onlinePeers = MessengerService.instance.onlinePeers;
     }
@@ -82,12 +83,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final contacts = await ContactsService.instance.listContacts();
 
     if (_isGroup) {
-      final members = await ChatStorage.instance
-          .getGroupMembers(ChatStorage.groupIdOf(key));
+      final info = await ChatStorage.instance
+          .getGroupInfo(ChatStorage.groupIdOf(key));
       if (!mounted) return;
+      if (info != null &&
+          _myAddress != null &&
+          !info.contains(_myAddress!)) {
+        context.go('/chats');
+        return;
+      }
       setState(() {
         _contacts = contacts;
-        _groupOthers = members.where((a) => a != _myAddress).toList();
+        _groupInfo = info;
       });
     } else {
       final contact = await ContactsService.instance.getContact(key);
@@ -153,13 +160,23 @@ class _ChatScreenState extends State<ChatScreen> {
     return _short(address);
   }
 
-  Future<void> _deleteChat() async {
+  bool _isValidAddress(String value) {
+    try {
+      return base64Decode(value).length == 32;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _hideOrDeleteChat() async {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
-    await ChatStorage.instance.deleteChat(key);
-    if (mounted) {
-      context.go('/chats');
+    if (_isGroup) {
+      await ChatStorage.instance.hideChat(key);
+    } else {
+      await ChatStorage.instance.deleteChat(key);
     }
+    if (mounted) context.go('/chats');
   }
 
   Future<void> _addAsContact() async {
@@ -196,8 +213,245 @@ class _ChatScreenState extends State<ChatScreen> {
     await _load();
   }
 
+  Future<void> _showGroupInfoModal() async {
+    final key = _chatKey;
+    if (key == null || !_isGroup) return;
+
+    var info = _groupInfo ??
+        await ChatStorage.instance.getGroupInfo(ChatStorage.groupIdOf(key));
+    if (info == null || !mounted) return;
+
+    final nameController = TextEditingController(text: info.name ?? '');
+    final addMemberController = TextEditingController();
+    String? error;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            Future<void> reload() async {
+              info = await ChatStorage.instance
+                  .getGroupInfo(ChatStorage.groupIdOf(key));
+              if (info != null) {
+                nameController.text = info!.name ?? '';
+              }
+              setModalState(() {});
+            }
+
+            Future<void> saveName() async {
+              try {
+                error = null;
+                await MessengerService.instance
+                    .renameGroup(key, nameController.text);
+                await reload();
+              } catch (e) {
+                setModalState(() => error = e.toString());
+              }
+            }
+
+            Future<void> addMember() async {
+              final raw = addMemberController.text.trim();
+              if (!_isValidAddress(raw)) {
+                setModalState(
+                    () => error = 'Not a valid public address');
+                return;
+              }
+              try {
+                error = null;
+                await MessengerService.instance
+                    .addGroupMembers(key, [raw]);
+                addMemberController.clear();
+                await reload();
+              } catch (e) {
+                setModalState(() => error = e.toString());
+              }
+            }
+
+            Future<void> removeMember(String address) async {
+              try {
+                error = null;
+                await MessengerService.instance
+                    .removeGroupMember(key, address);
+                await reload();
+              } catch (e) {
+                setModalState(() => error = e.toString());
+              }
+            }
+
+            Future<void> leave() async {
+              final confirmed = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Leave group?'),
+                  content: const Text(
+                    'You will leave this group and delete the chat on this device. '
+                    'Other members will still be in the group.',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Leave'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirmed != true) return;
+              await MessengerService.instance.leaveGroup(key);
+              if (!context.mounted) return;
+              Navigator.pop(dialogContext);
+              if (!mounted) return;
+              this.context.go('/chats');
+            }
+
+            final current = info!;
+            final isAdmin = _myAddress != null && current.isAdmin(_myAddress!);
+
+            return Dialog(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'Group info',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 12),
+                        if (isAdmin) ...[
+                          TextField(
+                            controller: nameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Group name',
+                              hintText: 'Optional display name',
+                            ),
+                          ),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: saveName,
+                              child: const Text('Save name'),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ] else if (current.name != null &&
+                            current.name!.trim().isNotEmpty) ...[
+                          Text(
+                            current.name!,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        Text(
+                          'Members (${current.members.length})',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 4),
+                        ...current.members.map((address) {
+                          final isMe = address == _myAddress;
+                          final isGroupAdminMember =
+                              address == current.adminAddress;
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(_labelFor(address)),
+                            subtitle: Text(_short(address)),
+                            trailing: isGroupAdminMember
+                                ? const Chip(
+                                    label: Text('Admin'),
+                                    visualDensity: VisualDensity.compact,
+                                  )
+                                : (isAdmin && !isMe)
+                                    ? IconButton(
+                                        tooltip: 'Remove member',
+                                        icon: const Icon(Icons.remove_circle_outline),
+                                        onPressed: () => removeMember(address),
+                                      )
+                                    : null,
+                          );
+                        }),
+                        if (isAdmin) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: addMemberController,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Add member by public address',
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Add',
+                                onPressed: addMember,
+                                icon: const Icon(Icons.person_add_alt_1),
+                              ),
+                            ],
+                          ),
+                        ],
+                        if (error != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            error!,
+                            style: TextStyle(
+                                color: Theme.of(context).colorScheme.error),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        OutlinedButton.icon(
+                          onPressed: leave,
+                          icon: const Icon(Icons.logout),
+                          label: const Text('Leave group'),
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: () => Navigator.pop(dialogContext),
+                            child: const Text('Close'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    await _load();
+  }
+
   Widget _buildBubble(BuildContext context, ChatMessage message) {
     final theme = Theme.of(context);
+
+    if (message.isSystem) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Text(
+            message.text,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ),
+      );
+    }
+
     final isMe = message.isMe;
     final color = isMe
         ? theme.colorScheme.primaryContainer
@@ -284,11 +538,13 @@ class _ChatScreenState extends State<ChatScreen> {
       statusLabel = '';
       online = false;
     } else if (_isGroup) {
-      title = _groupOthers.isEmpty
-          ? 'Group chat'
-          : _groupOthers.map(_labelFor).join(', ');
-      final onlineCount = _groupOthers.where(_onlinePeers.contains).length;
-      statusLabel = '${_groupOthers.length + 1} members · $onlineCount online';
+      title = _groupInfo?.displayTitle(_myAddress, _labelFor) ?? 'Group chat';
+      final others = (_groupInfo?.members ?? const <String>[])
+          .where((a) => a != _myAddress)
+          .toList();
+      final onlineCount = others.where(_onlinePeers.contains).length;
+      statusLabel =
+          '${_groupInfo?.members.length ?? 0} members · $onlineCount online';
       online = onlineCount > 0;
     } else {
       title = (_nickname != null && _nickname!.trim().isNotEmpty)
@@ -320,15 +576,24 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(width: 4),
-            Text(
-              statusLabel,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            Flexible(
+              child: Text(
+                statusLabel,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
               ),
             ),
           ],
         ),
         actions: [
+          if (_isGroup)
+            IconButton(
+              tooltip: 'Group info',
+              onPressed: _showGroupInfoModal,
+              icon: const Icon(Icons.group_outlined),
+            ),
           if (key != null && !_isGroup && !_isContact)
             IconButton(
               tooltip: 'Add as contact',
@@ -336,8 +601,8 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.person_add_alt_1),
             ),
           IconButton(
-            tooltip: 'Delete chat',
-            onPressed: key == null ? null : _deleteChat,
+            tooltip: _isGroup ? 'Hide chat' : 'Delete chat',
+            onPressed: key == null ? null : _hideOrDeleteChat,
             icon: const Icon(Icons.delete_outline),
           ),
         ],

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:uuid/uuid.dart';
 
+import '../models/group_info.dart';
 import '../models/incoming_message.dart';
 import '../models/message.dart';
 import '../transport/ble_transport.dart';
@@ -14,12 +15,6 @@ import 'settings_service.dart';
 import 'transport_settings.dart';
 
 /// Coordinates the active transport (Bluetooth or LAN) and local storage.
-///
-/// - Outgoing messages are stored immediately; if the peer is offline they
-///   stay "pending" and are retried automatically when the peer appears.
-///   Group messages track pending state per member.
-/// - Incoming messages are persisted and surfaced to the UI via [onChanged],
-///   subject to the "allow messages from anyone" setting.
 class MessengerService {
   MessengerService._();
   static final MessengerService instance = MessengerService._();
@@ -29,7 +24,6 @@ class MessengerService {
   MeshTransport? _transport;
   TransportMode _mode = TransportMode.bluetooth;
 
-  /// Human-readable reason the transport failed to start, if it did.
   String? transportError;
 
   final _changed = StreamController<String>.broadcast();
@@ -39,28 +33,19 @@ class MessengerService {
   StreamSubscription<dynamic>? _messageSub;
   StreamSubscription<dynamic>? _peersSub;
 
-  /// Emits a chat key whenever that conversation changes.
   Stream<String> get onChanged => _changed.stream;
-
   Stream<Set<String>> get onPeersChanged => _peers.stream;
-
-  /// Emits when the transport mode changes or the transport (re)starts.
   Stream<TransportMode> get onTransportChanged => _transportChanged.stream;
 
   Set<String> get onlinePeers => _transport?.onlinePeers ?? const <String>{};
-
   bool get isTransportRunning => _transport?.isRunning ?? false;
-
   TransportMode get mode => _mode;
 
-  /// Starts the transport in the saved mode (Bluetooth by default).
-  /// Call after the identity is unlocked.
   Future<void> start() async {
     _mode = await TransportSettings.instance.getMode();
     await _startTransport();
   }
 
-  /// Switches transport (persisted), stopping the old one first.
   Future<void> setMode(TransportMode mode) async {
     if (mode == _mode && isTransportRunning) return;
     _mode = mode;
@@ -84,8 +69,6 @@ class MessengerService {
     try {
       await transport.start();
     } catch (e) {
-      // Transport unavailable (Bluetooth off, web, ...); the app still
-      // works and messages queue as pending.
       transportError = e is StateError ? e.message : e.toString();
       _transportChanged.add(_mode);
       _peers.add(const <String>{});
@@ -93,7 +76,6 @@ class MessengerService {
     }
 
     _messageSub = transport.onMessage.listen(_handleIncoming);
-
     _peersSub = transport.onPeersChanged.listen((peers) {
       _peers.add(peers);
       _flushPendingFor(peers);
@@ -118,9 +100,6 @@ class MessengerService {
   // ---------------------------------------------------------------------
 
   Future<void> _handleIncoming(IncomingMessage incoming) async {
-    // Message policy: with "contacts only", messages from unknown
-    // addresses are discarded (history is kept; delivery resumes when the
-    // sender is re-added as a contact or the setting is relaxed).
     final allowAnyone =
         await SettingsService.instance.getAllowMessagesFromAnyone();
     if (!allowAnyone) {
@@ -129,16 +108,29 @@ class MessengerService {
       if (contact == null) return;
     }
 
+    if (incoming.isGroupEvent) {
+      await _handleGroupEvent(incoming);
+      return;
+    }
+
     final String chatKey;
     if (incoming.groupId != null) {
       chatKey = ChatStorage.groupChatKey(incoming.groupId!);
-      await ChatStorage.instance.upsertGroupMembers(
-        incoming.groupId!,
-        <String>{
-          ...?incoming.groupMembers,
-          incoming.fromAddress,
-        }.toList(),
-      );
+      final me = await IdentityService.instance.getPublicAddressBase64();
+      final existing =
+          await ChatStorage.instance.getGroupInfo(incoming.groupId!);
+      if (me != null &&
+          incoming.groupMembers != null &&
+          !incoming.groupMembers!.contains(me)) {
+        return;
+      }
+      await ChatStorage.instance.saveGroupInfo(GroupInfo(
+        id: incoming.groupId!,
+        adminAddress:
+            incoming.groupAdmin ?? existing?.adminAddress ?? incoming.fromAddress,
+        name: incoming.groupName ?? existing?.name,
+        members: incoming.groupMembers ?? existing?.members ?? <String>[],
+      ));
     } else {
       chatKey = incoming.fromAddress;
     }
@@ -158,11 +150,79 @@ class MessengerService {
     _changed.add(chatKey);
   }
 
+  Future<void> _handleGroupEvent(IncomingMessage incoming) async {
+    final groupId = incoming.groupId;
+    final members = incoming.groupMembers;
+    if (groupId == null || members == null) return;
+
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+
+    final event = GroupEvent(
+      groupId: groupId,
+      actorAddress: incoming.fromAddress,
+      adminAddress: incoming.groupAdmin ?? incoming.fromAddress,
+      members: members,
+      name: incoming.groupName,
+      action: incoming.groupEvent!,
+    );
+
+    final stillMember =
+        await ChatStorage.instance.applyGroupEvent(event, me);
+    if (!stillMember) {
+      _changed.add(ChatStorage.groupChatKey(groupId));
+      return;
+    }
+
+    final chatKey = ChatStorage.groupChatKey(groupId);
+    final notice = _systemNoticeForEvent(event, me);
+    if (notice != null &&
+        !await _hasMessage(chatKey, incoming.id)) {
+      await ChatStorage.instance.appendMessage(
+        chatKey,
+        ChatMessage(
+          id: incoming.id,
+          text: notice,
+          isMe: incoming.fromAddress == me,
+          timestamp: incoming.timestamp,
+          status: MessageStatus.sent,
+          isSystem: true,
+        ),
+      );
+    }
+    _changed.add(chatKey);
+  }
+
+  Future<bool> _hasMessage(String chatKey, String id) async {
+    final messages = await ChatStorage.instance.listMessages(chatKey);
+    return messages.any((m) => m.id == id);
+  }
+
+  String? _systemNoticeForEvent(GroupEvent event, String me) {
+    switch (event.action) {
+      case 'rename':
+        final name = event.name?.trim();
+        if (name == null || name.isEmpty) return null;
+        return event.actorAddress == me
+            ? 'You renamed the group to "$name"'
+            : 'Group renamed to "$name"';
+      case 'members':
+        return event.actorAddress == me
+            ? 'You updated the group members'
+            : 'Group members were updated';
+      case 'leave':
+        return event.actorAddress == me
+            ? 'You left the group'
+            : 'A member left the group';
+      default:
+        return null;
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Outgoing: 1:1
   // ---------------------------------------------------------------------
 
-  /// Stores and attempts to deliver [text] to [peerAddress].
   Future<ChatMessage> sendText(String peerAddress, String text) async {
     final message = ChatMessage(
       id: _uuid.v4(),
@@ -197,26 +257,37 @@ class MessengerService {
   // Outgoing: groups
   // ---------------------------------------------------------------------
 
-  /// Creates a group chat with [memberAddresses] (mine is added
-  /// automatically) and returns its chat key.
-  Future<String> createGroup(List<String> memberAddresses) async {
+  Future<String> createGroup(
+    List<String> memberAddresses, {
+    String? name,
+  }) async {
     final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) throw StateError('Identity is locked');
+
     final groupId = _uuid.v4();
-    final members = <String>{...memberAddresses, if (me != null) me}.toList();
-    await ChatStorage.instance.upsertGroupMembers(groupId, members);
+    final members = <String>{...memberAddresses, me}.toList();
+    final trimmedName = name?.trim();
+    await ChatStorage.instance.saveGroupInfo(GroupInfo(
+      id: groupId,
+      adminAddress: me,
+      name: (trimmedName != null && trimmedName.isNotEmpty) ? trimmedName : null,
+      members: members,
+    ));
     final chatKey = ChatStorage.groupChatKey(groupId);
     await ChatStorage.instance.ensureChatExists(chatKey);
     _changed.add(chatKey);
     return chatKey;
   }
 
-  /// Stores and attempts to deliver [text] to every member of the group.
   Future<void> sendGroupText(String chatKey, String text) async {
     final groupId = ChatStorage.groupIdOf(chatKey);
-    final me = await IdentityService.instance.getPublicAddressBase64();
-    final members = await ChatStorage.instance.getGroupMembers(groupId);
-    final recipients = members.where((a) => a != me).toList();
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (info == null) return;
 
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null || !info.contains(me)) return;
+
+    final recipients = info.members.where((a) => a != me).toList();
     final message = ChatMessage(
       id: _uuid.v4(),
       text: text,
@@ -237,7 +308,9 @@ class MessengerService {
             text: message.text,
             timestamp: message.timestamp,
             groupId: groupId,
-            groupMembers: members,
+            groupMembers: info.members,
+            groupAdmin: info.adminAddress,
+            groupName: info.name,
           ) ??
           false;
       if (delivered) {
@@ -245,6 +318,137 @@ class MessengerService {
             .markGroupMessageDelivered(chatKey, message.id, recipient);
         _changed.add(chatKey);
       }
+    }
+  }
+
+  Future<void> renameGroup(String chatKey, String name) async {
+    final groupId = ChatStorage.groupIdOf(chatKey);
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (me == null || info == null || !info.isAdmin(me)) {
+      throw StateError('Only the group admin can rename the group');
+    }
+
+    final trimmed = name.trim();
+    final updated = info.copyWith(
+      name: trimmed.isEmpty ? null : trimmed,
+      clearName: trimmed.isEmpty,
+    );
+    await ChatStorage.instance.saveGroupInfo(updated);
+    await _broadcastGroupEvent(
+      info: updated,
+      action: 'rename',
+      systemText: trimmed.isEmpty
+          ? 'You cleared the group name'
+          : 'You renamed the group to "$trimmed"',
+    );
+    _changed.add(chatKey);
+  }
+
+  Future<void> addGroupMembers(String chatKey, List<String> addresses) async {
+    final groupId = ChatStorage.groupIdOf(chatKey);
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (me == null || info == null || !info.isAdmin(me)) {
+      throw StateError('Only the group admin can add members');
+    }
+
+    final merged = <String>{...info.members, ...addresses}.toList();
+    final updated = info.copyWith(members: merged);
+    await ChatStorage.instance.saveGroupInfo(updated);
+    await _broadcastGroupEvent(
+      info: updated,
+      action: 'members',
+      systemText: 'You added ${addresses.length} member(s)',
+    );
+    _changed.add(chatKey);
+  }
+
+  Future<void> removeGroupMember(String chatKey, String memberAddress) async {
+    final groupId = ChatStorage.groupIdOf(chatKey);
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (me == null || info == null || !info.isAdmin(me)) {
+      throw StateError('Only the group admin can remove members');
+    }
+    if (memberAddress == me) {
+      throw StateError('Use leave group to remove yourself');
+    }
+
+    final updatedMembers =
+        info.members.where((a) => a != memberAddress).toList();
+    final updated = info.copyWith(members: updatedMembers);
+    await ChatStorage.instance.saveGroupInfo(updated);
+    await _broadcastGroupEvent(
+      info: updated,
+      action: 'members',
+      systemText: 'You removed a member from the group',
+      alsoNotify: [memberAddress],
+    );
+    _changed.add(chatKey);
+  }
+
+  Future<void> leaveGroup(String chatKey) async {
+    final groupId = ChatStorage.groupIdOf(chatKey);
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (me == null || info == null) return;
+
+    final remaining = info.members.where((a) => a != me).toList();
+    if (remaining.isNotEmpty) {
+      final updated = info.copyWith(members: remaining);
+      await _broadcastGroupEvent(
+        info: updated,
+        action: 'leave',
+        systemText: 'You left the group',
+      );
+    }
+
+    await ChatStorage.instance.leaveGroup(groupId, me);
+    _changed.add(chatKey);
+  }
+
+  Future<void> _broadcastGroupEvent({
+    required GroupInfo info,
+    required String action,
+    required String systemText,
+    List<String> alsoNotify = const <String>[],
+  }) async {
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+
+    final chatKey = ChatStorage.groupChatKey(info.id);
+    final eventId = _uuid.v4();
+    final timestamp = DateTime.now();
+
+    await ChatStorage.instance.appendMessage(
+      chatKey,
+      ChatMessage(
+        id: eventId,
+        text: systemText,
+        isMe: true,
+        timestamp: timestamp,
+        status: MessageStatus.pending,
+        isSystem: true,
+      ),
+    );
+
+    final recipients = <String>{
+      ...info.members.where((a) => a != me),
+      ...alsoNotify.where((a) => a != me),
+    };
+    for (final recipient in recipients) {
+      await _transport?.sendMessage(
+        peerAddress: recipient,
+        messageId: eventId,
+        text: '',
+        timestamp: timestamp,
+        groupId: info.id,
+        groupMembers: info.members,
+        groupAdmin: info.adminAddress,
+        groupName: info.name,
+        groupEvent: action,
+      );
     }
   }
 
@@ -288,7 +492,9 @@ class MessengerService {
     final transport = _transport;
     if (transport == null) return;
     final groupId = ChatStorage.groupIdOf(chatKey);
-    final members = await ChatStorage.instance.getGroupMembers(groupId);
+    final info = await ChatStorage.instance.getGroupInfo(groupId);
+    if (info == null) return;
+
     final messages = await ChatStorage.instance.listMessages(chatKey);
     for (final message in messages) {
       if (!message.isMe || message.pendingTo.isEmpty) continue;
@@ -300,7 +506,9 @@ class MessengerService {
           text: message.text,
           timestamp: message.timestamp,
           groupId: groupId,
-          groupMembers: members,
+          groupMembers: info.members,
+          groupAdmin: info.adminAddress,
+          groupName: info.name,
         );
         if (delivered) {
           await ChatStorage.instance

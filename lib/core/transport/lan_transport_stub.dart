@@ -37,6 +37,9 @@ class _StubLanTransport implements MeshTransport {
     required DateTime timestamp,
     String? groupId,
     List<String>? groupMembers,
+    String? groupAdmin,
+    String? groupName,
+    String? groupEvent,
   }) async {
     return false;
   }

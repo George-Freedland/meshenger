@@ -44,8 +44,8 @@ class EnvelopeCodec {
 
   /// Builds the encrypted + signed message envelope.
   ///
-  /// [groupId] and [groupMembers] are included inside the encrypted body
-  /// for group messages, so recipients can reconstruct the group locally.
+  /// [groupId], [groupMembers], [groupAdmin], and [groupName] are included
+  /// inside the encrypted body for group messages and group metadata events.
   static Future<Map<String, Object?>> encryptEnvelope({
     required String from,
     required String to,
@@ -55,6 +55,9 @@ class EnvelopeCodec {
     required DateTime timestamp,
     String? groupId,
     List<String>? groupMembers,
+    String? groupAdmin,
+    String? groupName,
+    String? groupEvent,
   }) async {
     final sharedKey = await sharedKeyWith(toX25519Base64);
 
@@ -64,6 +67,9 @@ class EnvelopeCodec {
       'ts': timestamp.millisecondsSinceEpoch,
       if (groupId != null) 'gid': groupId,
       if (groupMembers != null) 'members': groupMembers,
+      if (groupAdmin != null) 'admin': groupAdmin,
+      if (groupName != null) 'gname': groupName,
+      if (groupEvent != null) 'gevt': groupEvent,
     }));
 
     final algorithm = AesGcm.with256bits();
@@ -134,13 +140,16 @@ class EnvelopeCodec {
       return IncomingMessage(
         fromAddress: from,
         id: body['id'] as String,
-        text: body['text'] as String,
+        text: body['text'] as String? ?? '',
         timestamp: DateTime.fromMillisecondsSinceEpoch(
           (body['ts'] as num).toInt(),
         ),
         groupId: body['gid'] as String?,
         groupMembers:
             (body['members'] as List?)?.whereType<String>().toList(),
+        groupAdmin: body['admin'] as String?,
+        groupName: body['gname'] as String?,
+        groupEvent: body['gevt'] as String?,
       );
     } catch (_) {
       return null;

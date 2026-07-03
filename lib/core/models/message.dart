@@ -19,6 +19,9 @@ class ChatMessage {
   /// For outgoing group messages: members that have not received it yet.
   final List<String> pendingTo;
 
+  /// Local system notice (group renamed, member added, etc.).
+  final bool isSystem;
+
   const ChatMessage({
     required this.id,
     required this.text,
@@ -27,6 +30,7 @@ class ChatMessage {
     required this.status,
     this.senderAddress,
     this.pendingTo = const <String>[],
+    this.isSystem = false,
   });
 
   ChatMessage copyWith({MessageStatus? status, List<String>? pendingTo}) {
@@ -38,6 +42,7 @@ class ChatMessage {
       status: status ?? this.status,
       senderAddress: senderAddress,
       pendingTo: pendingTo ?? this.pendingTo,
+      isSystem: isSystem,
     );
   }
 
@@ -49,6 +54,7 @@ class ChatMessage {
         'status': status.name,
         if (senderAddress != null) 'sender': senderAddress,
         if (pendingTo.isNotEmpty) 'pendingTo': pendingTo,
+        if (isSystem) 'system': true,
       };
 
   static ChatMessage fromJson(Map<String, Object?> json) {
@@ -65,6 +71,7 @@ class ChatMessage {
       senderAddress: json['sender'] as String?,
       pendingTo: (json['pendingTo'] as List?)?.whereType<String>().toList() ??
           <String>[],
+      isSystem: json['system'] == true,
     );
   }
 }

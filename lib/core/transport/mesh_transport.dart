@@ -35,5 +35,8 @@ abstract class MeshTransport {
     required DateTime timestamp,
     String? groupId,
     List<String>? groupMembers,
+    String? groupAdmin,
+    String? groupName,
+    String? groupEvent,
   });
 }
