@@ -5,12 +5,14 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'dart:async';
+import 'dart:convert';
 
 import '../../core/models/contact.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/settings_service.dart';
 import '../../core/services/transport_settings.dart';
 
 class ChatListScreen extends StatefulWidget {
@@ -23,7 +25,11 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen> {
   List<String> _chats = const <String>[];
   List<Contact> _contacts = const <Contact>[];
+  Map<String, List<String>> _groupMembers = const <String, List<String>>{};
   Set<String> _onlinePeers = const <String>{};
+  String? _myAddress;
+
+  bool _isMyAddress(String address) => address == _myAddress;
   bool _loading = true;
   TransportMode _transportMode = MessengerService.instance.mode;
   bool _switchingTransport = false;
@@ -82,12 +88,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
   Future<void> _refresh() async {
     setState(() => _loading = true);
+    _myAddress ??= await IdentityService.instance.getPublicAddressBase64();
     final chats = await ChatStorage.instance.listChats();
     final contacts = await ContactsService.instance.listContacts();
+
+    final groupMembers = <String, List<String>>{};
+    for (final chatKey in chats) {
+      if (ChatStorage.isGroupChat(chatKey)) {
+        groupMembers[chatKey] = await ChatStorage.instance
+            .getGroupMembers(ChatStorage.groupIdOf(chatKey));
+      }
+    }
+
     if (!mounted) return;
     setState(() {
       _chats = chats;
       _contacts = contacts;
+      _groupMembers = groupMembers;
       _loading = false;
     });
   }
@@ -396,102 +413,378 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 
   Future<void> _showContactsModal() async {
+    var contacts = _contacts;
     await showDialog<void>(
       context: context,
       builder: (context) {
-        return Dialog(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 640),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            Future<void> reload() async {
+              contacts = await ContactsService.instance.listContacts();
+              setModalState(() {});
+            }
+
+            return Dialog(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 640),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Expanded(
-                        child: Text(
-                          'Contacts',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Contacts',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: 'Add contact',
+                            icon: const Icon(Icons.person_add_alt_1),
+                            onPressed: () async {
+                              Navigator.pop(context);
+                              await _showAddContactModal();
+                            },
+                          ),
+                        ],
                       ),
-                      IconButton(
-                        tooltip: 'Add contact',
-                        icon: const Icon(Icons.person_add_alt_1),
-                        onPressed: () async {
-                          Navigator.pop(context);
-                          await _showAddContactModal();
-                        },
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 420,
+                        child: contacts.isEmpty
+                            ? const Center(
+                                child: Text('No contacts yet. Add one using the + button.'),
+                              )
+                            : ListView.separated(
+                                itemBuilder: (context, i) {
+                                  final c = contacts[i];
+                                  final title =
+                                      (c.nickname != null && c.nickname!.trim().isNotEmpty)
+                                          ? c.nickname!
+                                          : _short(c.address);
+                                  return ListTile(
+                                    title: Text(title),
+                                    subtitle: Text(_short(c.address)),
+                                    trailing: Wrap(
+                                      spacing: 8,
+                                      children: [
+                                        IconButton(
+                                          tooltip: 'Message',
+                                          icon: const Icon(Icons.chat_bubble_outline),
+                                          onPressed: () async {
+                                            await ChatStorage.instance.ensureChatExists(c.address);
+                                            if (context.mounted) {
+                                              Navigator.pop(context);
+                                              context.go(
+                                                '/chat?peer=${Uri.encodeComponent(c.address)}',
+                                              );
+                                            }
+                                          },
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Edit',
+                                          icon: const Icon(Icons.edit_outlined),
+                                          onPressed: () async {
+                                            await _editNickname(c);
+                                            await reload();
+                                          },
+                                        ),
+                                        IconButton(
+                                          tooltip: 'Delete (keeps message history)',
+                                          icon: const Icon(Icons.delete_outline),
+                                          onPressed: () async {
+                                            await ContactsService.instance.deleteContact(c.address);
+                                            await reload();
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                                separatorBuilder: (_, __) => const Divider(height: 1),
+                                itemCount: contacts.length,
+                              ),
+                      ),
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Close'),
+                        ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 420,
-                    child: _contacts.isEmpty
-                        ? const Center(
-                            child: Text('No contacts yet. Add one using the + button.'),
-                          )
-                        : ListView.separated(
-                            itemBuilder: (context, i) {
-                              final c = _contacts[i];
-                              final title =
-                                  (c.nickname != null && c.nickname!.trim().isNotEmpty)
-                                      ? c.nickname!
-                                      : _short(c.address);
-                              return ListTile(
-                                title: Text(title),
-                                subtitle: Text(_short(c.address)),
-                                trailing: Wrap(
-                                  spacing: 8,
-                                  children: [
-                                    IconButton(
-                                      tooltip: 'Message',
-                                      icon: const Icon(Icons.chat_bubble_outline),
-                                      onPressed: () async {
-                                        await ChatStorage.instance.ensureChatExists(c.address);
-                                        if (context.mounted) {
-                                          Navigator.pop(context);
-                                          context.go(
-                                            '/chat?peer=${Uri.encodeComponent(c.address)}',
-                                          );
-                                        }
-                                      },
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Edit',
-                                      icon: const Icon(Icons.edit_outlined),
-                                      onPressed: () => _editNickname(c),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Delete',
-                                      icon: const Icon(Icons.delete_outline),
-                                      onPressed: () async {
-                                        await ContactsService.instance.deleteContact(c.address);
-                                        if (mounted) await _refresh();
-                                      },
-                                    ),
-                                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    await _refresh();
+  }
+
+  Future<void> _showSettingsModal() async {
+    var allowAnyone =
+        await SettingsService.instance.getAllowMessagesFromAnyone();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              title: const Text('Settings'),
+              content: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 480),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Allow messages from anyone'),
+                      subtitle: Text(
+                        allowAnyone
+                            ? 'Anyone with your public address can message you.'
+                            : 'Only your contacts can message you. Messages '
+                                'from unknown addresses are discarded.',
+                      ),
+                      value: allowAnyone,
+                      onChanged: (value) async {
+                        setModalState(() => allowAnyone = value);
+                        await SettingsService.instance
+                            .setAllowMessagesFromAnyone(value);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  bool _isValidAddress(String value) {
+    try {
+      return base64Decode(value).length == 32;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String _contactLabel(String address) {
+    final nick = _nicknameFor(address);
+    return (nick != null && nick.trim().isNotEmpty) ? nick : _short(address);
+  }
+
+  Future<void> _showComposeModal() async {
+    final recipients = <String>[];
+    final recipientController = TextEditingController();
+    final messageController = TextEditingController();
+    String? error;
+    var sending = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final query = recipientController.text.trim().toLowerCase();
+            final matches = query.isEmpty
+                ? const <Contact>[]
+                : _contacts
+                    .where((c) =>
+                        !recipients.contains(c.address) &&
+                        ((c.nickname?.toLowerCase().contains(query) ??
+                                false) ||
+                            c.address.toLowerCase().contains(query)))
+                    .take(5)
+                    .toList();
+
+            void addRecipient(String address) {
+              final normalized = _normalizeScannedAddress(address);
+              if (normalized.isEmpty) return;
+              if (!_isValidAddress(normalized)) {
+                setModalState(() =>
+                    error = 'Not a valid public address (base64 Ed25519 key)');
+                return;
+              }
+              if (!recipients.contains(normalized)) {
+                recipients.add(normalized);
+              }
+              recipientController.clear();
+              setModalState(() => error = null);
+            }
+
+            Future<void> send() async {
+              // Whatever is still typed counts as a recipient attempt.
+              final typed = recipientController.text.trim();
+              if (typed.isNotEmpty) {
+                final normalized = _normalizeScannedAddress(typed);
+                if (!_isValidAddress(normalized)) {
+                  setModalState(() => error =
+                      'Not a valid public address (base64 Ed25519 key)');
+                  return;
+                }
+                if (!recipients.contains(normalized)) {
+                  recipients.add(normalized);
+                }
+                recipientController.clear();
+              }
+
+              final text = messageController.text.trim();
+              if (recipients.isEmpty) {
+                setModalState(() => error = 'Add at least one recipient');
+                return;
+              }
+
+              setModalState(() {
+                sending = true;
+                error = null;
+              });
+
+              final String chatKey;
+              if (recipients.length == 1) {
+                chatKey = recipients.single;
+                await ChatStorage.instance.ensureChatExists(chatKey);
+                if (text.isNotEmpty) {
+                  await MessengerService.instance.sendText(chatKey, text);
+                }
+              } else {
+                chatKey = await MessengerService.instance.createGroup(recipients);
+                if (text.isNotEmpty) {
+                  await MessengerService.instance.sendGroupText(chatKey, text);
+                }
+              }
+
+              if (dialogContext.mounted) {
+                Navigator.pop(dialogContext);
+              }
+              if (mounted) {
+                this.context.go('/chat?peer=${Uri.encodeComponent(chatKey)}');
+              }
+            }
+
+            return Dialog(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          'New message',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Multiple recipients create a group chat.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 12),
+                        if (recipients.isNotEmpty) ...[
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              for (final address in recipients)
+                                InputChip(
+                                  label: Text(_contactLabel(address)),
+                                  onDeleted: () {
+                                    setModalState(
+                                        () => recipients.remove(address));
+                                  },
                                 ),
-                              );
-                            },
-                            separatorBuilder: (_, __) => const Divider(height: 1),
-                            itemCount: _contacts.length,
+                            ],
                           ),
-                  ),
-                  const SizedBox(height: 16),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
+                          const SizedBox(height: 8),
+                        ],
+                        TextField(
+                          controller: recipientController,
+                          decoration: const InputDecoration(
+                            labelText: 'To',
+                            hintText: 'Nickname or public address…',
+                          ),
+                          onChanged: (_) => setModalState(() {}),
+                          onSubmitted: addRecipient,
+                        ),
+                        if (matches.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Card(
+                            margin: EdgeInsets.zero,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                for (final c in matches)
+                                  ListTile(
+                                    dense: true,
+                                    leading:
+                                        const Icon(Icons.person_outline, size: 20),
+                                    title: Text(c.nickname ?? _short(c.address)),
+                                    subtitle: Text(_short(c.address)),
+                                    onTap: () => addRecipient(c.address),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: messageController,
+                          decoration: const InputDecoration(
+                            labelText: 'Message',
+                            hintText: 'Type a message…',
+                          ),
+                          minLines: 1,
+                          maxLines: 5,
+                        ),
+                        if (error != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            error!,
+                            style: TextStyle(
+                                color: Theme.of(context).colorScheme.error),
+                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('Cancel'),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton.icon(
+                              onPressed: sending ? null : send,
+                              icon: const Icon(Icons.send, size: 18),
+                              label: const Text('Send'),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -501,6 +794,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'New message',
+        onPressed: _showComposeModal,
+        child: const Icon(Icons.edit_outlined),
+      ),
       appBar: AppBar(
         title: const Text('Chats'),
         actions: [
@@ -539,6 +837,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
             icon: const Icon(Icons.people_outline),
             onPressed: _showContactsModal,
           ),
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _showSettingsModal,
+          ),
         ],
       ),
       body: _loading
@@ -551,25 +854,56 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   itemCount: _chats.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) {
-                    final peer = _chats[i];
-                    final nick = _nicknameFor(peer);
-                    final title =
-                        (nick != null && nick.trim().isNotEmpty) ? nick : _short(peer);
-                    final online = _onlinePeers.contains(peer);
-                    return ListTile(
-                      leading: Icon(
+                    final chatKey = _chats[i];
+                    final isGroup = ChatStorage.isGroupChat(chatKey);
+
+                    final String title;
+                    final String subtitle;
+                    final bool online;
+                    Widget leading;
+
+                    if (isGroup) {
+                      final members = _groupMembers[chatKey] ?? const <String>[];
+                      final others = members
+                          .where((a) => !_isMyAddress(a))
+                          .toList();
+                      title = others.isEmpty
+                          ? 'Group chat'
+                          : others.map(_contactLabel).join(', ');
+                      final onlineCount =
+                          others.where(_onlinePeers.contains).length;
+                      subtitle =
+                          '${others.length + 1} members · $onlineCount online';
+                      online = onlineCount > 0;
+                      leading = Icon(
+                        Icons.group,
+                        color: online ? Colors.greenAccent : Colors.grey,
+                      );
+                    } else {
+                      final nick = _nicknameFor(chatKey);
+                      title = (nick != null && nick.trim().isNotEmpty)
+                          ? nick
+                          : _short(chatKey);
+                      subtitle = _short(chatKey);
+                      online = _onlinePeers.contains(chatKey);
+                      leading = Icon(
                         Icons.circle,
                         size: 12,
                         color: online ? Colors.greenAccent : Colors.grey,
-                      ),
-                      title: Text(title),
-                      subtitle: Text(_short(peer)),
-                      onTap: () => context.go('/chat?peer=${Uri.encodeComponent(peer)}'),
+                      );
+                    }
+
+                    return ListTile(
+                      leading: leading,
+                      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(subtitle),
+                      onTap: () =>
+                          context.go('/chat?peer=${Uri.encodeComponent(chatKey)}'),
                       trailing: IconButton(
                         tooltip: 'Delete chat',
                         icon: const Icon(Icons.delete_outline),
                         onPressed: () async {
-                          await ChatStorage.instance.deleteChat(peer);
+                          await ChatStorage.instance.deleteChat(chatKey);
                           await _refresh();
                         },
                       ),

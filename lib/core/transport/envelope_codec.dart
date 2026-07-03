@@ -43,6 +43,9 @@ class EnvelopeCodec {
   }
 
   /// Builds the encrypted + signed message envelope.
+  ///
+  /// [groupId] and [groupMembers] are included inside the encrypted body
+  /// for group messages, so recipients can reconstruct the group locally.
   static Future<Map<String, Object?>> encryptEnvelope({
     required String from,
     required String to,
@@ -50,6 +53,8 @@ class EnvelopeCodec {
     required String messageId,
     required String text,
     required DateTime timestamp,
+    String? groupId,
+    List<String>? groupMembers,
   }) async {
     final sharedKey = await sharedKeyWith(toX25519Base64);
 
@@ -57,6 +62,8 @@ class EnvelopeCodec {
       'id': messageId,
       'text': text,
       'ts': timestamp.millisecondsSinceEpoch,
+      if (groupId != null) 'gid': groupId,
+      if (groupMembers != null) 'members': groupMembers,
     }));
 
     final algorithm = AesGcm.with256bits();
@@ -131,6 +138,9 @@ class EnvelopeCodec {
         timestamp: DateTime.fromMillisecondsSinceEpoch(
           (body['ts'] as num).toInt(),
         ),
+        groupId: body['gid'] as String?,
+        groupMembers:
+            (body['members'] as List?)?.whereType<String>().toList(),
       );
     } catch (_) {
       return null;

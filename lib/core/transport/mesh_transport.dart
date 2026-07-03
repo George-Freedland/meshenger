@@ -25,11 +25,15 @@ abstract class MeshTransport {
 
   /// Attempts direct delivery to [peerAddress].
   ///
+  /// [groupId]/[groupMembers] tag the message as belonging to a group chat.
+  ///
   /// Returns true only if the peer acknowledged receipt.
   Future<bool> sendMessage({
     required String peerAddress,
     required String messageId,
     required String text,
     required DateTime timestamp,
+    String? groupId,
+    List<String>? groupMembers,
   });
 }

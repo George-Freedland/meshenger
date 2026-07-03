@@ -308,6 +308,8 @@ class _IoBleTransport implements MeshTransport {
     required String messageId,
     required String text,
     required DateTime timestamp,
+    String? groupId,
+    List<String>? groupMembers,
   }) async {
     final peer = _peersByAddress[peerAddress];
     final from = _myAddress;
@@ -320,6 +322,8 @@ class _IoBleTransport implements MeshTransport {
       messageId: messageId,
       text: text,
       timestamp: timestamp,
+      groupId: groupId,
+      groupMembers: groupMembers,
     );
     final payload = utf8.encode(jsonEncode(envelope));
 

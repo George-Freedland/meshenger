@@ -3,12 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/models/contact.dart';
 import '../../core/models/message.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
+import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 
 class ChatScreen extends StatefulWidget {
+  /// A peer address (1:1) or a `group:{id}` chat key.
   final String? peerAddress;
 
   const ChatScreen({
@@ -25,28 +28,39 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
 
   String? _nickname;
+  bool _isContact = false;
   List<ChatMessage> _messages = const <ChatMessage>[];
-  bool _peerOnline = false;
+  List<Contact> _contacts = const <Contact>[];
+  List<String> _groupOthers = const <String>[];
+  Set<String> _onlinePeers = const <String>{};
   bool _sending = false;
+  String? _myAddress;
 
   StreamSubscription<String>? _changesSub;
   StreamSubscription<Set<String>>? _peersSub;
+
+  String? get _chatKey => widget.peerAddress;
+
+  bool get _isGroup {
+    final key = _chatKey;
+    return key != null && ChatStorage.isGroupChat(key);
+  }
 
   @override
   void initState() {
     super.initState();
     _load();
 
-    final peer = widget.peerAddress;
-    if (peer != null && peer.isNotEmpty) {
-      _changesSub = MessengerService.instance.onChanged.listen((address) {
-        if (address == peer) _loadMessages();
+    final key = _chatKey;
+    if (key != null && key.isNotEmpty) {
+      _changesSub = MessengerService.instance.onChanged.listen((chatKey) {
+        if (chatKey == key) _loadMessages();
       });
       _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
         if (!mounted) return;
-        setState(() => _peerOnline = peers.contains(peer));
+        setState(() => _onlinePeers = peers);
       });
-      _peerOnline = MessengerService.instance.onlinePeers.contains(peer);
+      _onlinePeers = MessengerService.instance.onlinePeers;
     }
   }
 
@@ -60,19 +74,37 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _load() async {
-    final peer = widget.peerAddress;
-    if (peer == null || peer.isEmpty) return;
-    await ChatStorage.instance.ensureChatExists(peer);
-    final contact = await ContactsService.instance.getContact(peer);
-    if (!mounted) return;
-    setState(() => _nickname = contact?.nickname);
+    final key = _chatKey;
+    if (key == null || key.isEmpty) return;
+    await ChatStorage.instance.ensureChatExists(key);
+
+    _myAddress = await IdentityService.instance.getPublicAddressBase64();
+    final contacts = await ContactsService.instance.listContacts();
+
+    if (_isGroup) {
+      final members = await ChatStorage.instance
+          .getGroupMembers(ChatStorage.groupIdOf(key));
+      if (!mounted) return;
+      setState(() {
+        _contacts = contacts;
+        _groupOthers = members.where((a) => a != _myAddress).toList();
+      });
+    } else {
+      final contact = await ContactsService.instance.getContact(key);
+      if (!mounted) return;
+      setState(() {
+        _contacts = contacts;
+        _nickname = contact?.nickname;
+        _isContact = contact != null;
+      });
+    }
     await _loadMessages();
   }
 
   Future<void> _loadMessages() async {
-    final peer = widget.peerAddress;
-    if (peer == null || peer.isEmpty) return;
-    final messages = await ChatStorage.instance.listMessages(peer);
+    final key = _chatKey;
+    if (key == null || key.isEmpty) return;
+    final messages = await ChatStorage.instance.listMessages(key);
     if (!mounted) return;
     setState(() => _messages = messages);
     _scrollToBottom();
@@ -87,14 +119,18 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send() async {
-    final peer = widget.peerAddress;
+    final key = _chatKey;
     final text = _inputController.text.trim();
-    if (peer == null || peer.isEmpty || text.isEmpty || _sending) return;
+    if (key == null || key.isEmpty || text.isEmpty || _sending) return;
 
     setState(() => _sending = true);
     _inputController.clear();
     try {
-      await MessengerService.instance.sendText(peer, text);
+      if (_isGroup) {
+        await MessengerService.instance.sendGroupText(key, text);
+      } else {
+        await MessengerService.instance.sendText(key, text);
+      }
       await _loadMessages();
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -106,13 +142,58 @@ class _ChatScreenState extends State<ChatScreen> {
     return '${address.substring(0, 8)}…${address.substring(address.length - 6)}';
   }
 
+  String _labelFor(String address) {
+    for (final c in _contacts) {
+      if (c.address == address &&
+          c.nickname != null &&
+          c.nickname!.trim().isNotEmpty) {
+        return c.nickname!;
+      }
+    }
+    return _short(address);
+  }
+
   Future<void> _deleteChat() async {
-    final peer = widget.peerAddress;
-    if (peer == null || peer.isEmpty) return;
-    await ChatStorage.instance.deleteChat(peer);
+    final key = _chatKey;
+    if (key == null || key.isEmpty) return;
+    await ChatStorage.instance.deleteChat(key);
     if (mounted) {
       context.go('/chats');
     }
+  }
+
+  Future<void> _addAsContact() async {
+    final key = _chatKey;
+    if (key == null || _isGroup) return;
+    final controller = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add contact'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Nickname (optional)'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final nick = controller.text.trim();
+              await ContactsService.instance.upsertContact(
+                Contact(address: key, nickname: nick.isEmpty ? null : nick),
+              );
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    await _load();
   }
 
   Widget _buildBubble(BuildContext context, ChatMessage message) {
@@ -126,6 +207,7 @@ class _ChatScreenState extends State<ChatScreen> {
         : theme.colorScheme.onSurface;
 
     final time = TimeOfDay.fromDateTime(message.timestamp).format(context);
+    final showSender = _isGroup && !isMe && message.senderAddress != null;
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -143,9 +225,20 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          crossAxisAlignment:
+              isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (showSender) ...[
+              Text(
+                _labelFor(message.senderAddress!),
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 2),
+            ],
             Text(
               message.text,
               style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
@@ -181,9 +274,29 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final peer = widget.peerAddress;
-    final title =
-        (_nickname != null && _nickname!.trim().isNotEmpty) ? _nickname! : null;
+    final key = _chatKey;
+
+    final String title;
+    final String statusLabel;
+    final bool online;
+    if (key == null) {
+      title = 'Chat';
+      statusLabel = '';
+      online = false;
+    } else if (_isGroup) {
+      title = _groupOthers.isEmpty
+          ? 'Group chat'
+          : _groupOthers.map(_labelFor).join(', ');
+      final onlineCount = _groupOthers.where(_onlinePeers.contains).length;
+      statusLabel = '${_groupOthers.length + 1} members · $onlineCount online';
+      online = onlineCount > 0;
+    } else {
+      title = (_nickname != null && _nickname!.trim().isNotEmpty)
+          ? _nickname!
+          : _short(key);
+      online = _onlinePeers.contains(key);
+      statusLabel = online ? 'online' : 'offline';
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -195,7 +308,7 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Row(
           children: [
             Flexible(
-              child: Text(title ?? (peer == null ? 'Chat' : _short(peer))),
+              child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
             ),
             const SizedBox(width: 8),
             Container(
@@ -203,12 +316,12 @@ class _ChatScreenState extends State<ChatScreen> {
               height: 10,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: _peerOnline ? Colors.greenAccent : Colors.grey,
+                color: online ? Colors.greenAccent : Colors.grey,
               ),
             ),
             const SizedBox(width: 4),
             Text(
-              _peerOnline ? 'online' : 'offline',
+              statusLabel,
               style: theme.textTheme.labelSmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
               ),
@@ -216,14 +329,20 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (key != null && !_isGroup && !_isContact)
+            IconButton(
+              tooltip: 'Add as contact',
+              onPressed: _addAsContact,
+              icon: const Icon(Icons.person_add_alt_1),
+            ),
           IconButton(
             tooltip: 'Delete chat',
-            onPressed: peer == null ? null : _deleteChat,
+            onPressed: key == null ? null : _deleteChat,
             icon: const Icon(Icons.delete_outline),
           ),
         ],
       ),
-      body: peer == null
+      body: key == null
           ? const Center(child: Text('No peer selected.'))
           : Column(
               children: [
@@ -239,9 +358,11 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                _peerOnline
-                                    ? 'This peer is reachable on your local network.'
-                                    : 'Messages you send now will be delivered when this peer comes online.',
+                                online
+                                    ? _isGroup
+                                        ? 'Some members are reachable right now.'
+                                        : 'This peer is reachable right now.'
+                                    : 'Messages you send now will be delivered when peers come online.',
                                 textAlign: TextAlign.center,
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: theme.colorScheme.onSurface

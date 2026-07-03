@@ -1,8 +1,8 @@
 enum MessageStatus {
-  /// Waiting for the peer to come online (stored in outbox).
+  /// Waiting for the peer(s) to come online (stored in outbox).
   pending,
 
-  /// Handed to the transport and delivered to at least one node.
+  /// Delivered to the peer (1:1) or to every group member.
   sent,
 }
 
@@ -13,21 +13,31 @@ class ChatMessage {
   final DateTime timestamp;
   final MessageStatus status;
 
+  /// For incoming group messages: the sender's address.
+  final String? senderAddress;
+
+  /// For outgoing group messages: members that have not received it yet.
+  final List<String> pendingTo;
+
   const ChatMessage({
     required this.id,
     required this.text,
     required this.isMe,
     required this.timestamp,
     required this.status,
+    this.senderAddress,
+    this.pendingTo = const <String>[],
   });
 
-  ChatMessage copyWith({MessageStatus? status}) {
+  ChatMessage copyWith({MessageStatus? status, List<String>? pendingTo}) {
     return ChatMessage(
       id: id,
       text: text,
       isMe: isMe,
       timestamp: timestamp,
       status: status ?? this.status,
+      senderAddress: senderAddress,
+      pendingTo: pendingTo ?? this.pendingTo,
     );
   }
 
@@ -37,6 +47,8 @@ class ChatMessage {
         'me': isMe,
         'ts': timestamp.millisecondsSinceEpoch,
         'status': status.name,
+        if (senderAddress != null) 'sender': senderAddress,
+        if (pendingTo.isNotEmpty) 'pendingTo': pendingTo,
       };
 
   static ChatMessage fromJson(Map<String, Object?> json) {
@@ -50,6 +62,9 @@ class ChatMessage {
         (s) => s.name == json['status'],
         orElse: () => MessageStatus.sent,
       ),
+      senderAddress: json['sender'] as String?,
+      pendingTo: (json['pendingTo'] as List?)?.whereType<String>().toList() ??
+          <String>[],
     );
   }
 }

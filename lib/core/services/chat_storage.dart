@@ -4,11 +4,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/message.dart';
 
+/// Chat keys are either a peer address (1:1) or `group:{id}` (group chat).
 class ChatStorage {
   ChatStorage._();
   static final ChatStorage instance = ChatStorage._();
 
-  static const _chatsKey = 'chats_v1'; // list of peer addresses
+  static const _chatsKey = 'chats_v1'; // list of chat keys
+  static const groupPrefix = 'group:';
+
+  static bool isGroupChat(String chatKey) => chatKey.startsWith(groupPrefix);
+
+  static String groupChatKey(String groupId) => '$groupPrefix$groupId';
+
+  static String groupIdOf(String chatKey) =>
+      chatKey.substring(groupPrefix.length);
 
   Future<List<String>> listChats() async {
     final prefs = await SharedPreferences.getInstance();
@@ -19,29 +28,58 @@ class ChatStorage {
     return decoded.whereType<String>().toList();
   }
 
-  Future<void> ensureChatExists(String peerAddress) async {
+  Future<void> ensureChatExists(String chatKey) async {
     final chats = await listChats();
-    if (!chats.contains(peerAddress)) {
-      chats.add(peerAddress);
+    if (!chats.contains(chatKey)) {
+      chats.add(chatKey);
       await _writeChats(chats);
     }
   }
 
-  Future<void> deleteChat(String peerAddress) async {
+  Future<void> deleteChat(String chatKey) async {
     final prefs = await SharedPreferences.getInstance();
     final chats = await listChats();
-    chats.removeWhere((a) => a == peerAddress);
+    chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
 
-    // Remove any per-chat stored data (future-proof).
-    await prefs.remove(_messagesKey(peerAddress));
+    await prefs.remove(_messagesKey(chatKey));
+    if (isGroupChat(chatKey)) {
+      await prefs.remove(_groupInfoKey(groupIdOf(chatKey)));
+    }
   }
 
-  String _messagesKey(String peerAddress) => 'chat_messages_v1:$peerAddress';
+  // ---------------------------------------------------------------------
+  // Group membership
+  // ---------------------------------------------------------------------
 
-  Future<List<ChatMessage>> listMessages(String peerAddress) async {
+  String _groupInfoKey(String groupId) => 'group_info_v1:$groupId';
+
+  /// Stores (or merges) the member list for a group.
+  Future<void> upsertGroupMembers(String groupId, List<String> members) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_messagesKey(peerAddress));
+    final existing = await getGroupMembers(groupId);
+    final merged = <String>{...existing, ...members}.toList();
+    await prefs.setString(_groupInfoKey(groupId), jsonEncode(merged));
+  }
+
+  Future<List<String>> getGroupMembers(String groupId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_groupInfoKey(groupId));
+    if (raw == null || raw.isEmpty) return <String>[];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return <String>[];
+    return decoded.whereType<String>().toList();
+  }
+
+  // ---------------------------------------------------------------------
+  // Messages
+  // ---------------------------------------------------------------------
+
+  String _messagesKey(String chatKey) => 'chat_messages_v1:$chatKey';
+
+  Future<List<ChatMessage>> listMessages(String chatKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_messagesKey(chatKey));
     if (raw == null || raw.isEmpty) return <ChatMessage>[];
     final decoded = jsonDecode(raw);
     if (decoded is! List) return <ChatMessage>[];
@@ -51,32 +89,51 @@ class ChatStorage {
         .toList();
   }
 
-  Future<void> appendMessage(String peerAddress, ChatMessage message) async {
-    final messages = await listMessages(peerAddress);
+  Future<void> appendMessage(String chatKey, ChatMessage message) async {
+    final messages = await listMessages(chatKey);
     if (messages.any((m) => m.id == message.id)) return;
     messages.add(message);
-    await _writeMessages(peerAddress, messages);
+    await _writeMessages(chatKey, messages);
   }
 
   Future<void> updateMessageStatus(
-    String peerAddress,
+    String chatKey,
     String messageId,
     MessageStatus status,
   ) async {
-    final messages = await listMessages(peerAddress);
+    final messages = await listMessages(chatKey);
     final idx = messages.indexWhere((m) => m.id == messageId);
     if (idx < 0) return;
     messages[idx] = messages[idx].copyWith(status: status);
-    await _writeMessages(peerAddress, messages);
+    await _writeMessages(chatKey, messages);
+  }
+
+  /// Records that [deliveredTo] received the group message; flips the
+  /// message to "sent" once no members remain pending.
+  Future<void> markGroupMessageDelivered(
+    String chatKey,
+    String messageId,
+    String deliveredTo,
+  ) async {
+    final messages = await listMessages(chatKey);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    final remaining =
+        messages[idx].pendingTo.where((a) => a != deliveredTo).toList();
+    messages[idx] = messages[idx].copyWith(
+      pendingTo: remaining,
+      status: remaining.isEmpty ? MessageStatus.sent : MessageStatus.pending,
+    );
+    await _writeMessages(chatKey, messages);
   }
 
   Future<void> _writeMessages(
-    String peerAddress,
+    String chatKey,
     List<ChatMessage> messages,
   ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-      _messagesKey(peerAddress),
+      _messagesKey(chatKey),
       jsonEncode(messages.map((m) => m.toJson()).toList()),
     );
   }
@@ -86,4 +143,3 @@ class ChatStorage {
     await prefs.setString(_chatsKey, jsonEncode(chats));
   }
 }
-
