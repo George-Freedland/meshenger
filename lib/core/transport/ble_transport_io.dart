@@ -207,26 +207,23 @@ class _IoBleTransport implements MeshTransport {
   bool _loggedDiscoveryMode = false;
 
   Future<void> _startDiscovery(CentralManager central) async {
-    try {
-      await central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    // Windows: the advertisement watcher's service-UUID filter silently
+    // matches nothing when the peer carries its 128-bit UUID in the scan
+    // response (macOS/iOS peripherals do). Scan broadly and filter by the
+    // advertised UUIDs in _handleDiscovered instead.
+    if (Platform.isWindows) {
+      await central.startDiscovery();
       if (!_loggedDiscoveryMode) {
         _loggedDiscoveryMode = true;
-        TransportLog.instance.log('BLE: scanning (service filter)');
+        TransportLog.instance
+            .log('BLE: scanning (broad, filtering in app)');
       }
-    } on Object catch (e) {
-      // Some Windows builds reject a strict service-UUID filter even though
-      // the peer is advertising via GattServiceProvider; fall back to a
-      // broad scan and resolve Meshenger peers in _resolvePeer.
-      if (Platform.isWindows) {
-        await central.startDiscovery();
-        if (!_loggedDiscoveryMode) {
-          _loggedDiscoveryMode = true;
-          TransportLog.instance
-              .log('BLE: scanning (broad, filter rejected: $e)');
-        }
-      } else {
-        rethrow;
-      }
+      return;
+    }
+    await central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    if (!_loggedDiscoveryMode) {
+      _loggedDiscoveryMode = true;
+      TransportLog.instance.log('BLE: scanning (service filter)');
     }
   }
 
@@ -251,14 +248,16 @@ class _IoBleTransport implements MeshTransport {
 
   void _handleDiscovered(DiscoveredEventArgs event) {
     final deviceUuid = event.peripheral.uuid.toString();
+    // On non-Windows platforms the native scan filter already guarantees
+    // this is a Meshenger device (and the callback may omit the UUID list).
+    final advertisesMeshenger = !Platform.isWindows ||
+        event.advertisement.serviceUUIDs.contains(serviceUuid);
 
-    if (_loggedDevices.add(deviceUuid)) {
+    if (advertisesMeshenger && _loggedDevices.add(deviceUuid)) {
       final name = event.advertisement.name;
-      final services = event.advertisement.serviceUUIDs;
       TransportLog.instance.log(
-        'BLE: discovered $deviceUuid'
-        '${name != null && name.isNotEmpty ? ' "$name"' : ''}'
-        '${services.isNotEmpty ? ' services=$services' : ''}',
+        'BLE: discovered Meshenger device $deviceUuid'
+        '${name != null && name.isNotEmpty ? ' "$name"' : ''}',
       );
     }
 
@@ -272,6 +271,10 @@ class _IoBleTransport implements MeshTransport {
         return;
       }
     }
+
+    // On the broad Windows scan every nearby BLE device shows up here; only
+    // probe the ones that advertise the Meshenger service.
+    if (!advertisesMeshenger) return;
 
     if (_resolving.contains(deviceUuid)) return;
     _resolving.add(deviceUuid);
