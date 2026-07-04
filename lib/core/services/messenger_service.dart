@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/group_info.dart';
@@ -69,7 +70,13 @@ class MessengerService {
     try {
       await transport.start();
     } catch (e) {
-      transportError = e is StateError ? e.message : e.toString();
+      if (e is StateError) {
+        transportError = e.message;
+      } else if (e is PlatformException) {
+        transportError = e.message ?? e.toString();
+      } else {
+        transportError = e.toString();
+      }
       _transportChanged.add(_mode);
       _peers.add(const <String>{});
       return;

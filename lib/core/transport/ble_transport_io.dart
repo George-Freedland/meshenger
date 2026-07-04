@@ -107,10 +107,10 @@ class _IoBleTransport implements MeshTransport {
 
     // --- Peripheral role: advertise + accept inbound messages ---
     _subscriptions.add(
-      peripheral.characteristicReadRequested.listen(_handleReadRequest),
+      peripheral.characteristicReadRequested.listen(_scheduleReadRequest),
     );
     _subscriptions.add(
-      peripheral.characteristicWriteRequested.listen(_handleWriteRequest),
+      peripheral.characteristicWriteRequested.listen(_scheduleWriteRequest),
     );
 
     await peripheral.removeAllServices();
@@ -138,13 +138,31 @@ class _IoBleTransport implements MeshTransport {
         ],
       ),
     );
-    await peripheral.startAdvertising(
-      Advertisement(serviceUUIDs: [serviceUuid]),
-    );
+
+    // Windows: addService() already calls GattServiceProvider.StartAdvertising,
+    // which makes the Meshenger service discoverable. Calling
+    // BluetoothLEAdvertisementPublisher with ServiceUuids on top of that
+    // throws winrt "The parameter is incorrect." (see plugin example).
+    if (!Platform.isWindows) {
+      await peripheral.startAdvertising(
+        Advertisement(serviceUUIDs: [serviceUuid]),
+      );
+    }
 
     // --- Central role: discover peers ---
     _subscriptions.add(central.discovered.listen(_handleDiscovered));
-    await central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    try {
+      await central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    } on Object {
+      // Some Windows builds reject a strict service-UUID filter even though
+      // the peer is advertising via GattServiceProvider; fall back to a
+      // broad scan and resolve Meshenger peers in _resolvePeer.
+      if (Platform.isWindows) {
+        await central.startDiscovery();
+      } else {
+        rethrow;
+      }
+    }
 
     // macOS/iOS coalesce repeated advertisements from the same device, so
     // periodically restart discovery to re-observe devices that are still
@@ -172,7 +190,9 @@ class _IoBleTransport implements MeshTransport {
       await _central?.stopDiscovery();
     } catch (_) {}
     try {
-      await _peripheral?.stopAdvertising();
+      if (!Platform.isWindows) {
+        await _peripheral?.stopAdvertising();
+      }
     } catch (_) {}
     try {
       await _peripheral?.removeAllServices();
@@ -409,6 +429,16 @@ class _IoBleTransport implements MeshTransport {
   // -----------------------------------------------------------------------
   // Receiving (peripheral role)
   // -----------------------------------------------------------------------
+
+  /// The Windows plugin fires GATT callbacks on a native thread; hop to the
+  /// Dart event loop before touching platform channels again.
+  void _scheduleReadRequest(GATTCharacteristicReadRequestedEventArgs event) {
+    unawaited(Future<void>(() => _handleReadRequest(event)));
+  }
+
+  void _scheduleWriteRequest(GATTCharacteristicWriteRequestedEventArgs event) {
+    unawaited(Future<void>(() => _handleWriteRequest(event)));
+  }
 
   Future<void> _handleReadRequest(
     GATTCharacteristicReadRequestedEventArgs event,

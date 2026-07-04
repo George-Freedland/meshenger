@@ -1,11 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-
-import 'dart:async';
-import 'dart:convert';
 
 import '../../core/models/contact.dart';
 import '../../core/models/group_info.dart';
@@ -427,10 +427,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
             }
 
             return Dialog(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 640),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: 640,
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -454,30 +457,48 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      SizedBox(
-                        height: 420,
+                      Expanded(
                         child: contacts.isEmpty
                             ? const Center(
-                                child: Text('No contacts yet. Add one using the + button.'),
+                                child: Text(
+                                  'No contacts yet. Add one using the + button.',
+                                ),
                               )
                             : ListView.separated(
                                 itemBuilder: (context, i) {
                                   final c = contacts[i];
+                                  final online =
+                                      _onlinePeers.contains(c.address);
                                   final title =
-                                      (c.nickname != null && c.nickname!.trim().isNotEmpty)
+                                      (c.nickname != null &&
+                                              c.nickname!.trim().isNotEmpty)
                                           ? c.nickname!
                                           : _short(c.address);
                                   return ListTile(
+                                    leading: Icon(
+                                      Icons.circle,
+                                      size: 12,
+                                      color: online
+                                          ? Colors.greenAccent
+                                          : Colors.grey,
+                                    ),
                                     title: Text(title),
-                                    subtitle: Text(_short(c.address)),
+                                    subtitle: Text(
+                                      online
+                                          ? '${_short(c.address)} · online'
+                                          : '${_short(c.address)} · offline',
+                                    ),
                                     trailing: Wrap(
                                       spacing: 8,
                                       children: [
                                         IconButton(
                                           tooltip: 'Message',
-                                          icon: const Icon(Icons.chat_bubble_outline),
+                                          icon: const Icon(
+                                            Icons.chat_bubble_outline,
+                                          ),
                                           onPressed: () async {
-                                            await ChatStorage.instance.ensureChatExists(c.address);
+                                            await ChatStorage.instance
+                                                .ensureChatExists(c.address);
                                             if (context.mounted) {
                                               Navigator.pop(context);
                                               context.go(
@@ -495,10 +516,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                           },
                                         ),
                                         IconButton(
-                                          tooltip: 'Delete (keeps message history)',
+                                          tooltip:
+                                              'Delete (keeps message history)',
                                           icon: const Icon(Icons.delete_outline),
                                           onPressed: () async {
-                                            await ContactsService.instance.deleteContact(c.address);
+                                            await ContactsService.instance
+                                                .deleteContact(c.address);
                                             await reload();
                                           },
                                         ),
@@ -506,7 +529,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                     ),
                                   );
                                 },
-                                separatorBuilder: (_, __) => const Divider(height: 1),
+                                separatorBuilder: (_, __) =>
+                                    const Divider(height: 1),
                                 itemCount: contacts.length,
                               ),
                       ),
