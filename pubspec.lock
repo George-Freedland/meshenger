@@ -58,12 +58,11 @@ packages:
     source: hosted
     version: "6.2.1"
   bluetooth_low_energy_windows:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: bluetooth_low_energy_windows
-      sha256: a235b4e368f8e45ad1712c8c1c9a138b4edb2ff98a2f1fbf3208fffeb9a27e3a
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/bluetooth_low_energy_windows"
+      relative: true
+    source: path
     version: "6.2.1"
   bluez:
     dependency: transitive

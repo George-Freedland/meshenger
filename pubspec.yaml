@@ -36,5 +36,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: any
 
+dependency_overrides:
+  # Patched copy: passes the discovered Bluetooth address type to
+  # FromBluetoothAddressAsync so Windows can connect to macOS/iOS peripherals
+  # (they use random addressing; the plugin's default assumes public and
+  # silently fails). See packages/bluetooth_low_energy_windows/windows.
+  bluetooth_low_energy_windows:
+    path: packages/bluetooth_low_energy_windows
+
 flutter:
   uses-material-design: true
