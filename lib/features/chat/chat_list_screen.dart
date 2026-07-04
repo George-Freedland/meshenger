@@ -14,6 +14,7 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/settings_service.dart';
+import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
 
 class ChatListScreen extends StatefulWidget {
@@ -568,6 +569,97 @@ class _ChatListScreenState extends State<ChatListScreen> {
     await _refresh();
   }
 
+  Future<void> _showTransportLogModal() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return Dialog(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 720,
+              maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Connection log',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Copy log',
+                        icon: const Icon(Icons.copy),
+                        onPressed: () async {
+                          await Clipboard.setData(
+                            ClipboardData(text: TransportLog.instance.dump()),
+                          );
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Log copied')),
+                            );
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: StreamBuilder<List<TransportLogEntry>>(
+                      stream: TransportLog.instance.stream,
+                      initialData: TransportLog.instance.entries,
+                      builder: (context, snapshot) {
+                        final entries =
+                            snapshot.data ?? const <TransportLogEntry>[];
+                        if (entries.isEmpty) {
+                          return const Center(
+                            child: Text('No transport events yet.'),
+                          );
+                        }
+                        return ListView.builder(
+                          reverse: true,
+                          itemCount: entries.length,
+                          itemBuilder: (context, i) {
+                            final entry = entries[entries.length - 1 - i];
+                            return Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 2),
+                              child: SelectableText(
+                                entry.toString(),
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Future<void> _showSettingsModal() async {
     var allowAnyone =
         await SettingsService.instance.getAllowMessagesFromAnyone();
@@ -890,6 +982,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
             tooltip: 'Contacts',
             icon: const Icon(Icons.people_outline),
             onPressed: _showContactsModal,
+          ),
+          IconButton(
+            tooltip: 'Connection log',
+            icon: const Icon(Icons.receipt_long_outlined),
+            onPressed: _showTransportLogModal,
           ),
           IconButton(
             tooltip: 'Settings',

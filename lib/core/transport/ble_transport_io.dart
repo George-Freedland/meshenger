@@ -4,10 +4,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
-import 'package:flutter/foundation.dart';
 
 import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
+import '../services/transport_log.dart';
 import 'envelope_codec.dart';
 import 'mesh_transport.dart';
 
@@ -103,8 +103,12 @@ class _IoBleTransport implements MeshTransport {
       }
     }
 
+    final log = TransportLog.instance;
+    log.log('BLE: starting (my address ${address.substring(0, 8)}…)');
+
     await _waitPoweredOn(central);
     await _waitPoweredOn(peripheral);
+    log.log('BLE: central+peripheral powered on');
 
     // --- Peripheral role: advertise + accept inbound messages ---
     _subscriptions.add(
@@ -149,6 +153,7 @@ class _IoBleTransport implements MeshTransport {
         Advertisement(serviceUUIDs: [serviceUuid]),
       );
     }
+    log.log('BLE: advertising Meshenger service');
 
     // --- Central role: discover peers ---
     _subscriptions.add(central.discovered.listen(_handleDiscovered));
@@ -199,15 +204,26 @@ class _IoBleTransport implements MeshTransport {
   // Discovery (central role)
   // -----------------------------------------------------------------------
 
+  bool _loggedDiscoveryMode = false;
+
   Future<void> _startDiscovery(CentralManager central) async {
     try {
       await central.startDiscovery(serviceUUIDs: [serviceUuid]);
-    } on Object {
+      if (!_loggedDiscoveryMode) {
+        _loggedDiscoveryMode = true;
+        TransportLog.instance.log('BLE: scanning (service filter)');
+      }
+    } on Object catch (e) {
       // Some Windows builds reject a strict service-UUID filter even though
       // the peer is advertising via GattServiceProvider; fall back to a
       // broad scan and resolve Meshenger peers in _resolvePeer.
       if (Platform.isWindows) {
         await central.startDiscovery();
+        if (!_loggedDiscoveryMode) {
+          _loggedDiscoveryMode = true;
+          TransportLog.instance
+              .log('BLE: scanning (broad, filter rejected: $e)');
+        }
       } else {
         rethrow;
       }
@@ -231,8 +247,20 @@ class _IoBleTransport implements MeshTransport {
     }
   }
 
+  final Set<String> _loggedDevices = <String>{};
+
   void _handleDiscovered(DiscoveredEventArgs event) {
     final deviceUuid = event.peripheral.uuid.toString();
+
+    if (_loggedDevices.add(deviceUuid)) {
+      final name = event.advertisement.name;
+      final services = event.advertisement.serviceUUIDs;
+      TransportLog.instance.log(
+        'BLE: discovered $deviceUuid'
+        '${name != null && name.isNotEmpty ? ' "$name"' : ''}'
+        '${services.isNotEmpty ? ' services=$services' : ''}',
+      );
+    }
 
     final knownAddress = _addressByDeviceUuid[deviceUuid];
     if (knownAddress != null) {
@@ -256,20 +284,30 @@ class _IoBleTransport implements MeshTransport {
   /// announcement, and records the peer.
   Future<void> _resolvePeer(Peripheral device) async {
     final central = _central;
+    final log = TransportLog.instance;
     if (central == null || !_running) return;
+    var step = 'connect';
     try {
       await central.connect(device).timeout(gattTimeout);
+      step = 'discoverGATT';
       final services = await central.discoverGATT(device).timeout(gattTimeout);
       final announceChar = _findCharacteristic(services, announceCharUuid);
       if (announceChar == null) {
         // Not a Meshenger device (expected during broad scans on Windows).
+        log.log('BLE: ${device.uuid} has no Meshenger service '
+            '(${services.length} services), skipping');
         return;
       }
 
+      step = 'read announce';
       final bytes =
           await central.readCharacteristic(device, announceChar).timeout(gattTimeout);
       final peerIdentity = await EnvelopeCodec.verifyBleAnnouncementBytes(bytes);
-      if (peerIdentity == null) return;
+      if (peerIdentity == null) {
+        log.log('BLE: ${device.uuid} announce failed verification '
+            '(${bytes.length} bytes)');
+        return;
+      }
       if (peerIdentity.address == _myAddress) return;
 
       _addressByDeviceUuid[device.uuid.toString()] = peerIdentity.address;
@@ -278,18 +316,21 @@ class _IoBleTransport implements MeshTransport {
         x25519Base64: peerIdentity.x25519Base64,
         lastSeen: DateTime.now(),
       );
-      debugPrint('BLE: resolved peer ${peerIdentity.address} '
+      log.log('BLE: peer online ${_shortAddr(peerIdentity.address)} '
           '(device ${device.uuid})');
       _emitPeersIfChanged();
     } catch (e) {
       // Device went away or isn't a functioning Meshenger node.
-      debugPrint('BLE: resolve ${device.uuid} failed: $e');
+      log.log('BLE: resolve ${device.uuid} failed at $step: $e');
     } finally {
       try {
         await central.disconnect(device);
       } catch (_) {}
     }
   }
+
+  static String _shortAddr(String address) =>
+      address.length <= 12 ? address : '${address.substring(0, 12)}…';
 
   Future<void> _restartDiscovery() async {
     final central = _central;
@@ -299,7 +340,7 @@ class _IoBleTransport implements MeshTransport {
       await _startDiscovery(central);
     } catch (e) {
       // Bluetooth may have turned off; the reap timer will clear peers.
-      debugPrint('BLE: restart discovery failed: $e');
+      TransportLog.instance.log('BLE: restart discovery failed: $e');
     }
   }
 
@@ -374,12 +415,19 @@ class _IoBleTransport implements MeshTransport {
 
   Future<bool> _deliverPayload(Peripheral device, List<int> payload) async {
     final central = _central;
+    final log = TransportLog.instance;
     if (central == null) return false;
+    var step = 'connect';
     try {
       await central.connect(device).timeout(gattTimeout);
+      step = 'discoverGATT';
       final services = await central.discoverGATT(device).timeout(gattTimeout);
       final inboxChar = _findCharacteristic(services, inboxCharUuid);
-      if (inboxChar == null) return false;
+      if (inboxChar == null) {
+        log.log('BLE: deliver to ${device.uuid}: inbox characteristic missing');
+        return false;
+      }
+      step = 'write';
 
       final maxWriteLength = await central.getMaximumWriteLength(
         device,
@@ -409,9 +457,10 @@ class _IoBleTransport implements MeshTransport {
             )
             .timeout(gattTimeout);
       }
+      log.log('BLE: delivered ${payload.length} bytes to ${device.uuid}');
       return true;
     } catch (e) {
-      debugPrint('BLE: deliver to ${device.uuid} failed: $e');
+      log.log('BLE: deliver to ${device.uuid} failed at $step: $e');
       return false;
     } finally {
       try {
@@ -469,6 +518,10 @@ class _IoBleTransport implements MeshTransport {
 
     final bytes = _announcementBytes ?? Uint8List(0);
     final offset = event.request.offset;
+    if (offset == 0) {
+      TransportLog.instance
+          .log('BLE: peer ${event.central.uuid} read our announce');
+    }
     final value = offset >= bytes.length
         ? Uint8List(0)
         : Uint8List.sublistView(bytes, offset);
@@ -520,6 +573,9 @@ class _IoBleTransport implements MeshTransport {
     }
 
     if (incoming == null) {
+      TransportLog.instance.log(
+          'BLE: rejected envelope from ${event.central.uuid} '
+          '(${payload.length} bytes)');
       await peripheral.respondWriteRequestWithError(
         event.request,
         error: GATTError.unlikelyError,
@@ -527,6 +583,8 @@ class _IoBleTransport implements MeshTransport {
       return;
     }
 
+    TransportLog.instance.log(
+        'BLE: received message from ${_shortAddr(incoming.fromAddress)}');
     // Ack first (success response to the final write), then surface the
     // message to the app.
     await peripheral.respondWriteRequest(event.request);

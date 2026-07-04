@@ -13,6 +13,7 @@ import 'chat_storage.dart';
 import 'contacts_service.dart';
 import 'identity_service.dart';
 import 'settings_service.dart';
+import 'transport_log.dart';
 import 'transport_settings.dart';
 
 /// Coordinates the active transport (Bluetooth or LAN) and local storage.
@@ -67,6 +68,7 @@ class MessengerService {
     };
     _transport = transport;
 
+    TransportLog.instance.log('transport starting: ${_mode.name}');
     try {
       await transport.start();
     } catch (e) {
@@ -77,6 +79,7 @@ class MessengerService {
       } else {
         transportError = e.toString();
       }
+      TransportLog.instance.log('transport failed to start: $transportError');
       _transportChanged.add(_mode);
       _peers.add(const <String>{});
       return;
