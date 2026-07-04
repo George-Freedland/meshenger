@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
@@ -151,18 +152,7 @@ class _IoBleTransport implements MeshTransport {
 
     // --- Central role: discover peers ---
     _subscriptions.add(central.discovered.listen(_handleDiscovered));
-    try {
-      await central.startDiscovery(serviceUUIDs: [serviceUuid]);
-    } on Object {
-      // Some Windows builds reject a strict service-UUID filter even though
-      // the peer is advertising via GattServiceProvider; fall back to a
-      // broad scan and resolve Meshenger peers in _resolvePeer.
-      if (Platform.isWindows) {
-        await central.startDiscovery();
-      } else {
-        rethrow;
-      }
-    }
+    await _startDiscovery(central);
 
     // macOS/iOS coalesce repeated advertisements from the same device, so
     // periodically restart discovery to re-observe devices that are still
@@ -208,6 +198,21 @@ class _IoBleTransport implements MeshTransport {
   // -----------------------------------------------------------------------
   // Discovery (central role)
   // -----------------------------------------------------------------------
+
+  Future<void> _startDiscovery(CentralManager central) async {
+    try {
+      await central.startDiscovery(serviceUUIDs: [serviceUuid]);
+    } on Object {
+      // Some Windows builds reject a strict service-UUID filter even though
+      // the peer is advertising via GattServiceProvider; fall back to a
+      // broad scan and resolve Meshenger peers in _resolvePeer.
+      if (Platform.isWindows) {
+        await central.startDiscovery();
+      } else {
+        rethrow;
+      }
+    }
+  }
 
   Future<void> _waitPoweredOn(BluetoothLowEnergyManager manager) async {
     if (manager.state == BluetoothLowEnergyState.poweredOn) return;
@@ -256,7 +261,10 @@ class _IoBleTransport implements MeshTransport {
       await central.connect(device).timeout(gattTimeout);
       final services = await central.discoverGATT(device).timeout(gattTimeout);
       final announceChar = _findCharacteristic(services, announceCharUuid);
-      if (announceChar == null) return;
+      if (announceChar == null) {
+        // Not a Meshenger device (expected during broad scans on Windows).
+        return;
+      }
 
       final bytes =
           await central.readCharacteristic(device, announceChar).timeout(gattTimeout);
@@ -270,9 +278,12 @@ class _IoBleTransport implements MeshTransport {
         x25519Base64: peerIdentity.x25519Base64,
         lastSeen: DateTime.now(),
       );
+      debugPrint('BLE: resolved peer ${peerIdentity.address} '
+          '(device ${device.uuid})');
       _emitPeersIfChanged();
-    } catch (_) {
-      // Device went away or isn't a functioning Meshenger node; ignore.
+    } catch (e) {
+      // Device went away or isn't a functioning Meshenger node.
+      debugPrint('BLE: resolve ${device.uuid} failed: $e');
     } finally {
       try {
         await central.disconnect(device);
@@ -285,9 +296,10 @@ class _IoBleTransport implements MeshTransport {
     if (central == null || !_running) return;
     try {
       await central.stopDiscovery();
-      await central.startDiscovery(serviceUUIDs: [serviceUuid]);
-    } catch (_) {
+      await _startDiscovery(central);
+    } catch (e) {
       // Bluetooth may have turned off; the reap timer will clear peers.
+      debugPrint('BLE: restart discovery failed: $e');
     }
   }
 
@@ -398,7 +410,8 @@ class _IoBleTransport implements MeshTransport {
             .timeout(gattTimeout);
       }
       return true;
-    } catch (_) {
+    } catch (e) {
+      debugPrint('BLE: deliver to ${device.uuid} failed: $e');
       return false;
     } finally {
       try {

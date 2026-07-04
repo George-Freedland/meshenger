@@ -59,7 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (chatKey == key) _load();
       });
       _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
-        if (!mounted) setState(() => _onlinePeers = peers);
+        if (mounted) setState(() => _onlinePeers = peers);
       });
       _onlinePeers = MessengerService.instance.onlinePeers;
     }
@@ -112,6 +112,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
     final messages = await ChatStorage.instance.listMessages(key);
+    // The chat is open, so everything in it counts as read.
+    await ChatStorage.instance.markRead(key);
     if (!mounted) return;
     setState(() => _messages = messages);
     _scrollToBottom();

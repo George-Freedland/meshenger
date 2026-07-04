@@ -11,6 +11,7 @@ class ChatStorage {
   static final ChatStorage instance = ChatStorage._();
 
   static const _chatsKey = 'chats_v1'; // list of chat keys
+  static const _unreadKey = 'chats_unread_v1'; // set of chat keys
   static const groupPrefix = 'group:';
 
   static bool isGroupChat(String chatKey) => chatKey.startsWith(groupPrefix);
@@ -49,6 +50,7 @@ class ChatStorage {
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
     await prefs.remove(_messagesKey(chatKey));
+    await markRead(chatKey);
   }
 
   /// Hides a group chat from the list without leaving the group. Message
@@ -62,6 +64,35 @@ class ChatStorage {
     final chats = await listChats();
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
+    await markRead(chatKey);
+  }
+
+  // ---------------------------------------------------------------------
+  // Unread state
+  // ---------------------------------------------------------------------
+
+  Future<Set<String>> listUnread() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_unreadKey);
+    if (raw == null || raw.isEmpty) return <String>{};
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return <String>{};
+    return decoded.whereType<String>().toSet();
+  }
+
+  Future<void> markUnread(String chatKey) async {
+    final unread = await listUnread();
+    if (unread.add(chatKey)) await _writeUnread(unread);
+  }
+
+  Future<void> markRead(String chatKey) async {
+    final unread = await listUnread();
+    if (unread.remove(chatKey)) await _writeUnread(unread);
+  }
+
+  Future<void> _writeUnread(Set<String> unread) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_unreadKey, jsonEncode(unread.toList()));
   }
 
   // ---------------------------------------------------------------------
@@ -138,6 +169,7 @@ class ChatStorage {
     await prefs.remove(_messagesKey(chatKey));
     await prefs.remove(_groupMetaKey(groupId));
     await prefs.remove(_legacyGroupInfoKey(groupId));
+    await markRead(chatKey);
   }
 
   /// Applies a remote group metadata update. Returns false when this device

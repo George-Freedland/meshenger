@@ -11,6 +11,7 @@
 
 #include "bluetooth_low_energy_api.g.h"
 #include "bluetooth_low_energy_exception.h"
+#include "ui_thread.h"
 
 namespace bluetooth_low_energy_windows
 {
@@ -38,6 +39,9 @@ namespace bluetooth_low_energy_windows
 		void NotifyValue(int64_t address_args, int64_t hash_code_args, const std::vector<uint8_t> &value_args, std::function<void(std::optional<FlutterError> reply)> result) override;
 
 	private:
+		// Captured on the platform thread at construction; used to marshal
+		// pigeon calls/results back from thread-pool continuations.
+		winrt::apartment_context m_ui_context;
 		std::optional<PeripheralManagerFlutterApi> m_api;
 		std::optional<winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementPublisher> m_publisher;
 		std::optional<winrt::Windows::Devices::Bluetooth::BluetoothAdapter> m_adapter;

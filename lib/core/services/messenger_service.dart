@@ -154,6 +154,7 @@ class MessengerService {
         senderAddress: incoming.fromAddress,
       ),
     );
+    await ChatStorage.instance.markUnread(chatKey);
     _changed.add(chatKey);
   }
 
@@ -196,6 +197,7 @@ class MessengerService {
           isSystem: true,
         ),
       );
+      await ChatStorage.instance.markUnread(chatKey);
     }
     _changed.add(chatKey);
   }
