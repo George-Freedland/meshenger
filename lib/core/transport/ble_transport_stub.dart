@@ -1,11 +1,10 @@
 import 'dart:async';
 
-import '../models/incoming_message.dart';
 import 'mesh_transport.dart';
 
 /// No-op Bluetooth transport for platforms without BLE support (web).
 class _StubBleTransport implements MeshTransport {
-  final _messages = StreamController<IncomingMessage>.broadcast();
+  final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
 
   @override
@@ -18,7 +17,10 @@ class _StubBleTransport implements MeshTransport {
   Map<String, int> get peerRssi => const <String, int>{};
 
   @override
-  Stream<IncomingMessage> get onMessage => _messages.stream;
+  String? x25519For(String peerAddress) => null;
+
+  @override
+  Stream<Map<String, Object?>> get onPacket => _packets.stream;
 
   @override
   Stream<Set<String>> get onPeersChanged => _peers.stream;
@@ -32,20 +34,10 @@ class _StubBleTransport implements MeshTransport {
   Future<void> stop() async {}
 
   @override
-  Future<bool> sendMessage({
-    required String peerAddress,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-    String? groupId,
-    List<String>? groupMembers,
-    String? groupAdmin,
-    String? groupName,
-    String? groupEvent,
-    String? action,
-    String? targetId,
-    int? ttlSeconds,
-  }) async {
+  Future<bool> sendPacket(
+    String peerAddress,
+    Map<String, Object?> packet,
+  ) async {
     return false;
   }
 }

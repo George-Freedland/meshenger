@@ -1,0 +1,13 @@
+name: meshenger_relay
+description: >-
+  Headless Meshenger mesh gateway: stores and forwards end-to-end encrypted
+  envelopes it cannot read. Runs anywhere the Dart SDK runs — Raspberry Pi,
+  old laptops, servers. No Flutter required.
+publish_to: "none"
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  # Ed25519 signing for the relay's own announcements/gossip (pure Dart).
+  cryptography: ^2.7.0

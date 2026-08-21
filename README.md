@@ -17,11 +17,20 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 - **Offline Bluetooth messaging (default)**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
 - **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
 - **Transport switch**: the Bluetooth/Wi‑Fi toggle (chats screen and Settings) switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
-- **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* (with a retry action) and delivered automatically as soon as that peer appears on the network.
+- **Multi‑hop mesh relay**: every device (and standalone gateway) stores and forwards *encrypted envelopes* for others. If Phone B is out of your radio range but a device in the middle can hear you both, your message hops through it — the relay only ever sees ciphertext. Envelopes carry a hop count (max 6), a via‑path to prevent loops, and an expiry (48 h); duplicates are dropped by envelope ID. The relay role can be switched off in Settings.
+- **Delivery receipts, end to end**: a message shows *pending* → *sent* (reached the first hop) → *delivered* (the recipient itself decrypted it and sent a signed ack back through the mesh). Group messages track delivery per member.
+- **Gossip discovery**: nodes periodically share signed peer announcements, so you learn about devices *beyond* your radio range — including their encryption keys, which means you can send end‑to‑end encrypted messages to someone you've never been near, through the mesh.
+- **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* (with a retry action) and delivered automatically as soon as that peer appears on the network — directly or through relays.
 - **Message control**: edit or delete your sent messages (synced to the peer, Telegram-style), auto-delete timers (30 s – 1 week, applied on both ends), date separators, clear-messages vs delete-chat, unread indicators.
 - **Group chats**: multi-recipient compose creates a group; the creator (admin) can name it and add/remove members; members can leave.
-- **Mesh Map**: live graph of every Meshenger device in radio range (contact or not), with approximate distance from Bluetooth signal strength — message or save any device directly from the map.
-- **Stories**: text status updates shared with all contacts, active for 24 h / 3 d / 1 week.
+- **Media messages**: send photos (camera or library) and files in any chat; images can be sent as **view‑once** (Snapchat‑style — the photo burns on both ends after the receiver opens it) or permanent. Large media rides the same encrypted envelopes, chunked over BLE.
+- **Voice notes**: hold‑to‑record audio clips in any chat, with inline playback.
+- **Calls (Phone + FaceTime apps)**: real call signaling over the mesh — ring, accept, decline, hang up — with a full‑screen incoming‑call overlay anywhere in the app. Active calls are half‑duplex push‑to‑talk (mesh radio bandwidth). Recents and per‑call outcomes are logged; missed/declined calls prompt the caller to leave a **voicemail**, which lands in the callee's Voicemail tab.
+- **Camera app**: capture (mobile) or import (desktop) photos into an identity‑scoped camera roll; view, send to any contact, or delete.
+- **Storage app**: identity‑scoped file library — import any file, preview images/audio, send to contacts, delete.
+- **Voice Memos app**: record, play, rename‑free simple library, send any memo to a contact.
+- **Mesh Map**: live graph of the mesh — devices in direct radio range (green, positioned by signal strength) *plus* devices known through relays (blue, with hop count), like Raspberry Pi gateways and neighbors‑of‑neighbors. Message or save any node directly from the map.
+- **Stories**: text or **photo** status updates shared with all contacts, active for 24 h / 3 d / 1 week, spread through the mesh as contacts come in range.
 
 ### Architecture: mesh, gateways, and coverage zones
 
@@ -34,11 +43,18 @@ Bluetooth (and any single radio) only reaches so far. Meshenger grows its covera
                           relay only)              relay only)
 ```
 
-Three kinds of nodes are planned:
+Three kinds of nodes exist today:
 
-1. **The app** (this repo) — runs on any device: Windows, macOS, Linux, Android, iOS, or Chrome. Sends, receives, and can relay.
-2. **Standalone gateways** — cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. They extend the mesh's reach: place a chain of gateways and the total coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read.
+1. **The app** (this repo) — runs on any device: Windows, macOS, Linux, Android, iOS, or Chrome. Sends, receives, and relays for others (toggle in Settings).
+2. **Standalone gateways** (`relay/` in this repo) — a headless pure‑Dart daemon for cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. They extend the mesh's reach: place a chain of gateways and the total coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read. See [Pi as a standalone gateway](#pi-as-a-standalone-gateway) below.
 3. **Specialized devices ("mesh walkie‑talkie" phones)** — down the line, purpose‑built handsets running our own OS image (see MeshOS below) that are simultaneously a full messenger client *and* a gateway, so every device in the field automatically thickens the mesh.
+
+How a multi‑hop delivery works, end to end:
+
+1. Phone A encrypts the message to Phone B's key (X25519 → AES‑256‑GCM), signs it, and seals it in an envelope: `{id, to, from, ciphertext, hops, max, via[], exp}`.
+2. Every node that hears the envelope checks: *is it for me?* If yes → decrypt, verify, send a signed **ack** envelope back through the mesh. If no → increment `hops`, append itself to `via` (loop prevention), spool it, and offer it to every peer it meets (except ones already in the path) until it expires (48 h) or the hop cap (6) is hit.
+3. Phone A shows ✓✓ *delivered* only when B's ack arrives — meaning B itself, not some middle node, has the message.
+4. A phone in someone's pocket with the app running, or a Pi on a windowsill, is equally good as a middle node. Relays hold **no keys** and see **only ciphertext**.
 
 Because encryption is end‑to‑end, relaying through strangers' hardware carries no confidentiality risk: only the sender and receiver hold the keys.
 
@@ -82,7 +98,7 @@ Fix any issues `flutter doctor` reports before running on a specific platform.
 
 1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (Community edition is fine) with the **Desktop development with C++** workload.
 2. Install [Git for Windows](https://git-scm.com/download/win) if you do not already have it.
-3. Ensure Flutter is on your `PATH`, then run `flutter doctor` and confirm the **Windows** toolchain shows as available.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            n
+3. Ensure Flutter is on your `PATH`, then run `flutter doctor` and confirm the **Windows** toolchain shows as available.
 
 #### Run
 
@@ -169,15 +185,60 @@ flutter pub get
 flutter run -d linux
 ```
 
-#### Pi as a standalone gateway (roadmap)
+#### Pi as a standalone gateway
 
-The gateway profile of **MeshOS** (see above) targets the Pi first:
+The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It stores and forwards encrypted envelopes it cannot read, and re‑floods gossip so phones on opposite sides of it learn about each other. It shows up on everyone's Mesh Map under the name you give it.
 
-- Flash a headless image (Raspberry Pi OS Lite), boot, and the gateway daemon joins the mesh automatically — no screen, keyboard, or configuration needed.
-- Gateways relay only ciphertext; they hold no identity and cannot read any traffic.
-- Each gateway you place extends the total coverage zone of the mesh (Bluetooth hop by hop, or bridging across a building's Wi‑Fi).
+**Quick start (any machine with the Dart SDK, including a Pi):**
 
-The gateway daemon is not built yet; today the Pi participates like any other Linux client.
+```bash
+# On Raspberry Pi OS (64-bit): install the Dart SDK
+sudo apt-get update && sudo apt-get install -y wget unzip
+wget https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-arm64-release.zip
+unzip dartsdk-linux-arm64-release.zip && sudo mv dart-sdk /opt/dart
+export PATH="/opt/dart/bin:$PATH"    # add to ~/.bashrc to persist
+
+# Get the relay and run it
+cd meshenger/relay
+dart pub get
+dart run bin/relay.dart --name "Garden Gateway"
+```
+
+**Compile to a single native binary** (starts faster, no SDK needed at runtime):
+
+```bash
+dart compile exe bin/relay.dart -o meshenger-relay
+./meshenger-relay --name "Garden Gateway"
+```
+
+**Run it on boot** — create `/etc/systemd/system/meshenger-relay.service`:
+
+```ini
+[Unit]
+Description=Meshenger mesh gateway
+After=network.target
+
+[Service]
+ExecStart=/home/pi/meshenger-relay --name "Garden Gateway" --identity /home/pi/relay-identity.json
+Restart=always
+RestartSec=5
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now meshenger-relay
+journalctl -u meshenger-relay -f     # watch it forward envelopes
+```
+
+Notes:
+
+- The relay keeps a persistent keypair in `relay-identity.json` so its address (and Mesh Map name) is stable across reboots. The key only signs presence announcements — the relay holds **no message keys** and can never read traffic.
+- `--max-spool 512` raises how many envelopes it carries at once (default 256). Envelopes expire after 48 h.
+- Today the daemon speaks the **LAN transport** (UDP 45654 discovery + TCP delivery), so it bridges anything on the same Wi‑Fi/hotspot — including phones on the far side of the building. A BlueZ‑based Bluetooth transport for fully cable‑free Pi chains is the next step; a Pi that shares its own Wi‑Fi hotspot (`raspi-config` → hotspot) already works as a standalone island the mesh can hop through.
+- Placement tip: relays only help where they can hear at least two other nodes. A window sill between two houses, a hallway between apartments, a shed halfway down the street.
 
 ---
 

@@ -1,0 +1,7 @@
+# Never commit a relay's private identity.
+relay-identity.json
+*.identity.json
+
+.dart_tool/
+pubspec.lock
+meshenger-relay

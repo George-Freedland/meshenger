@@ -40,4 +40,20 @@ class SettingsService {
     await prefs.setInt(IdentityScope.key(_autoDeleteKey), seconds);
     _changed.add(null);
   }
+
+  static const _relayKey = 'relay_enabled_v1';
+
+  /// When true (default), this device stores and forwards encrypted
+  /// envelopes for other people — it acts as a mesh amplifier. The
+  /// content is never readable here; only routing headers are.
+  Future<bool> getRelayEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(IdentityScope.key(_relayKey)) ?? true;
+  }
+
+  Future<void> setRelayEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(IdentityScope.key(_relayKey), value);
+    _changed.add(null);
+  }
 }

@@ -13,6 +13,12 @@
         android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le"
         android:required="false" />
+    <!-- LAN transport (UDP discovery + TCP delivery on local Wi-Fi) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Voice memos, voice messages, voicemail, mesh calls -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:label="meshenger"
         android:name="${applicationName}"

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -8,41 +10,77 @@ import '../models/group_info.dart';
 import '../models/incoming_message.dart';
 import '../models/message.dart';
 import '../transport/ble_transport.dart';
+import '../transport/envelope_codec.dart';
 import '../transport/lan_transport.dart';
 import '../transport/mesh_transport.dart';
+import '../transport/message_body.dart';
 import 'chat_storage.dart';
 import 'contacts_service.dart';
 import 'identity_scope.dart';
 import 'identity_service.dart';
+import 'media_store.dart';
+import 'peer_directory.dart';
 import 'settings_service.dart';
 import 'stories_service.dart';
+import 'transport_log.dart';
 import 'transport_settings.dart';
 
-/// Coordinates the active transport (Bluetooth or LAN) and local storage.
+/// The mesh router: coordinates the active transport (Bluetooth or LAN),
+/// end-to-end encryption, local storage, store-and-forward relaying,
+/// gossip, and delivery acks.
+///
+/// Relay model (epidemic store-and-forward): envelopes not addressed to
+/// this device are spooled and re-offered to every node that comes into
+/// range, hop-limited and deduplicated, until they expire. Only the final
+/// recipient can decrypt; relays (including headless Raspberry Pi
+/// gateways running `bin/relay.dart`) move ciphertext blindly.
 class MessengerService {
   MessengerService._();
   static final MessengerService instance = MessengerService._();
 
   static const _controlOutboxKey = 'control_outbox_v1';
+  static const _spoolKey = 'relay_spool_v1';
+
+  /// Spool limits: how much we are willing to carry for other people.
+  static const int _spoolMaxEntries = 64;
+  static const int _spoolMaxChars = 3 * 1024 * 1024;
+
+  /// How many online peers get a copy when the recipient is unreachable.
+  static const int _relayFanout = 4;
 
   final _uuid = const Uuid();
 
   MeshTransport? _transport;
   TransportMode _mode = TransportMode.bluetooth;
   Timer? _sweepTimer;
+  Timer? _meshTimer;
 
   String? transportError;
 
   final _changed = StreamController<String>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
   final _transportChanged = StreamController<TransportMode>.broadcast();
+  final _callSignals = StreamController<IncomingMessage>.broadcast();
 
-  StreamSubscription<dynamic>? _messageSub;
+  StreamSubscription<dynamic>? _packetSub;
   StreamSubscription<dynamic>? _peersSub;
+
+  /// Recently handled packet ids (dedup for relayed envelopes).
+  final LinkedHashSet<String> _seen = LinkedHashSet<String>();
+  static const int _seenCap = 4096;
+
+  /// Which peers already received a given spooled envelope (memory-only).
+  final Map<String, Set<String>> _spoolOfferedTo = <String, Set<String>>{};
+
+  /// Throttle for relay-handoff retries of pending messages.
+  final Map<String, int> _lastRelayAttemptMs = <String, int>{};
 
   Stream<String> get onChanged => _changed.stream;
   Stream<Set<String>> get onPeersChanged => _peers.stream;
   Stream<TransportMode> get onTransportChanged => _transportChanged.stream;
+
+  /// Incoming `call-*` signals, consumed by the CallService.
+  Stream<IncomingMessage> get onCallSignal => _callSignals.stream;
 
   Set<String> get onlinePeers => _transport?.onlinePeers ?? const <String>{};
 
@@ -54,9 +92,12 @@ class MessengerService {
 
   Future<void> start() async {
     _mode = await TransportSettings.instance.getMode();
+    PeerDirectory.instance.resetCache();
     await _startTransport();
     _sweepTimer ??=
         Timer.periodic(const Duration(seconds: 15), (_) => _sweepExpired());
+    _meshTimer ??=
+        Timer.periodic(const Duration(seconds: 25), (_) => _meshTick());
     await _sweepExpired();
   }
 
@@ -71,6 +112,11 @@ class MessengerService {
   Future<void> stop() async {
     _sweepTimer?.cancel();
     _sweepTimer = null;
+    _meshTimer?.cancel();
+    _meshTimer = null;
+    _seen.clear();
+    _spoolOfferedTo.clear();
+    _lastRelayAttemptMs.clear();
     await _stopTransport();
   }
 
@@ -93,20 +139,20 @@ class MessengerService {
       return;
     }
 
-    _messageSub = transport.onMessage.listen(_handleIncoming);
+    _packetSub = transport.onPacket.listen(_handlePacket);
     _peersSub = transport.onPeersChanged.listen((peers) {
       _peers.add(peers);
-      _flushPendingFor(peers);
-      _flushControlOutbox(peers);
+      _onPeersAppeared(peers);
     });
 
     _transportChanged.add(_mode);
     _peers.add(transport.onlinePeers);
+    unawaited(_onPeersAppeared(transport.onlinePeers));
   }
 
   Future<void> _stopTransport() async {
-    await _messageSub?.cancel();
-    _messageSub = null;
+    await _packetSub?.cancel();
+    _packetSub = null;
     await _peersSub?.cancel();
     _peersSub = null;
     await _transport?.stop();
@@ -116,7 +162,10 @@ class MessengerService {
 
   Future<void> _sweepExpired() async {
     if (!IdentityScope.hasActive) return;
-    final changed = await ChatStorage.instance.sweepExpired();
+    final (changed, mediaIds) = await ChatStorage.instance.sweepExpired();
+    for (final mediaId in mediaIds) {
+      await MediaStore.instance.delete(mediaId);
+    }
     for (final chatKey in changed) {
       _changed.add(chatKey);
     }
@@ -124,10 +173,363 @@ class MessengerService {
   }
 
   // ---------------------------------------------------------------------
+  // Mesh maintenance: gossip + spool
+  // ---------------------------------------------------------------------
+
+  Future<void> _onPeersAppeared(Set<String> peersNow) async {
+    if (!IdentityScope.hasActive) return;
+    final transport = _transport;
+    if (transport == null) return;
+
+    // Record directly-seen peers in the directory.
+    for (final peer in peersNow) {
+      final x = transport.x25519For(peer);
+      if (x != null) {
+        await PeerDirectory.instance.recordDirect(peer, x);
+      }
+    }
+
+    await _broadcastGossip(peersNow);
+    await _deliverSpoolTo(peersNow);
+    await _flushPendingFor(peersNow);
+    await _flushControlOutbox(peersNow);
+  }
+
+  Future<void> _meshTick() async {
+    if (!IdentityScope.hasActive || !isTransportRunning) return;
+    final peersNow = onlinePeers;
+    if (peersNow.isEmpty) {
+      await _pruneSpool();
+      return;
+    }
+    await _broadcastGossip(peersNow);
+    await _pruneSpool();
+    await _deliverSpoolTo(peersNow);
+    await _flushPendingFor(peersNow);
+    await _flushControlOutbox(peersNow);
+  }
+
+  Future<void> _broadcastGossip(Set<String> peersNow) async {
+    final transport = _transport;
+    if (transport == null || peersNow.isEmpty) return;
+    try {
+      final gossip = await EnvelopeCodec.buildGossip(
+        nickname: IdentityService.instance.active?.nickname,
+      );
+      for (final peer in peersNow) {
+        unawaited(transport.sendPacket(peer, gossip));
+      }
+    } catch (_) {
+      // Identity locked mid-flight; ignore.
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Packet router
+  // ---------------------------------------------------------------------
+
+  Future<void> _handlePacket(Map<String, Object?> packet) async {
+    if (!IdentityScope.hasActive) return;
+    switch (packet['t']) {
+      case 'gossip':
+        await _handleGossip(packet);
+      case 'msg':
+        await _handleEnvelope(packet);
+    }
+  }
+
+  Future<void> _handleGossip(Map<String, Object?> packet) async {
+    final record = await EnvelopeCodec.verifyGossip(packet);
+    if (record == null) return;
+
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (record.address == me) return;
+
+    final fresher = await PeerDirectory.instance.recordGossip(
+      record.address,
+      record.x25519Base64,
+      nickname: record.nickname,
+      hops: record.hops,
+      tsMs: record.tsMs,
+    );
+    if (!fresher) return;
+
+    // Re-flood fresher gossip so presence spreads across the mesh.
+    final maxHops =
+        (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.defaultMaxHops;
+    final nextHops = record.hops + 1;
+    if (nextHops > maxHops) return;
+    final transport = _transport;
+    if (transport == null) return;
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = nextHops;
+    for (final peer in onlinePeers) {
+      if (peer == record.address) continue;
+      unawaited(transport.sendPacket(peer, forwarded));
+    }
+  }
+
+  Future<void> _handleEnvelope(Map<String, Object?> packet) async {
+    final id = packet['id'];
+    final to = packet['to'];
+    if (id is! String || to is! String) return;
+
+    // Dedup: relayed envelopes can arrive several times over several paths.
+    if (_seen.contains(id)) return;
+    _markSeen(id);
+
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+
+    if (to != me) {
+      await _relayEnvelope(packet, to);
+      return;
+    }
+
+    final incoming = await EnvelopeCodec.decryptEnvelope(packet, myAddress: me);
+    if (incoming == null) return;
+    await _handleIncoming(incoming);
+  }
+
+  void _markSeen(String id) {
+    _seen.add(id);
+    while (_seen.length > _seenCap) {
+      _seen.remove(_seen.first);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Relaying (store-and-forward for other people's envelopes)
+  // ---------------------------------------------------------------------
+
+  Future<void> _relayEnvelope(Map<String, Object?> packet, String to) async {
+    if (!await SettingsService.instance.getRelayEnabled()) return;
+    final transport = _transport;
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (transport == null || me == null) return;
+
+    final exp = (packet['exp'] as num?)?.toInt();
+    if (exp != null && exp < DateTime.now().millisecondsSinceEpoch) return;
+
+    final hops = ((packet['hops'] as num?)?.toInt() ?? 0) + 1;
+    final maxHops =
+        (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.defaultMaxHops;
+
+    final envelope = Map<String, Object?>.from(packet);
+    envelope['hops'] = hops;
+    final via = [
+      ...((packet['via'] as List?)?.whereType<String>() ?? const <String>[]),
+      me,
+    ];
+    envelope['via'] = via;
+
+    // Direct delivery to the recipient doesn't count against the hop cap.
+    if (onlinePeers.contains(to)) {
+      final ok = await transport.sendPacket(to, envelope);
+      if (ok) {
+        TransportLog.instance
+            .log('Relay: delivered envelope ${_shortId(packet)} to recipient');
+        return;
+      }
+    }
+
+    if (hops > maxHops) return;
+
+    await _addToSpool(envelope);
+    TransportLog.instance.log(
+        'Relay: carrying envelope ${_shortId(packet)} (hop $hops/$maxHops)');
+
+    final from = packet['from'] as String?;
+    final skip = <String>{...via, if (from != null) from};
+    for (final peer in onlinePeers) {
+      if (skip.contains(peer)) continue;
+      _noteOffered(envelope, peer);
+      unawaited(transport.sendPacket(peer, envelope));
+    }
+  }
+
+  String _shortId(Map<String, Object?> packet) {
+    final id = packet['id'];
+    if (id is! String) return '?';
+    return id.length <= 8 ? id : id.substring(0, 8);
+  }
+
+  String _spoolEntryKey(Map<String, Object?> envelope) =>
+      envelope['id'] as String? ?? '';
+
+  void _noteOffered(Map<String, Object?> envelope, String peer) {
+    _spoolOfferedTo
+        .putIfAbsent(_spoolEntryKey(envelope), () => <String>{})
+        .add(peer);
+  }
+
+  Future<void> _addToSpool(Map<String, Object?> envelope) async {
+    final spool = await _readSpool();
+    final id = _spoolEntryKey(envelope);
+    if (spool.any((e) => _spoolEntryKey(e) == id)) return;
+    spool.add(envelope);
+
+    // Enforce caps, oldest first.
+    while (spool.length > _spoolMaxEntries) {
+      spool.removeAt(0);
+    }
+    var encoded = jsonEncode(spool);
+    while (encoded.length > _spoolMaxChars && spool.isNotEmpty) {
+      spool.removeAt(0);
+      encoded = jsonEncode(spool);
+    }
+    await _writeSpool(spool);
+  }
+
+  Future<void> _pruneSpool() async {
+    final spool = await _readSpool();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final kept = spool.where((e) {
+      final exp = (e['exp'] as num?)?.toInt();
+      return exp == null || exp > now;
+    }).toList();
+    if (kept.length != spool.length) {
+      await _writeSpool(kept);
+    }
+  }
+
+  /// Offers spooled envelopes to peers now in range: recipient directly
+  /// when possible, otherwise epidemic spread to new carriers.
+  Future<void> _deliverSpoolTo(Set<String> peersNow) async {
+    final transport = _transport;
+    if (transport == null || peersNow.isEmpty) return;
+    final spool = await _readSpool();
+    if (spool.isEmpty) return;
+
+    final remaining = <Map<String, Object?>>[];
+    var changed = false;
+
+    for (final envelope in spool) {
+      final to = envelope['to'] as String?;
+      final from = envelope['from'] as String?;
+      final via =
+          (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
+      var deliveredToRecipient = false;
+
+      if (to != null && peersNow.contains(to)) {
+        deliveredToRecipient = await transport.sendPacket(to, envelope);
+      }
+
+      if (deliveredToRecipient) {
+        changed = true;
+        _spoolOfferedTo.remove(_spoolEntryKey(envelope));
+        TransportLog.instance.log(
+            'Relay: spooled envelope ${_shortId(envelope)} reached recipient');
+        continue;
+      }
+
+      final offered =
+          _spoolOfferedTo[_spoolEntryKey(envelope)] ?? const <String>{};
+      for (final peer in peersNow) {
+        if (peer == to || peer == from) continue;
+        if (via.contains(peer) || offered.contains(peer)) continue;
+        _noteOffered(envelope, peer);
+        unawaited(transport.sendPacket(peer, envelope));
+      }
+      remaining.add(envelope);
+    }
+
+    if (changed) {
+      await _writeSpool(remaining);
+    }
+  }
+
+  Future<List<Map<String, Object?>>> _readSpool() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(IdentityScope.key(_spoolKey));
+    if (raw == null || raw.isEmpty) return <Map<String, Object?>>[];
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return <Map<String, Object?>>[];
+    return decoded
+        .whereType<Map>()
+        .map((m) => m.cast<String, Object?>())
+        .toList();
+  }
+
+  Future<void> _writeSpool(List<Map<String, Object?>> spool) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(IdentityScope.key(_spoolKey), jsonEncode(spool));
+  }
+
+  // ---------------------------------------------------------------------
+  // Delivery core
+  // ---------------------------------------------------------------------
+
+  /// Encrypts [body] for [recipient] and hands it to the mesh.
+  ///
+  /// Tries direct delivery first; when the recipient is out of range the
+  /// envelope goes to up to [_relayFanout] nearby nodes (and the local
+  /// spool) for store-and-forward. Returns true when at least one node
+  /// accepted the envelope.
+  Future<bool> _deliverBody(String recipient, MessageBody body) async {
+    final transport = _transport;
+    if (transport == null) return false;
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return false;
+
+    final x25519 = transport.x25519For(recipient) ??
+        await PeerDirectory.instance.x25519For(recipient);
+    if (x25519 == null) return false; // Never met them — no key yet.
+
+    final Map<String, Object?> envelope;
+    try {
+      envelope = await EnvelopeCodec.encryptEnvelope(
+        from: me,
+        to: recipient,
+        toX25519Base64: x25519,
+        body: body,
+      );
+    } catch (_) {
+      return false;
+    }
+    // Never re-process our own envelope if it echoes back through the mesh.
+    _markSeen(envelope['id'] as String);
+
+    if (onlinePeers.contains(recipient)) {
+      if (await transport.sendPacket(recipient, envelope)) {
+        return true;
+      }
+    }
+
+    // Recipient unreachable: hand to nearby carriers.
+    var accepted = false;
+    var fanout = 0;
+    for (final peer in onlinePeers) {
+      if (peer == recipient) continue;
+      if (fanout >= _relayFanout) break;
+      fanout++;
+      _noteOffered(envelope, peer);
+      if (await transport.sendPacket(peer, envelope)) {
+        accepted = true;
+      }
+    }
+    if (accepted) {
+      // Also keep a local copy: if we meet the recipient before a relay
+      // does, we deliver it ourselves. Recipient deduplicates.
+      await _addToSpool(envelope);
+    }
+    return accepted;
+  }
+
+  // ---------------------------------------------------------------------
   // Incoming
   // ---------------------------------------------------------------------
 
   Future<void> _handleIncoming(IncomingMessage incoming) async {
+    final action = incoming.action;
+
+    // End-to-end delivery receipts and call signaling bypass the
+    // contacts-only filter only for acks (they answer traffic we sent).
+    if (action == 'ack') {
+      await _handleAck(incoming);
+      return;
+    }
+
     final allowAnyone =
         await SettingsService.instance.getAllowMessagesFromAnyone();
     if (!allowAnyone) {
@@ -136,7 +538,12 @@ class MessengerService {
       if (contact == null) return;
     }
 
-    switch (incoming.action) {
+    if (action != null && action.startsWith('call-')) {
+      _callSignals.add(incoming);
+      return;
+    }
+
+    switch (action) {
       case 'edit':
         await _handleRemoteEdit(incoming);
         return;
@@ -178,6 +585,27 @@ class MessengerService {
 
     final expiresAtMs = await _incomingExpiry(incoming);
 
+    // Persist any media attachment to the local store.
+    String? mediaId;
+    if (incoming.kind != null && incoming.mediaB64 != null) {
+      try {
+        final bytes = base64Decode(incoming.mediaB64!);
+        if (bytes.length <= MediaStore.maxTransferBytes) {
+          final item = await MediaStore.instance.saveBytes(
+            Uint8List.fromList(bytes),
+            name: incoming.mediaName ?? 'attachment',
+            mime: incoming.mediaMime ?? 'application/octet-stream',
+            source: MediaSource.received,
+            temp: incoming.mediaTemp,
+            durationMs: incoming.durationMs,
+          );
+          mediaId = item.id;
+        }
+      } catch (_) {
+        // Corrupt media: keep the text part of the message.
+      }
+    }
+
     await ChatStorage.instance.ensureChatExists(chatKey);
     await ChatStorage.instance.appendMessage(
       chatKey,
@@ -189,10 +617,57 @@ class MessengerService {
         status: MessageStatus.sent,
         senderAddress: incoming.fromAddress,
         expiresAtMs: expiresAtMs,
+        kind: mediaId != null ? incoming.kind : null,
+        mediaId: mediaId,
+        mediaName: incoming.mediaName,
+        mediaMime: incoming.mediaMime,
+        mediaTemp: incoming.mediaTemp,
+        durationMs: incoming.durationMs,
+        voicemail: incoming.voicemail,
       ),
     );
     await ChatStorage.instance.markUnread(chatKey);
     _changed.add(chatKey);
+
+    // Send the end-to-end delivery receipt (works across relays too).
+    unawaited(_deliverBody(
+      incoming.fromAddress,
+      MessageBody(
+        messageId: _uuid.v4(),
+        text: '',
+        timestamp: DateTime.now(),
+        action: 'ack',
+        targetId: incoming.id,
+        groupId: incoming.groupId,
+      ),
+    ));
+  }
+
+  Future<void> _handleAck(IncomingMessage incoming) async {
+    final target = incoming.targetId;
+    if (target == null) return;
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+
+    final String chatKey;
+    List<String> allRecipients;
+    if (incoming.groupId != null) {
+      chatKey = ChatStorage.groupChatKey(incoming.groupId!);
+      final info = await ChatStorage.instance.getGroupInfo(incoming.groupId!);
+      allRecipients =
+          (info?.members ?? const <String>[]).where((a) => a != me).toList();
+    } else {
+      chatKey = incoming.fromAddress;
+      allRecipients = [incoming.fromAddress];
+    }
+
+    final changed = await ChatStorage.instance.applyDeliveryAck(
+      chatKey,
+      target,
+      incoming.fromAddress,
+      allRecipients: allRecipients,
+    );
+    if (changed) _changed.add(chatKey);
   }
 
   /// The earliest applicable auto-delete deadline: the sender's TTL and my
@@ -235,24 +710,50 @@ class MessengerService {
     final target = incoming.targetId;
     if (target == null) return;
     final chatKey = _chatKeyForIncoming(incoming);
+    final existing = await ChatStorage.instance.getMessage(chatKey, target);
     final applied = await ChatStorage.instance.deleteMessage(
       chatKey,
       target,
       requireSender: incoming.fromAddress,
     );
-    if (applied) _changed.add(chatKey);
+    if (applied) {
+      final mediaId = existing?.mediaId;
+      if (mediaId != null) await MediaStore.instance.delete(mediaId);
+      _changed.add(chatKey);
+    }
   }
 
   Future<void> _handleRemoteStory(IncomingMessage incoming) async {
     final ttl = incoming.ttlSeconds ?? 86400;
+    final storyId = incoming.targetId ?? incoming.id;
+
+    String? mediaId;
+    if (incoming.kind == 'image' && incoming.mediaB64 != null) {
+      try {
+        final bytes = base64Decode(incoming.mediaB64!);
+        if (bytes.length <= MediaStore.maxTransferBytes) {
+          final item = await MediaStore.instance.saveBytes(
+            Uint8List.fromList(bytes),
+            name: incoming.mediaName ?? 'story.jpg',
+            mime: incoming.mediaMime ?? 'image/jpeg',
+            source: MediaSource.received,
+            temp: true, // story media never shows in the Storage library
+          );
+          mediaId = item.id;
+        }
+      } catch (_) {}
+    }
+
     await StoriesService.instance.upsert(Story(
       // The story's stable id travels in targetId; the envelope id varies
       // per delivery attempt.
-      id: incoming.targetId ?? incoming.id,
+      id: storyId,
       author: incoming.fromAddress,
       text: incoming.text,
       tsMs: incoming.timestamp.millisecondsSinceEpoch,
       expiresMs: incoming.timestamp.millisecondsSinceEpoch + ttl * 1000,
+      mediaId: mediaId,
+      mediaMime: incoming.mediaMime,
     ));
   }
 
@@ -282,7 +783,8 @@ class MessengerService {
 
     final chatKey = ChatStorage.groupChatKey(groupId);
     final notice = _systemNoticeForEvent(event, me);
-    if (notice != null && !await _hasMessage(chatKey, incoming.id)) {
+    if (notice != null &&
+        await ChatStorage.instance.getMessage(chatKey, incoming.id) == null) {
       await ChatStorage.instance.appendMessage(
         chatKey,
         ChatMessage(
@@ -297,11 +799,6 @@ class MessengerService {
       await ChatStorage.instance.markUnread(chatKey);
     }
     _changed.add(chatKey);
-  }
-
-  Future<bool> _hasMessage(String chatKey, String id) async {
-    final messages = await ChatStorage.instance.listMessages(chatKey);
-    return messages.any((m) => m.id == id);
   }
 
   String? _systemNoticeForEvent(GroupEvent event, String me) {
@@ -326,10 +823,62 @@ class MessengerService {
   }
 
   // ---------------------------------------------------------------------
-  // Outgoing: 1:1
+  // Outgoing: 1:1 and group chat messages (text and media)
   // ---------------------------------------------------------------------
 
-  Future<ChatMessage> sendText(String peerAddress, String text) async {
+  Future<ChatMessage> sendText(String peerAddress, String text) =>
+      _sendChatMessage(peerAddress, text: text);
+
+  Future<void> sendGroupText(String chatKey, String text) =>
+      _sendGroupMessage(chatKey, text: text);
+
+  /// Sends an image/audio/file attachment. [temp] makes images view-once
+  /// (Snapchat-style). Works for both 1:1 and group chats.
+  Future<void> sendMedia(
+    String chatKey, {
+    required Uint8List bytes,
+    required String name,
+    required String mime,
+    required String kind,
+    String text = '',
+    bool temp = false,
+    int? durationMs,
+    bool voicemail = false,
+  }) async {
+    if (bytes.length > MediaStore.maxTransferBytes) {
+      throw StateError(
+        'File is too large for mesh transfer '
+        '(max ${MediaStore.maxTransferBytes ~/ (1024 * 1024)} MB)',
+      );
+    }
+    final item = await MediaStore.instance.saveBytes(
+      bytes,
+      name: name,
+      mime: mime,
+      source: MediaSource.sent,
+      temp: temp,
+      durationMs: durationMs,
+    );
+    final media = _MediaPayload(
+      item: item,
+      b64: base64Encode(bytes),
+      kind: kind,
+      temp: temp,
+      durationMs: durationMs,
+      voicemail: voicemail,
+    );
+    if (ChatStorage.isGroupChat(chatKey)) {
+      await _sendGroupMessage(chatKey, text: text, media: media);
+    } else {
+      await _sendChatMessage(chatKey, text: text, media: media);
+    }
+  }
+
+  Future<ChatMessage> _sendChatMessage(
+    String peerAddress, {
+    required String text,
+    _MediaPayload? media,
+  }) async {
     final ttl = await SettingsService.instance.getAutoDeleteSeconds();
     final now = DateTime.now();
     final message = ChatMessage(
@@ -338,24 +887,26 @@ class MessengerService {
       isMe: true,
       timestamp: now,
       status: MessageStatus.pending,
-      expiresAtMs:
-          ttl > 0 ? now.millisecondsSinceEpoch + ttl * 1000 : null,
+      expiresAtMs: ttl > 0 ? now.millisecondsSinceEpoch + ttl * 1000 : null,
+      kind: media?.kind,
+      mediaId: media?.item.id,
+      mediaName: media?.item.name,
+      mediaMime: media?.item.mime,
+      mediaTemp: media?.temp ?? false,
+      durationMs: media?.durationMs,
+      voicemail: media?.voicemail ?? false,
     );
 
     await ChatStorage.instance.ensureChatExists(peerAddress);
     await ChatStorage.instance.appendMessage(peerAddress, message);
     _changed.add(peerAddress);
 
-    final delivered = await _transport?.sendMessage(
-          peerAddress: peerAddress,
-          messageId: message.id,
-          text: message.text,
-          timestamp: message.timestamp,
-          ttlSeconds: ttl > 0 ? ttl : null,
-        ) ??
-        false;
+    final handedOff = await _deliverBody(
+      peerAddress,
+      _bodyFor(message, media, ttl),
+    );
 
-    if (delivered) {
+    if (handedOff) {
       await ChatStorage.instance
           .updateMessageStatus(peerAddress, message.id, MessageStatus.sent);
       _changed.add(peerAddress);
@@ -364,35 +915,11 @@ class MessengerService {
     return message;
   }
 
-  // ---------------------------------------------------------------------
-  // Outgoing: groups
-  // ---------------------------------------------------------------------
-
-  Future<String> createGroup(
-    List<String> memberAddresses, {
-    String? name,
+  Future<void> _sendGroupMessage(
+    String chatKey, {
+    required String text,
+    _MediaPayload? media,
   }) async {
-    final me = await IdentityService.instance.getPublicAddressBase64();
-    if (me == null) throw StateError('Identity is locked');
-
-    final groupId = _uuid.v4();
-    final members = <String>{...memberAddresses, me}.toList();
-    final trimmedName = name?.trim();
-    await ChatStorage.instance.saveGroupInfo(GroupInfo(
-      id: groupId,
-      adminAddress: me,
-      name: (trimmedName != null && trimmedName.isNotEmpty)
-          ? trimmedName
-          : null,
-      members: members,
-    ));
-    final chatKey = ChatStorage.groupChatKey(groupId);
-    await ChatStorage.instance.ensureChatExists(chatKey);
-    _changed.add(chatKey);
-    return chatKey;
-  }
-
-  Future<void> sendGroupText(String chatKey, String text) async {
     final groupId = ChatStorage.groupIdOf(chatKey);
     final info = await ChatStorage.instance.getGroupInfo(groupId);
     if (info == null) return;
@@ -410,8 +937,14 @@ class MessengerService {
       timestamp: now,
       status: MessageStatus.pending,
       pendingTo: recipients,
-      expiresAtMs:
-          ttl > 0 ? now.millisecondsSinceEpoch + ttl * 1000 : null,
+      expiresAtMs: ttl > 0 ? now.millisecondsSinceEpoch + ttl * 1000 : null,
+      kind: media?.kind,
+      mediaId: media?.item.id,
+      mediaName: media?.item.name,
+      mediaMime: media?.item.mime,
+      mediaTemp: media?.temp ?? false,
+      durationMs: media?.durationMs,
+      voicemail: media?.voicemail ?? false,
     );
 
     await ChatStorage.instance.ensureChatExists(chatKey);
@@ -419,24 +952,73 @@ class MessengerService {
     _changed.add(chatKey);
 
     for (final recipient in recipients) {
-      final delivered = await _transport?.sendMessage(
-            peerAddress: recipient,
-            messageId: message.id,
-            text: message.text,
-            timestamp: message.timestamp,
-            groupId: groupId,
-            groupMembers: info.members,
-            groupAdmin: info.adminAddress,
-            groupName: info.name,
-            ttlSeconds: ttl > 0 ? ttl : null,
-          ) ??
-          false;
-      if (delivered) {
+      final handedOff = await _deliverBody(
+        recipient,
+        _bodyFor(message, media, ttl, info: info),
+      );
+      if (handedOff) {
         await ChatStorage.instance
-            .markGroupMessageDelivered(chatKey, message.id, recipient);
+            .markGroupMessageHandedOff(chatKey, message.id, recipient);
         _changed.add(chatKey);
       }
     }
+  }
+
+  MessageBody _bodyFor(
+    ChatMessage message,
+    _MediaPayload? media,
+    int ttl, {
+    GroupInfo? info,
+  }) =>
+      MessageBody(
+        messageId: message.id,
+        text: message.text,
+        timestamp: message.timestamp,
+        groupId: info?.id,
+        groupMembers: info?.members,
+        groupAdmin: info?.adminAddress,
+        groupName: info?.name,
+        ttlSeconds: ttl > 0 ? ttl : null,
+        kind: media?.kind,
+        mediaB64: media?.b64,
+        mediaName: media?.item.name,
+        mediaMime: media?.item.mime,
+        mediaTemp: media?.temp ?? false,
+        durationMs: media?.durationMs,
+        voicemail: media?.voicemail ?? false,
+      );
+
+  /// Marks a received view-once image as viewed: deletes the media file
+  /// and strips it from the message.
+  Future<void> markViewOnceOpened(String chatKey, ChatMessage message) async {
+    final mediaId = message.mediaId;
+    if (mediaId != null) {
+      await MediaStore.instance.delete(mediaId);
+    }
+    await ChatStorage.instance.markMediaViewed(chatKey, message.id);
+    _changed.add(chatKey);
+  }
+
+  // ---------------------------------------------------------------------
+  // Calls (signaling; audio clips ride the normal media pipeline)
+  // ---------------------------------------------------------------------
+
+  Future<bool> sendCallSignal(
+    String peerAddress, {
+    required String action, // call-invite | call-accept | ...
+    required String callId,
+    bool video = false,
+  }) {
+    return _deliverBody(
+      peerAddress,
+      MessageBody(
+        messageId: _uuid.v4(),
+        text: video ? 'video' : 'voice',
+        timestamp: DateTime.now(),
+        action: action,
+        targetId: callId,
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -461,9 +1043,12 @@ class MessengerService {
   }
 
   Future<void> sendDeleteMessage(String chatKey, String messageId) async {
+    final existing = await ChatStorage.instance.getMessage(chatKey, messageId);
     final applied =
         await ChatStorage.instance.deleteMessage(chatKey, messageId);
     if (!applied) return;
+    final mediaId = existing?.mediaId;
+    if (mediaId != null) await MediaStore.instance.delete(mediaId);
     _changed.add(chatKey);
     await _enqueueControl(
       act: 'delete',
@@ -476,10 +1061,33 @@ class MessengerService {
   // Stories
   // ---------------------------------------------------------------------
 
-  /// Posts a status update, visible to all current contacts.
-  Future<void> postStory(String text, {int ttlSeconds = 86400}) async {
+  /// Posts a status update (optionally with an image), visible to all
+  /// current contacts for [ttlSeconds].
+  Future<void> postStory(
+    String text, {
+    int ttlSeconds = 86400,
+    Uint8List? imageBytes,
+    String? imageMime,
+  }) async {
     final me = await IdentityService.instance.getPublicAddressBase64();
     if (me == null) throw StateError('Identity is locked');
+
+    String? mediaId;
+    String? mediaB64;
+    if (imageBytes != null) {
+      if (imageBytes.length > MediaStore.maxTransferBytes) {
+        throw StateError('Image is too large for mesh transfer');
+      }
+      final item = await MediaStore.instance.saveBytes(
+        imageBytes,
+        name: 'story.jpg',
+        mime: imageMime ?? 'image/jpeg',
+        source: MediaSource.sent,
+        temp: true, // lives with the story, not the Storage library
+      );
+      mediaId = item.id;
+      mediaB64 = base64Encode(imageBytes);
+    }
 
     final now = DateTime.now().millisecondsSinceEpoch;
     final story = Story(
@@ -488,6 +1096,8 @@ class MessengerService {
       text: text,
       tsMs: now,
       expiresMs: now + ttlSeconds * 1000,
+      mediaId: mediaId,
+      mediaMime: imageMime,
     );
     await StoriesService.instance.upsert(story);
 
@@ -499,6 +1109,9 @@ class MessengerService {
       text: text,
       ttl: ttlSeconds,
       recipients: contacts.map((c) => c.address).toList(),
+      mediaB64: mediaB64,
+      mediaMime: imageMime,
+      kind: mediaB64 != null ? 'image' : null,
     );
   }
 
@@ -518,6 +1131,9 @@ class MessengerService {
     String? text,
     int? ttl,
     List<String>? recipients,
+    String? mediaB64,
+    String? mediaMime,
+    String? kind,
   }) async {
     final me = await IdentityService.instance.getPublicAddressBase64();
     List<String> to;
@@ -544,6 +1160,9 @@ class MessengerService {
       'text': text,
       'ttl': ttl,
       'to': to,
+      if (mediaB64 != null) 'media': mediaB64,
+      if (mediaMime != null) 'mmime': mediaMime,
+      if (kind != null) 'kind': kind,
     });
     await _writeControlOps(ops);
     await _flushControlOutbox(onlinePeers);
@@ -556,8 +1175,7 @@ class MessengerService {
   }
 
   Future<void> _flushControlOutbox(Set<String> onlineNow) async {
-    final transport = _transport;
-    if (transport == null || onlineNow.isEmpty) return;
+    if (_transport == null || onlineNow.isEmpty) return;
     final ops = await _readControlOps();
     if (ops.isEmpty) return;
 
@@ -566,29 +1184,30 @@ class MessengerService {
       final to = (op['to'] as List?)?.whereType<String>().toList() ?? [];
       final remaining = <String>[];
       for (final recipient in to) {
-        if (!onlineNow.contains(recipient)) {
-          remaining.add(recipient);
-          continue;
-        }
         final gid = op['gid'] as String?;
         GroupInfo? info;
         if (gid != null) {
           info = await ChatStorage.instance.getGroupInfo(gid);
         }
-        final delivered = await transport.sendMessage(
-          peerAddress: recipient,
-          messageId: '${op['act']}:${op['target']}:$recipient',
-          text: (op['text'] as String?) ?? '',
-          timestamp: DateTime.now(),
-          groupId: gid,
-          groupMembers: info?.members,
-          groupAdmin: info?.adminAddress,
-          groupName: info?.name,
-          action: op['act'] as String,
-          targetId: op['target'] as String,
-          ttlSeconds: (op['ttl'] as num?)?.toInt(),
+        final handedOff = await _deliverBody(
+          recipient,
+          MessageBody(
+            messageId: '${op['act']}:${op['target']}:$recipient',
+            text: (op['text'] as String?) ?? '',
+            timestamp: DateTime.now(),
+            groupId: gid,
+            groupMembers: info?.members,
+            groupAdmin: info?.adminAddress,
+            groupName: info?.name,
+            action: op['act'] as String,
+            targetId: op['target'] as String,
+            ttlSeconds: (op['ttl'] as num?)?.toInt(),
+            kind: op['kind'] as String?,
+            mediaB64: op['media'] as String?,
+            mediaMime: op['mmime'] as String?,
+          ),
         );
-        if (!delivered) remaining.add(recipient);
+        if (!handedOff) remaining.add(recipient);
       }
       if (remaining.length != to.length) {
         changed = true;
@@ -624,6 +1243,30 @@ class MessengerService {
   // ---------------------------------------------------------------------
   // Group management
   // ---------------------------------------------------------------------
+
+  Future<String> createGroup(
+    List<String> memberAddresses, {
+    String? name,
+  }) async {
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) throw StateError('Identity is locked');
+
+    final groupId = _uuid.v4();
+    final members = <String>{...memberAddresses, me}.toList();
+    final trimmedName = name?.trim();
+    await ChatStorage.instance.saveGroupInfo(GroupInfo(
+      id: groupId,
+      adminAddress: me,
+      name: (trimmedName != null && trimmedName.isNotEmpty)
+          ? trimmedName
+          : null,
+      members: members,
+    ));
+    final chatKey = ChatStorage.groupChatKey(groupId);
+    await ChatStorage.instance.ensureChatExists(chatKey);
+    _changed.add(chatKey);
+    return chatKey;
+  }
 
   Future<void> renameGroup(String chatKey, String name) async {
     final groupId = ChatStorage.groupIdOf(chatKey);
@@ -742,16 +1385,18 @@ class MessengerService {
       ...alsoNotify.where((a) => a != me),
     };
     for (final recipient in recipients) {
-      await _transport?.sendMessage(
-        peerAddress: recipient,
-        messageId: eventId,
-        text: '',
-        timestamp: timestamp,
-        groupId: info.id,
-        groupMembers: info.members,
-        groupAdmin: info.adminAddress,
-        groupName: info.name,
-        groupEvent: action,
+      await _deliverBody(
+        recipient,
+        MessageBody(
+          messageId: eventId,
+          text: '',
+          timestamp: timestamp,
+          groupId: info.id,
+          groupMembers: info.members,
+          groupAdmin: info.adminAddress,
+          groupName: info.name,
+          groupEvent: action,
+        ),
       );
     }
   }
@@ -762,10 +1407,11 @@ class MessengerService {
 
   /// Immediately retries everything pending in [chatKey].
   Future<void> retryChat(String chatKey) async {
+    _lastRelayAttemptMs.clear();
     if (ChatStorage.isGroupChat(chatKey)) {
-      await _flushGroupPending(chatKey, onlinePeers);
+      await _flushGroupPending(chatKey, onlinePeers, force: true);
     } else {
-      await _flushDirectPending(chatKey);
+      await _flushDirectPending(chatKey, force: true);
     }
     await _flushControlOutbox(onlinePeers);
   }
@@ -776,25 +1422,41 @@ class MessengerService {
     for (final chatKey in chats) {
       if (ChatStorage.isGroupChat(chatKey)) {
         await _flushGroupPending(chatKey, onlineNow);
-      } else if (onlineNow.contains(chatKey)) {
+      } else {
         await _flushDirectPending(chatKey);
       }
     }
   }
 
-  Future<void> _flushDirectPending(String peerAddress) async {
-    final transport = _transport;
-    if (transport == null) return;
+  /// Only re-attempt a relay handoff for a message every 45 seconds; a
+  /// direct link to the recipient is always attempted immediately.
+  bool _shouldAttempt(String messageId, String recipient, bool force) {
+    if (force || onlinePeers.contains(recipient)) return true;
+    if (onlinePeers.isEmpty) return false;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastRelayAttemptMs['$messageId:$recipient'] ?? 0;
+    if (now - last < 45000) return false;
+    _lastRelayAttemptMs['$messageId:$recipient'] = now;
+    return true;
+  }
+
+  Future<void> _flushDirectPending(
+    String peerAddress, {
+    bool force = false,
+  }) async {
+    final ttl = await SettingsService.instance.getAutoDeleteSeconds();
     final messages = await ChatStorage.instance.listMessages(peerAddress);
     for (final message in messages) {
       if (!message.isMe || message.status != MessageStatus.pending) continue;
-      final delivered = await transport.sendMessage(
-        peerAddress: peerAddress,
-        messageId: message.id,
-        text: message.text,
-        timestamp: message.timestamp,
+      if (message.isSystem) continue;
+      if (!_shouldAttempt(message.id, peerAddress, force)) continue;
+
+      final media = await _reloadMedia(message);
+      final handedOff = await _deliverBody(
+        peerAddress,
+        _bodyFor(message, media, ttl),
       );
-      if (delivered) {
+      if (handedOff) {
         await ChatStorage.instance
             .updateMessageStatus(peerAddress, message.id, MessageStatus.sent);
         _changed.add(peerAddress);
@@ -802,34 +1464,68 @@ class MessengerService {
     }
   }
 
-  Future<void> _flushGroupPending(String chatKey, Set<String> onlineNow) async {
-    final transport = _transport;
-    if (transport == null) return;
+  Future<void> _flushGroupPending(
+    String chatKey,
+    Set<String> onlineNow, {
+    bool force = false,
+  }) async {
     final groupId = ChatStorage.groupIdOf(chatKey);
     final info = await ChatStorage.instance.getGroupInfo(groupId);
     if (info == null) return;
+    final ttl = await SettingsService.instance.getAutoDeleteSeconds();
 
     final messages = await ChatStorage.instance.listMessages(chatKey);
     for (final message in messages) {
       if (!message.isMe || message.pendingTo.isEmpty) continue;
+      final media = await _reloadMedia(message);
       for (final recipient in message.pendingTo) {
-        if (!onlineNow.contains(recipient)) continue;
-        final delivered = await transport.sendMessage(
-          peerAddress: recipient,
-          messageId: message.id,
-          text: message.text,
-          timestamp: message.timestamp,
-          groupId: groupId,
-          groupMembers: info.members,
-          groupAdmin: info.adminAddress,
-          groupName: info.name,
+        if (!_shouldAttempt(message.id, recipient, force)) continue;
+        final handedOff = await _deliverBody(
+          recipient,
+          _bodyFor(message, media, ttl, info: info),
         );
-        if (delivered) {
+        if (handedOff) {
           await ChatStorage.instance
-              .markGroupMessageDelivered(chatKey, message.id, recipient);
+              .markGroupMessageHandedOff(chatKey, message.id, recipient);
           _changed.add(chatKey);
         }
       }
     }
   }
+
+  /// Rebuilds the media payload of a stored message for (re)sending.
+  Future<_MediaPayload?> _reloadMedia(ChatMessage message) async {
+    final mediaId = message.mediaId;
+    final kind = message.kind;
+    if (mediaId == null || kind == null) return null;
+    final item = await MediaStore.instance.get(mediaId);
+    final bytes = await MediaStore.instance.readBytes(mediaId);
+    if (item == null || bytes == null) return null;
+    return _MediaPayload(
+      item: item,
+      b64: base64Encode(bytes),
+      kind: kind,
+      temp: message.mediaTemp,
+      durationMs: message.durationMs,
+      voicemail: message.voicemail,
+    );
+  }
+}
+
+class _MediaPayload {
+  final MediaItem item;
+  final String b64;
+  final String kind;
+  final bool temp;
+  final int? durationMs;
+  final bool voicemail;
+
+  const _MediaPayload({
+    required this.item,
+    required this.b64,
+    required this.kind,
+    required this.temp,
+    this.durationMs,
+    this.voicemail = false,
+  });
 }

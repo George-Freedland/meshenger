@@ -21,16 +21,26 @@ class IncomingMessage {
   /// Values: `rename`, `members`, `leave`.
   final String? groupEvent;
 
-  /// Message-level action: `edit`, `delete`, or `story`. Absent for normal
-  /// chat messages.
+  /// Message-level action: `edit`, `delete`, `story`, `ack`, or one of the
+  /// `call-*` signals. Absent for normal chat messages.
   final String? action;
 
-  /// Target message id for `edit`/`delete` actions.
+  /// Target message id for `edit`/`delete`/`ack` actions, story id for
+  /// `story`, call id for `call-*`.
   final String? targetId;
 
   /// Auto-delete TTL in seconds requested by the sender (also used as the
   /// story lifetime for `story` actions).
   final int? ttlSeconds;
+
+  // --- Media attachment ---
+  final String? kind; // image | audio | file (null => text)
+  final String? mediaB64;
+  final String? mediaName;
+  final String? mediaMime;
+  final bool mediaTemp; // view-once
+  final int? durationMs;
+  final bool voicemail;
 
   const IncomingMessage({
     required this.fromAddress,
@@ -45,6 +55,13 @@ class IncomingMessage {
     this.action,
     this.targetId,
     this.ttlSeconds,
+    this.kind,
+    this.mediaB64,
+    this.mediaName,
+    this.mediaMime,
+    this.mediaTemp = false,
+    this.durationMs,
+    this.voicemail = false,
   });
 
   bool get isGroupEvent => groupEvent != null;

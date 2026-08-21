@@ -5,7 +5,6 @@ import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
 
-import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
 import '../services/transport_log.dart';
 import 'envelope_codec.dart';
@@ -16,11 +15,10 @@ import 'mesh_transport.dart';
 /// GATT layout (every device is simultaneously central and peripheral):
 /// - Announce characteristic (read): a signed announcement proving which
 ///   Ed25519 address + X25519 key this device belongs to.
-/// - Inbox characteristic (write): receives end-to-end encrypted message
-///   envelopes as chunked writes. Each chunk is prefixed with a 1-byte
-///   flag; bit 0 marks the final chunk. The GATT write response of the
-///   final chunk doubles as the delivery ack: it only succeeds after the
-///   signature verified and decryption succeeded.
+/// - Inbox characteristic (write): receives opaque JSON packets as chunked
+///   writes. Each chunk is prefixed with a 1-byte flag; bit 0 marks the
+///   final chunk. The GATT write response of the final chunk doubles as
+///   the transport-level ack: it only succeeds after the packet parsed.
 class _IoBleTransport implements MeshTransport {
   static final UUID serviceUuid =
       UUID.fromString('4d455348-454e-4745-5242-4c4530303031');
@@ -31,6 +29,9 @@ class _IoBleTransport implements MeshTransport {
 
   static const Duration rescanInterval = Duration(seconds: 12);
   static const Duration peerTimeout = Duration(seconds: 40);
+
+  /// Per-chunk GATT timeout; large media envelopes are many chunks, each
+  /// with its own window, so big transfers still complete.
   static const Duration gattTimeout = Duration(seconds: 15);
   static const int _finalChunkFlag = 0x01;
 
@@ -49,7 +50,7 @@ class _IoBleTransport implements MeshTransport {
   /// Inbound chunk reassembly buffers, keyed by the writing central's UUID.
   final Map<String, BytesBuilder> _inboxBuffers = <String, BytesBuilder>{};
 
-  final _messages = StreamController<IncomingMessage>.broadcast();
+  final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peersChanged = StreamController<Set<String>>.broadcast();
   Set<String> _lastEmittedPeers = const <String>{};
 
@@ -75,7 +76,11 @@ class _IoBleTransport implements MeshTransport {
   }
 
   @override
-  Stream<IncomingMessage> get onMessage => _messages.stream;
+  String? x25519For(String peerAddress) =>
+      _peersByAddress[peerAddress]?.x25519Base64;
+
+  @override
+  Stream<Map<String, Object?>> get onPacket => _packets.stream;
 
   @override
   Stream<Set<String>> get onPeersChanged => _peersChanged.stream;
@@ -111,7 +116,7 @@ class _IoBleTransport implements MeshTransport {
     await _waitPoweredOn(peripheral);
     log.log('BLE: central+peripheral powered on');
 
-    // --- Peripheral role: advertise + accept inbound messages ---
+    // --- Peripheral role: advertise + accept inbound packets ---
     _subscriptions.add(
       peripheral.characteristicReadRequested.listen(_scheduleReadRequest),
     );
@@ -392,41 +397,14 @@ class _IoBleTransport implements MeshTransport {
   // -----------------------------------------------------------------------
 
   @override
-  Future<bool> sendMessage({
-    required String peerAddress,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-    String? groupId,
-    List<String>? groupMembers,
-    String? groupAdmin,
-    String? groupName,
-    String? groupEvent,
-    String? action,
-    String? targetId,
-    int? ttlSeconds,
-  }) async {
+  Future<bool> sendPacket(
+    String peerAddress,
+    Map<String, Object?> packet,
+  ) async {
     final peer = _peersByAddress[peerAddress];
-    final from = _myAddress;
-    if (peer == null || from == null || !_running) return false;
+    if (peer == null || !_running) return false;
 
-    final envelope = await EnvelopeCodec.encryptEnvelope(
-      from: from,
-      to: peerAddress,
-      toX25519Base64: peer.x25519Base64,
-      messageId: messageId,
-      text: text,
-      timestamp: timestamp,
-      groupId: groupId,
-      groupMembers: groupMembers,
-      groupAdmin: groupAdmin,
-      groupName: groupName,
-      groupEvent: groupEvent,
-      action: action,
-      targetId: targetId,
-      ttlSeconds: ttlSeconds,
-    );
-    final payload = utf8.encode(jsonEncode(envelope));
+    final payload = utf8.encode(jsonEncode(packet));
 
     var delivered = false;
     await _enqueueGatt(() async {
@@ -467,9 +445,8 @@ class _IoBleTransport implements MeshTransport {
         chunk[0] = isLast ? _finalChunkFlag : 0x00;
         chunk.setRange(1, chunk.length, payload, offset);
 
-        // The final chunk's write response is the app-level ack: the
-        // peripheral only responds successfully after verifying and
-        // decrypting the complete envelope.
+        // The final chunk's write response is the transport-level ack: the
+        // peripheral only responds successfully after parsing the packet.
         await central
             .writeCharacteristic(
               device,
@@ -581,22 +558,19 @@ class _IoBleTransport implements MeshTransport {
     final payload = buffer.takeBytes();
     _inboxBuffers.remove(centralUuid);
 
-    IncomingMessage? incoming;
+    Map<String, Object?>? packet;
     try {
       final decoded = jsonDecode(utf8.decode(payload));
-      if (decoded is Map) {
-        incoming = await EnvelopeCodec.decryptEnvelope(
-          decoded,
-          myAddress: _myAddress ?? '',
-        );
+      if (decoded is Map && decoded['t'] is String) {
+        packet = decoded.cast<String, Object?>();
       }
     } catch (_) {
-      incoming = null;
+      packet = null;
     }
 
-    if (incoming == null) {
+    if (packet == null) {
       TransportLog.instance.log(
-          'BLE: rejected envelope from ${event.central.uuid} '
+          'BLE: rejected packet from ${event.central.uuid} '
           '(${payload.length} bytes)');
       await peripheral.respondWriteRequestWithError(
         event.request,
@@ -606,11 +580,11 @@ class _IoBleTransport implements MeshTransport {
     }
 
     TransportLog.instance.log(
-        'BLE: received message from ${_shortAddr(incoming.fromAddress)}');
+        'BLE: received ${packet['t']} packet (${payload.length} bytes)');
     // Ack first (success response to the final write), then surface the
-    // message to the app.
+    // packet to the router.
     await peripheral.respondWriteRequest(event.request);
-    _messages.add(incoming);
+    _packets.add(packet);
   }
 }
 

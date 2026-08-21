@@ -240,6 +240,14 @@ class ChatStorage {
     await _writeMessages(chatKey, messages);
   }
 
+  Future<ChatMessage?> getMessage(String chatKey, String messageId) async {
+    final messages = await _rawMessages(chatKey);
+    for (final message in messages) {
+      if (message.id == messageId) return message;
+    }
+    return null;
+  }
+
   Future<void> updateMessageStatus(
     String chatKey,
     String messageId,
@@ -294,38 +302,98 @@ class ChatStorage {
     return sender == requireSender;
   }
 
-  Future<void> markGroupMessageDelivered(
+  Future<void> markGroupMessageHandedOff(
     String chatKey,
     String messageId,
-    String deliveredTo,
+    String handedOffTo,
   ) async {
     final messages = await _rawMessages(chatKey);
     final idx = messages.indexWhere((m) => m.id == messageId);
     if (idx < 0) return;
     final remaining =
-        messages[idx].pendingTo.where((a) => a != deliveredTo).toList();
+        messages[idx].pendingTo.where((a) => a != handedOffTo).toList();
     messages[idx] = messages[idx].copyWith(
       pendingTo: remaining,
-      status: remaining.isEmpty ? MessageStatus.sent : MessageStatus.pending,
+      status: remaining.isEmpty && messages[idx].status == MessageStatus.pending
+          ? MessageStatus.sent
+          : messages[idx].status,
     );
     await _writeMessages(chatKey, messages);
   }
 
-  /// Physically purges expired messages. Returns the chat keys that changed.
-  Future<Set<String>> sweepExpired() async {
+  /// Applies an end-to-end delivery ack from [ackedBy] for [messageId].
+  /// Returns true when the message state changed.
+  Future<bool> applyDeliveryAck(
+    String chatKey,
+    String messageId,
+    String ackedBy, {
+    required List<String> allRecipients,
+  }) async {
+    final messages = await _rawMessages(chatKey);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return false;
+    final message = messages[idx];
+    if (!message.isMe) return false;
+
+    if (allRecipients.length <= 1) {
+      if (message.status == MessageStatus.delivered) return false;
+      messages[idx] = message.copyWith(status: MessageStatus.delivered);
+    } else {
+      if (message.deliveredTo.contains(ackedBy)) return false;
+      final delivered = [...message.deliveredTo, ackedBy];
+      final allDelivered =
+          allRecipients.every((recipient) => delivered.contains(recipient));
+      messages[idx] = message.copyWith(
+        deliveredTo: delivered,
+        pendingTo: message.pendingTo.where((a) => a != ackedBy).toList(),
+        status: allDelivered ? MessageStatus.delivered : message.status,
+      );
+    }
+    await _writeMessages(chatKey, messages);
+    return true;
+  }
+
+  /// Marks view-once media as viewed and detaches the (deleted) media file.
+  Future<void> markMediaViewed(String chatKey, String messageId) async {
+    final messages = await _rawMessages(chatKey);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return;
+    messages[idx] = messages[idx].copyWith(viewed: true, clearMedia: true);
+    await _writeMessages(chatKey, messages);
+  }
+
+  /// Media ids referenced by messages in a chat (used to clean files up
+  /// when messages are cleared or a chat is deleted).
+  Future<List<String>> mediaIdsIn(String chatKey) async {
+    final messages = await _rawMessages(chatKey);
+    return [
+      for (final m in messages)
+        if (m.mediaId != null) m.mediaId!,
+    ];
+  }
+
+  /// Physically purges expired messages. Returns the chat keys that changed
+  /// and the media ids of purged attachments (files should be deleted).
+  Future<(Set<String>, List<String>)> sweepExpired() async {
     final now = DateTime.now().millisecondsSinceEpoch;
     final changed = <String>{};
+    final mediaIds = <String>[];
     for (final chatKey in await listChats()) {
       final messages = await _rawMessages(chatKey);
-      final kept = messages
-          .where((m) => m.expiresAtMs == null || m.expiresAtMs! > now)
-          .toList();
+      final kept = <ChatMessage>[];
+      for (final message in messages) {
+        if (message.expiresAtMs == null || message.expiresAtMs! > now) {
+          kept.add(message);
+        } else if (message.mediaId != null) {
+          mediaIds.add(message.mediaId!);
+        }
+      }
       if (kept.length != messages.length) {
         await _writeMessages(chatKey, kept);
         changed.add(chatKey);
       }
     }
-    return changed;
+    return (changed, mediaIds);
   }
 
   Future<void> _writeMessages(

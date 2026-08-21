@@ -8,11 +8,13 @@ import '../../core/models/contact.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/peer_directory.dart';
 
-/// Live map of the mesh as seen from this device: every Meshenger node in
-/// direct radio range (contact or not), with approximate distance from
-/// Bluetooth signal strength. Tap a node to message it or save it as a
-/// contact — no public key exchange needed, discovery is automatic.
+/// Live map of the mesh as seen from this device: nodes in direct radio
+/// range (positioned by signal strength) plus nodes known through gossip
+/// relayed across the mesh — neighbors of neighbors, Raspberry Pi
+/// gateways, and anyone the mesh has heard from recently. Tap any node to
+/// message it or save it as a contact; no key exchange needed.
 class MeshMapScreen extends StatefulWidget {
   const MeshMapScreen({super.key});
 
@@ -21,10 +23,12 @@ class MeshMapScreen extends StatefulWidget {
 }
 
 class _MeshMapScreenState extends State<MeshMapScreen> {
-  Set<String> _peers = const <String>{};
+  Set<String> _direct = const <String>{};
   Map<String, int> _rssi = const <String, int>{};
+  List<KnownPeer> _known = const <KnownPeer>[];
   List<Contact> _contacts = const <Contact>[];
   StreamSubscription<Set<String>>? _peersSub;
+  StreamSubscription<void>? _directorySub;
   Timer? _refreshTimer;
 
   @override
@@ -33,6 +37,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     _reload();
     _peersSub =
         MessengerService.instance.onPeersChanged.listen((_) => _reload());
+    _directorySub =
+        PeerDirectory.instance.onChanged.listen((_) => _reload());
     _refreshTimer =
         Timer.periodic(const Duration(seconds: 3), (_) => _reload());
   }
@@ -40,16 +46,19 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   @override
   void dispose() {
     _peersSub?.cancel();
+    _directorySub?.cancel();
     _refreshTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _reload() async {
     final contacts = await ContactsService.instance.listContacts();
+    final known = await PeerDirectory.instance.listRecent();
     if (!mounted) return;
     setState(() {
-      _peers = MessengerService.instance.onlinePeers;
+      _direct = MessengerService.instance.onlinePeers;
       _rssi = MessengerService.instance.peerSignal;
+      _known = known;
       _contacts = contacts;
     });
   }
@@ -67,13 +76,24 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
         return c.nickname!;
       }
     }
+    for (final peer in _known) {
+      if (peer.address == address &&
+          peer.nickname != null &&
+          peer.nickname!.trim().isNotEmpty) {
+        return peer.nickname!;
+      }
+    }
     return _short(address);
   }
 
   bool _isContact(String address) =>
       _contacts.any((c) => c.address == address);
 
-  Future<void> _showPeerActions(String address) async {
+  /// Mesh-known peers that are not directly in range right now.
+  List<KnownPeer> get _relayed =>
+      _known.where((p) => !_direct.contains(p.address)).toList();
+
+  Future<void> _showPeerActions(String address, {int? hops}) async {
     await showModalBottomSheet<void>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -81,10 +101,20 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.circle,
-                  size: 12, color: Colors.greenAccent),
+              leading: Icon(
+                Icons.circle,
+                size: 12,
+                color: _direct.contains(address)
+                    ? Colors.greenAccent
+                    : Colors.lightBlueAccent,
+              ),
               title: Text(_labelFor(address)),
-              subtitle: Text(_short(address)),
+              subtitle: Text(
+                _direct.contains(address)
+                    ? '${_short(address)} · direct radio link'
+                    : '${_short(address)} · via mesh relay'
+                        '${hops != null ? ' ($hops hop${hops == 1 ? '' : 's'})' : ''}',
+              ),
             ),
             ListTile(
               leading: const Icon(Icons.chat_bubble_outline),
@@ -103,8 +133,14 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                 title: const Text('Add as contact'),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  await ContactsService.instance
-                      .upsertContact(Contact(address: address));
+                  final known = _known
+                      .where((p) => p.address == address)
+                      .toList();
+                  await ContactsService.instance.upsertContact(Contact(
+                    address: address,
+                    nickname:
+                        known.isEmpty ? null : known.first.nickname,
+                  ));
                   await _reload();
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -122,17 +158,25 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   /// 0 (touching) → 1 (edge of range), derived from RSSI when available.
   double _distanceFactor(String address) {
     final rssi = _rssi[address];
-    if (rssi == null) return 0.62;
-    return ((-rssi - 30) / 60).clamp(0.25, 1.0).toDouble();
+    if (rssi == null) return 0.5;
+    return ((-rssi - 30) / 60).clamp(0.2, 0.8).toDouble();
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final peers = _peers.toList()..sort();
+    final direct = _direct.toList()..sort();
+    final relayed = _relayed;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Mesh Map')),
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () =>
+              context.canPop() ? context.pop() : context.go('/home'),
+        ),
+        title: const Text('Mesh Map'),
+      ),
       body: Column(
         children: [
           Expanded(
@@ -146,12 +190,22 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                     min(size.width, size.height) / 2 - 48;
 
                 final positions = <String, Offset>{};
-                for (var i = 0; i < peers.length; i++) {
-                  final angle = -pi / 2 + (2 * pi * i) / peers.length;
-                  final radius =
-                      maxRadius * _distanceFactor(peers[i]);
-                  positions[peers[i]] = center +
+                final relayedSet = <String>{};
+
+                for (var i = 0; i < direct.length; i++) {
+                  final angle = -pi / 2 + (2 * pi * i) / max(direct.length, 1);
+                  final radius = maxRadius * _distanceFactor(direct[i]);
+                  positions[direct[i]] = center +
                       Offset(cos(angle) * radius, sin(angle) * radius);
+                }
+                for (var i = 0; i < relayed.length; i++) {
+                  final peer = relayed[i];
+                  final angle =
+                      -pi / 2 + pi / 7 + (2 * pi * i) / max(relayed.length, 1);
+                  // Mesh-relayed nodes sit on the outer ring.
+                  positions[peer.address] = center +
+                      Offset(cos(angle) * maxRadius, sin(angle) * maxRadius);
+                  relayedSet.add(peer.address);
                 }
 
                 return GestureDetector(
@@ -159,7 +213,13 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                     for (final entry in positions.entries) {
                       if ((details.localPosition - entry.value).distance <=
                           28) {
-                        _showPeerActions(entry.key);
+                        final known = relayed
+                            .where((p) => p.address == entry.key)
+                            .toList();
+                        _showPeerActions(
+                          entry.key,
+                          hops: known.isEmpty ? null : known.first.hops,
+                        );
                         return;
                       }
                     }
@@ -170,8 +230,10 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                       center: center,
                       maxRadius: maxRadius,
                       positions: positions,
+                      relayed: relayedSet,
                       labels: {
-                        for (final p in peers) p: _labelFor(p),
+                        for (final address in positions.keys)
+                          address: _labelFor(address),
                       },
                       theme: theme,
                     ),
@@ -183,14 +245,15 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
           const Divider(height: 1),
           Expanded(
             flex: 2,
-            child: peers.isEmpty
+            child: (direct.isEmpty && relayed.isEmpty)
                 ? Center(
                     child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Text(
                         'No Meshenger devices in range right now.\n'
                         'Devices appear here automatically — no contact '
-                        'exchange needed.',
+                        'exchange needed. Nodes heard through relays show '
+                        'up too.',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurface
@@ -201,34 +264,62 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                   )
                 : ListView(
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: Text('Nearby devices',
-                            style: theme.textTheme.titleSmall),
-                      ),
-                      for (final peer in peers)
-                        ListTile(
-                          leading: const Icon(Icons.circle,
-                              size: 12, color: Colors.greenAccent),
-                          title: Text(_labelFor(peer)),
-                          subtitle: Text(
-                            _rssi[peer] != null
-                                ? '${_short(peer)} · signal ${_rssi[peer]} dBm'
-                                : _short(peer),
-                          ),
-                          trailing: _isContact(peer)
-                              ? null
-                              : const Icon(Icons.person_add_alt_1, size: 18),
-                          onTap: () => _showPeerActions(peer),
+                      if (direct.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          child: Text('In direct radio range',
+                              style: theme.textTheme.titleSmall),
                         ),
+                        for (final peer in direct)
+                          ListTile(
+                            leading: const Icon(Icons.circle,
+                                size: 12, color: Colors.greenAccent),
+                            title: Text(_labelFor(peer)),
+                            subtitle: Text(
+                              _rssi[peer] != null
+                                  ? '${_short(peer)} · signal ${_rssi[peer]} dBm'
+                                  : _short(peer),
+                            ),
+                            trailing: _isContact(peer)
+                                ? null
+                                : const Icon(Icons.person_add_alt_1,
+                                    size: 18),
+                            onTap: () => _showPeerActions(peer),
+                          ),
+                      ],
+                      if (relayed.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          child: Text('Known through the mesh',
+                              style: theme.textTheme.titleSmall),
+                        ),
+                        for (final peer in relayed)
+                          ListTile(
+                            leading: const Icon(Icons.circle,
+                                size: 12, color: Colors.lightBlueAccent),
+                            title: Text(_labelFor(peer.address)),
+                            subtitle: Text(
+                              '${_short(peer.address)} · '
+                              '${peer.hops} hop${peer.hops == 1 ? '' : 's'} away',
+                            ),
+                            trailing: _isContact(peer.address)
+                                ? null
+                                : const Icon(Icons.person_add_alt_1,
+                                    size: 18),
+                            onTap: () => _showPeerActions(
+                              peer.address,
+                              hops: peer.hops,
+                            ),
+                          ),
+                      ],
                     ],
                   ),
           ),
           Padding(
             padding: const EdgeInsets.all(12),
             child: Text(
-              'Shows devices in direct radio range. Multi-hop relay '
-              'visualization arrives with mesh routing.',
+              'Green: direct radio link. Blue: heard through relays — '
+              'messages to them ride the mesh from device to device.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
@@ -245,6 +336,7 @@ class _MeshPainter extends CustomPainter {
   final Offset center;
   final double maxRadius;
   final Map<String, Offset> positions;
+  final Set<String> relayed;
   final Map<String, String> labels;
   final ThemeData theme;
 
@@ -252,6 +344,7 @@ class _MeshPainter extends CustomPainter {
     required this.center,
     required this.maxRadius,
     required this.positions,
+    required this.relayed,
     required this.labels,
     required this.theme,
   });
@@ -266,11 +359,19 @@ class _MeshPainter extends CustomPainter {
       canvas.drawCircle(center, maxRadius * factor, ringPaint);
     }
 
-    final edgePaint = Paint()
+    final directEdge = Paint()
       ..strokeWidth = 1.5
       ..color = Colors.greenAccent.withValues(alpha: 0.35);
-    for (final position in positions.values) {
-      canvas.drawLine(center, position, edgePaint);
+    final relayEdge = Paint()
+      ..strokeWidth = 1.2
+      ..color = Colors.lightBlueAccent.withValues(alpha: 0.3);
+
+    for (final entry in positions.entries) {
+      if (relayed.contains(entry.key)) {
+        _dashedLine(canvas, center, entry.value, relayEdge);
+      } else {
+        canvas.drawLine(center, entry.value, directEdge);
+      }
     }
 
     // Me, in the middle.
@@ -281,13 +382,36 @@ class _MeshPainter extends CustomPainter {
     );
     _label(canvas, 'You', center + const Offset(0, 22));
 
-    final nodePaint = Paint()..color = Colors.greenAccent;
-    final glowPaint = Paint()
+    final directPaint = Paint()..color = Colors.greenAccent;
+    final directGlow = Paint()
       ..color = Colors.greenAccent.withValues(alpha: 0.2);
+    final relayPaint = Paint()..color = Colors.lightBlueAccent;
+    final relayGlow = Paint()
+      ..color = Colors.lightBlueAccent.withValues(alpha: 0.2);
+
     for (final entry in positions.entries) {
-      canvas.drawCircle(entry.value, 16, glowPaint);
-      canvas.drawCircle(entry.value, 10, nodePaint);
+      final isRelayed = relayed.contains(entry.key);
+      canvas.drawCircle(entry.value, 16, isRelayed ? relayGlow : directGlow);
+      canvas.drawCircle(
+          entry.value, 10, isRelayed ? relayPaint : directPaint);
       _label(canvas, labels[entry.key] ?? '', entry.value + const Offset(0, 18));
+    }
+  }
+
+  void _dashedLine(Canvas canvas, Offset from, Offset to, Paint paint) {
+    const dash = 6.0;
+    const gap = 5.0;
+    final total = (to - from).distance;
+    final direction = (to - from) / total;
+    var traveled = 0.0;
+    while (traveled < total) {
+      final end = min(traveled + dash, total);
+      canvas.drawLine(
+        from + direction * traveled,
+        from + direction * end,
+        paint,
+      );
+      traveled = end + gap;
     }
   }
 

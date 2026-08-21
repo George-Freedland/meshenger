@@ -29,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _loading = true;
   bool _allowAnyone = true;
+  bool _relayEnabled = true;
   int _autoDeleteSeconds = 0;
   int _avatarId = 0;
   TransportMode _transportMode = MessengerService.instance.mode;
@@ -48,11 +49,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final allowAnyone =
         await SettingsService.instance.getAllowMessagesFromAnyone();
+    final relayEnabled = await SettingsService.instance.getRelayEnabled();
     final autoDelete = await SettingsService.instance.getAutoDeleteSeconds();
     final identity = IdentityService.instance.active;
     if (!mounted) return;
     setState(() {
       _allowAnyone = allowAnyone;
+      _relayEnabled = relayEnabled;
       _autoDeleteSeconds = autoDelete;
       _avatarId = identity?.avatarId ?? 0;
       _nicknameController.text = identity?.nickname ?? '';
@@ -142,7 +145,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () =>
+              context.canPop() ? context.pop() : context.go('/home'),
+        ),
+        title: const Text('Settings'),
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -193,6 +203,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onSelectionChanged: (s) => _setTransport(s.first),
                 ),
                 const SizedBox(height: 16),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Relay messages for the mesh'),
+                  subtitle: Text(
+                    _relayEnabled
+                        ? 'This device stores and forwards encrypted envelopes '
+                            'for others — extending everyone\'s range. Content '
+                            'is never readable here.'
+                        : 'This device does not carry traffic for others.',
+                  ),
+                  value: _relayEnabled,
+                  onChanged: (value) async {
+                    setState(() => _relayEnabled = value);
+                    await SettingsService.instance.setRelayEnabled(value);
+                  },
+                ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Allow messages from anyone'),

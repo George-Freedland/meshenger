@@ -43,6 +43,19 @@
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Meshenger uses Bluetooth to discover nearby devices and exchange end-to-end encrypted messages without any network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Meshenger uses the microphone for voice memos, voice messages, voicemail, and mesh calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Meshenger uses the camera to capture photos for chats and stories.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Meshenger lets you attach photos from your library to chats and stories.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Meshenger discovers nearby devices on your local network to deliver end-to-end encrypted messages without a server.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

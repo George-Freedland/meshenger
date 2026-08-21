@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -271,6 +272,25 @@ class IdentityService {
       _identityKeyPair = null;
       return false;
     }
+  }
+
+  /// Unlocks the service with an in-memory keypair, bypassing storage.
+  /// For tests (and future headless clients) only.
+  @visibleForTesting
+  Future<void> debugUnlockWithKeyPair(
+    SimpleKeyPair keyPair, {
+    String? nickname,
+  }) async {
+    _identityKeyPair = keyPair;
+    _publicKey = await keyPair.extractPublicKey();
+    _agreementKeyPair = null;
+    _active = StoredIdentity(
+      publicKey: base64Encode(_publicKey!.bytes),
+      encryptedPrivateKey: '',
+      salt: '',
+      nickname: nickname,
+    );
+    IdentityScope.setActive(_active!.publicKey);
   }
 
   /// Locks the current identity (logout). Clears all in-memory key material.

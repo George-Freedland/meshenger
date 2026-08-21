@@ -15,11 +15,13 @@ import '../features/chat/chat_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/onboarding/onboarding_screen.dart';
 
-final GlobalKey<NavigatorState> _rootNavigatorKey =
+/// Root navigator key, shared so global overlays (incoming calls,
+/// voicemail prompts) can open dialogs from outside the router tree.
+final GlobalKey<NavigatorState> rootNavigatorKey =
     GlobalKey<NavigatorState>(debugLabel: 'rootNavigator');
 
 final GoRouter appRouter = GoRouter(
-  navigatorKey: _rootNavigatorKey,
+  navigatorKey: rootNavigatorKey,
   initialLocation: '/',
   routes: <RouteBase>[
     GoRoute(

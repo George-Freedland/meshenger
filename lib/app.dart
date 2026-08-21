@@ -1,6 +1,6 @@
-import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
+import 'features/calls/call_overlay.dart';
 import 'routing/app_router.dart';
 
 class MeshengerApp extends StatelessWidget {
@@ -11,6 +11,8 @@ class MeshengerApp extends StatelessWidget {
     return MaterialApp.router(
       title: 'Meshenger',
       routerConfig: appRouter,
+      builder: (context, child) =>
+          CallOverlay(child: child ?? const SizedBox.shrink()),
       theme: ThemeData.dark().copyWith(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.tealAccent,

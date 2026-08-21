@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
 import 'envelope_codec.dart';
 import 'mesh_transport.dart';
@@ -11,10 +10,12 @@ import 'mesh_transport.dart';
 ///
 /// Discovery: every device broadcasts a signed UDP announcement
 /// (`address`, X25519 key, TCP port) on port 45654 every 3 seconds.
-/// Delivery: messages are end-to-end encrypted (X25519 ECDH + AES-256-GCM),
-/// signed with the sender's Ed25519 identity key, and sent over a direct
-/// TCP connection. The receiver replies with an ack only after the
-/// signature verifies and decryption succeeds.
+/// Delivery: opaque JSON packets over a direct TCP connection; the
+/// receiver replies with an ack line after accepting the packet.
+///
+/// The same wire protocol is spoken by the headless relay daemon
+/// (`relay/bin/relay.dart`), so a Raspberry Pi can join the mesh as a
+/// gateway.
 class _IoLanTransport implements MeshTransport {
   static const int discoveryPort = 45654;
   static const Duration announceInterval = Duration(seconds: 3);
@@ -30,7 +31,7 @@ class _IoLanTransport implements MeshTransport {
 
   final Map<String, _PeerInfo> _peers = <String, _PeerInfo>{};
 
-  final _messages = StreamController<IncomingMessage>.broadcast();
+  final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peersChanged = StreamController<Set<String>>.broadcast();
 
   @override
@@ -49,7 +50,10 @@ class _IoLanTransport implements MeshTransport {
   Map<String, int> get peerRssi => const <String, int>{};
 
   @override
-  Stream<IncomingMessage> get onMessage => _messages.stream;
+  String? x25519For(String peerAddress) => _peers[peerAddress]?.x25519Base64;
+
+  @override
+  Stream<Map<String, Object?>> get onPacket => _packets.stream;
 
   @override
   Stream<Set<String>> get onPeersChanged => _peersChanged.stream;
@@ -66,7 +70,7 @@ class _IoLanTransport implements MeshTransport {
     _myAddress = address;
     _myX25519Base64 = await EnvelopeCodec.myX25519Base64();
 
-    // Inbound message server on an ephemeral port (announced over UDP).
+    // Inbound packet server on an ephemeral port (announced over UDP).
     _server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
     _server!.listen(_handleConnection);
 
@@ -76,14 +80,19 @@ class _IoLanTransport implements MeshTransport {
       reuseAddress: true,
     );
     _udp!.broadcastEnabled = true;
-    _udp!.listen((event) {
-      if (event == RawSocketEvent.read) {
-        final datagram = _udp!.receive();
-        if (datagram != null) {
-          _handleAnnouncement(datagram);
+    _udp!.listen(
+      (event) {
+        if (event == RawSocketEvent.read) {
+          final datagram = _udp!.receive();
+          if (datagram != null) {
+            _handleAnnouncement(datagram);
+          }
         }
-      }
-    });
+      },
+      onError: (Object _) {
+        // Broadcast sends to unreachable interfaces surface here; harmless.
+      },
+    );
 
     await _announce();
     _announceTimer = Timer.periodic(announceInterval, (_) => _announce());
@@ -215,48 +224,20 @@ class _IoLanTransport implements MeshTransport {
   // ---------------------------------------------------------------------
 
   @override
-  Future<bool> sendMessage({
-    required String peerAddress,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-    String? groupId,
-    List<String>? groupMembers,
-    String? groupAdmin,
-    String? groupName,
-    String? groupEvent,
-    String? action,
-    String? targetId,
-    int? ttlSeconds,
-  }) async {
+  Future<bool> sendPacket(
+    String peerAddress,
+    Map<String, Object?> packet,
+  ) async {
     final peer = _peers[peerAddress];
-    final from = _myAddress;
-    if (peer == null || from == null) return false;
+    if (peer == null) return false;
 
     try {
-      final envelope = await EnvelopeCodec.encryptEnvelope(
-        from: from,
-        to: peerAddress,
-        toX25519Base64: peer.x25519Base64,
-        messageId: messageId,
-        text: text,
-        timestamp: timestamp,
-        groupId: groupId,
-        groupMembers: groupMembers,
-        groupAdmin: groupAdmin,
-        groupName: groupName,
-        groupEvent: groupEvent,
-        action: action,
-        targetId: targetId,
-        ttlSeconds: ttlSeconds,
-      );
-
       final socket = await Socket.connect(
         peer.host,
         peer.port,
         timeout: const Duration(seconds: 5),
       );
-      socket.write('${jsonEncode(envelope)}\n');
+      socket.write('${jsonEncode(packet)}\n');
       await socket.flush();
 
       final response = await socket
@@ -264,11 +245,11 @@ class _IoLanTransport implements MeshTransport {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .first
-          .timeout(const Duration(seconds: 5));
+          .timeout(const Duration(seconds: 10));
       socket.destroy();
 
       final ack = jsonDecode(response);
-      return ack is Map && ack['t'] == 'ack' && ack['id'] == messageId;
+      return ack is Map && ack['t'] == 'ack';
     } catch (_) {
       return false;
     }
@@ -285,30 +266,22 @@ class _IoLanTransport implements MeshTransport {
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .first
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 20));
 
       final decoded = jsonDecode(line);
-      if (decoded is! Map) {
+      if (decoded is! Map || decoded['t'] is! String) {
         socket.destroy();
         return;
       }
 
-      final incoming = await EnvelopeCodec.decryptEnvelope(
-        decoded,
-        myAddress: _myAddress ?? '',
-      );
-      if (incoming == null) {
-        socket.destroy();
-        return;
-      }
-
-      _messages.add(incoming);
-
+      final packet = decoded.cast<String, Object?>();
       socket.write(
-        '${jsonEncode(<String, Object?>{'t': 'ack', 'id': incoming.id})}\n',
+        '${jsonEncode(<String, Object?>{'t': 'ack', 'id': packet['id']})}\n',
       );
       await socket.flush();
       socket.destroy();
+
+      _packets.add(packet);
     } catch (_) {
       socket.destroy();
     }

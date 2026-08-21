@@ -31,6 +31,21 @@ dependencies:
   shared_preferences: any
   bluetooth_low_energy: ^6.2.1
 
+  # Media: pick images (camera on mobile, files on desktop)
+  image_picker: any
+
+  # Generic file import for the Storage app
+  file_selector: any
+
+  # Voice memos / push-to-talk recording
+  record: any
+
+  # Audio playback (voice memos, voicemail, audio messages)
+  audioplayers: any
+
+  # App-support directory for the media library
+  path_provider: any
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

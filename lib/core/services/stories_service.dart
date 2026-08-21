@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity_scope.dart';
+import 'media_store.dart';
 
 class Story {
   final String id;
@@ -12,12 +13,18 @@ class Story {
   final int tsMs;
   final int expiresMs;
 
+  /// Optional image attached to the story (id in the local MediaStore).
+  final String? mediaId;
+  final String? mediaMime;
+
   const Story({
     required this.id,
     required this.author,
     required this.text,
     required this.tsMs,
     required this.expiresMs,
+    this.mediaId,
+    this.mediaMime,
   });
 
   bool get isActive => DateTime.now().millisecondsSinceEpoch < expiresMs;
@@ -28,6 +35,8 @@ class Story {
         'text': text,
         'ts': tsMs,
         'expires': expiresMs,
+        if (mediaId != null) 'mediaId': mediaId,
+        if (mediaMime != null) 'mediaMime': mediaMime,
       };
 
   static Story fromJson(Map<String, Object?> json) => Story(
@@ -36,6 +45,8 @@ class Story {
         text: json['text'] as String,
         tsMs: (json['ts'] as num).toInt(),
         expiresMs: (json['expires'] as num).toInt(),
+        mediaId: json['mediaId'] as String?,
+        mediaMime: json['mediaMime'] as String?,
       );
 }
 
@@ -65,16 +76,27 @@ class StoriesService {
 
   Future<void> remove(String id) async {
     final stories = await _readAll();
+    final removed = stories.where((s) => s.id == id).toList();
     stories.removeWhere((s) => s.id == id);
     await _writeAll(stories);
+    for (final story in removed) {
+      final mediaId = story.mediaId;
+      if (mediaId != null) await MediaStore.instance.delete(mediaId);
+    }
     _changed.add(null);
   }
 
-  /// Purges expired stories. Returns true when anything was removed.
+  /// Purges expired stories (and their media). Returns true when anything
+  /// was removed.
   Future<bool> sweepExpired() async {
     final stories = await _readAll();
     final active = stories.where((s) => s.isActive).toList();
     if (active.length == stories.length) return false;
+    final expired = stories.where((s) => !s.isActive);
+    for (final story in expired) {
+      final mediaId = story.mediaId;
+      if (mediaId != null) await MediaStore.instance.delete(mediaId);
+    }
     await _writeAll(active);
     _changed.add(null);
     return true;

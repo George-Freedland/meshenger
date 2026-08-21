@@ -8,6 +8,9 @@ class IdentityScope {
 
   static bool get hasActive => _fingerprint != null;
 
+  /// Fingerprint of the active identity (used for per-identity folders).
+  static String? get activeFingerprint => _fingerprint;
+
   static void setActive(String publicKeyBase64) {
     _fingerprint = fingerprintOf(publicKeyBase64);
   }

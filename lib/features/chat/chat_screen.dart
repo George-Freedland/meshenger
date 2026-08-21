@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -7,10 +8,13 @@ import 'package:go_router/go_router.dart';
 import '../../core/models/contact.dart';
 import '../../core/models/group_info.dart';
 import '../../core/models/message.dart';
+import '../../core/services/call_service.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
+import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/ui/media_widgets.dart';
 
 const _monthNames = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -50,8 +54,12 @@ class _ChatScreenState extends State<ChatScreen> {
   List<Contact> _contacts = const <Contact>[];
   Set<String> _onlinePeers = const <String>{};
   bool _sending = false;
+  bool _composerHasText = false;
   String? _myAddress;
   ChatMessage? _editing;
+
+  /// mediaId → resolved file path (avoids FutureBuilder flicker).
+  final Map<String, String?> _mediaPaths = <String, String?>{};
 
   StreamSubscription<String>? _changesSub;
   StreamSubscription<Set<String>>? _peersSub;
@@ -67,6 +75,12 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _load();
+    _inputController.addListener(() {
+      final hasText = _inputController.text.trim().isNotEmpty;
+      if (hasText != _composerHasText) {
+        setState(() => _composerHasText = hasText);
+      }
+    });
 
     final key = _chatKey;
     if (key != null && key.isNotEmpty) {
@@ -134,6 +148,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
     final messages = await ChatStorage.instance.listMessages(key);
+
+    // Resolve attachment paths up front.
+    for (final message in messages) {
+      final mediaId = message.mediaId;
+      if (mediaId != null && !_mediaPaths.containsKey(mediaId)) {
+        _mediaPaths[mediaId] = await MediaStore.instance.pathFor(mediaId);
+      }
+    }
+
     if (!mounted) return;
     setState(() => _messages = messages);
     _scrollToBottom();
@@ -165,6 +188,163 @@ class _ChatScreenState extends State<ChatScreen> {
         await MessengerService.instance.sendText(key, text);
       }
       await _loadMessages();
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Attachments
+  // -----------------------------------------------------------------------
+
+  Future<void> _showAttachSheet() async {
+    final key = _chatKey;
+    if (key == null) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_outlined),
+              title: const Text('Photo'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _sendImage(fromCamera: false);
+              },
+            ),
+            if (supportsCameraCapture)
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Camera'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _sendImage(fromCamera: true);
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.insert_drive_file_outlined),
+              title: const Text('File'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _sendFile();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _sendImage({required bool fromCamera}) async {
+    final key = _chatKey;
+    if (key == null) return;
+    final picked = await pickImage(fromCamera: fromCamera);
+    if (picked == null || !mounted) return;
+
+    // Snapchat-style choice: permanent or view-once.
+    final temp = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Send photo'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.memory(
+                picked.bytes,
+                height: 220,
+                fit: BoxFit.cover,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              formatBytes(picked.bytes.length),
+              style: Theme.of(ctx).textTheme.labelSmall,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.local_fire_department, size: 18),
+            label: const Text('View once'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, false),
+            icon: const Icon(Icons.all_inclusive, size: 18),
+            label: const Text('Permanent'),
+          ),
+        ],
+      ),
+    );
+    if (temp == null || !mounted) return;
+
+    await _sendMediaGuarded(
+      bytes: picked.bytes,
+      name: picked.name,
+      mime: picked.mime,
+      kind: 'image',
+      temp: temp,
+    );
+  }
+
+  Future<void> _sendFile() async {
+    final picked = await pickAnyFile();
+    if (picked == null || !mounted) return;
+    await _sendMediaGuarded(
+      bytes: picked.bytes,
+      name: picked.name,
+      mime: picked.mime,
+      kind: picked.mime.startsWith('image/') ? 'image' : 'file',
+    );
+  }
+
+  Future<void> _recordVoiceNote() async {
+    final clip = await showRecordSheet(context);
+    if (clip == null || !mounted) return;
+    await _sendMediaGuarded(
+      bytes: clip.bytes,
+      name: 'voice.m4a',
+      mime: 'audio/mp4',
+      kind: 'audio',
+      durationMs: clip.durationMs,
+    );
+  }
+
+  Future<void> _sendMediaGuarded({
+    required dynamic bytes,
+    required String name,
+    required String mime,
+    required String kind,
+    bool temp = false,
+    int? durationMs,
+  }) async {
+    final key = _chatKey;
+    if (key == null) return;
+    setState(() => _sending = true);
+    try {
+      await MessengerService.instance.sendMedia(
+        key,
+        bytes: bytes,
+        name: name,
+        mime: mime,
+        kind: kind,
+        temp: temp,
+        durationMs: durationMs,
+      );
+      await _loadMessages();
+    } on StateError catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -247,17 +427,18 @@ class _ChatScreenState extends State<ChatScreen> {
                   await _loadMessages();
                 },
               ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('Edit message'),
-              onTap: () {
-                Navigator.pop(ctx);
-                setState(() {
-                  _editing = message;
-                  _inputController.text = message.text;
-                });
-              },
-            ),
+            if (message.kind == null)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit message'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  setState(() {
+                    _editing = message;
+                    _inputController.text = message.text;
+                  });
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.delete_outline),
               title: const Text('Delete for everyone'),
@@ -300,6 +481,9 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (confirmed != true) return;
+    for (final mediaId in await ChatStorage.instance.mediaIdsIn(key)) {
+      await MediaStore.instance.delete(mediaId);
+    }
     await ChatStorage.instance.clearMessages(key);
     await _loadMessages();
   }
@@ -310,6 +494,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_isGroup) {
       await ChatStorage.instance.hideChat(key);
     } else {
+      for (final mediaId in await ChatStorage.instance.mediaIdsIn(key)) {
+        await MediaStore.instance.delete(mediaId);
+      }
       await ChatStorage.instance.deleteChat(key);
     }
     if (mounted) _goBack();
@@ -596,6 +783,190 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _openViewOnce(ChatMessage message) async {
+    final key = _chatKey;
+    final mediaId = message.mediaId;
+    if (key == null || mediaId == null) return;
+    final path = _mediaPaths[mediaId] ??
+        await MediaStore.instance.pathFor(mediaId);
+    if (path == null || !mounted) {
+      // File already gone.
+      await MessengerService.instance.markViewOnceOpened(key, message);
+      return;
+    }
+    await showImageViewer(context, path, caption: 'View-once photo');
+    // Closing the viewer burns the photo.
+    await MessengerService.instance.markViewOnceOpened(key, message);
+    _mediaPaths.remove(mediaId);
+    await _loadMessages();
+  }
+
+  Widget _buildMediaContent(
+    BuildContext context,
+    ChatMessage message,
+    Color textColor,
+  ) {
+    final theme = Theme.of(context);
+    final mediaId = message.mediaId;
+    final path = mediaId == null ? null : _mediaPaths[mediaId];
+
+    // View-once handling for received images.
+    if (message.kind == 'image' && message.mediaTemp && !message.isMe) {
+      if (message.viewed || path == null) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.local_fire_department,
+                size: 18, color: textColor.withValues(alpha: 0.5)),
+            const SizedBox(width: 6),
+            Text(
+              'View-once photo — opened',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: textColor.withValues(alpha: 0.6),
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        );
+      }
+      return InkWell(
+        onTap: () => _openViewOnce(message),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: textColor.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.local_fire_department,
+                  color: Colors.orangeAccent),
+              const SizedBox(width: 8),
+              Text('Tap to view — disappears after',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: textColor)),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (message.kind == 'image') {
+      if (path == null) {
+        return Text(
+          'Photo unavailable',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: textColor.withValues(alpha: 0.6),
+            fontStyle: FontStyle.italic,
+          ),
+        );
+      }
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () => showImageViewer(context, path),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.file(
+                File(path),
+                width: 260,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+          if (message.isMe && message.mediaTemp)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.local_fire_department,
+                      size: 14, color: Colors.orangeAccent),
+                  const SizedBox(width: 4),
+                  Text('View once',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                          color: textColor.withValues(alpha: 0.6))),
+                ],
+              ),
+            ),
+        ],
+      );
+    }
+
+    if (message.kind == 'audio') {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (message.voicemail)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.voicemail, size: 14, color: textColor),
+                  const SizedBox(width: 4),
+                  Text('Voicemail',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: textColor)),
+                ],
+              ),
+            ),
+          if (path != null)
+            AudioClipPlayer(
+              path: path,
+              durationMs: message.durationMs,
+              color: textColor,
+            )
+          else
+            Text(
+              'Audio unavailable',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: textColor.withValues(alpha: 0.6),
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+        ],
+      );
+    }
+
+    // Generic file.
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.insert_drive_file_outlined, color: textColor),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                message.mediaName ?? 'File',
+                style:
+                    theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                message.isMe
+                    ? 'Sent file'
+                    : 'Saved to your Storage app',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: textColor.withValues(alpha: 0.6),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildBubble(BuildContext context, ChatMessage message) {
     final theme = Theme.of(context);
 
@@ -626,6 +997,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final time = TimeOfDay.fromDateTime(message.timestamp).format(context);
     final showSender = _isGroup && !isMe && message.senderAddress != null;
     final pending = isMe && message.status == MessageStatus.pending;
+
+    final IconData statusIcon = switch (message.status) {
+      MessageStatus.pending => Icons.schedule,
+      MessageStatus.sent => Icons.done,
+      MessageStatus.delivered => Icons.done_all,
+    };
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
@@ -659,10 +1036,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(height: 2),
               ],
-              Text(
-                message.text,
-                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-              ),
+              if (message.kind != null) ...[
+                _buildMediaContent(context, message, textColor),
+                if (message.text.isNotEmpty) const SizedBox(height: 6),
+              ],
+              if (message.text.isNotEmpty)
+                Text(
+                  message.text,
+                  style:
+                      theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                ),
               const SizedBox(height: 4),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -686,11 +1069,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   if (isMe) ...[
                     const SizedBox(width: 4),
                     Icon(
-                      message.status == MessageStatus.sent
-                          ? Icons.done
-                          : Icons.schedule,
+                      statusIcon,
                       size: 14,
-                      color: textColor.withValues(alpha: 0.6),
+                      color: message.status == MessageStatus.delivered
+                          ? theme.colorScheme.primary
+                          : textColor.withValues(alpha: 0.6),
                     ),
                   ],
                 ],
@@ -698,7 +1081,7 @@ class _ChatScreenState extends State<ChatScreen> {
               if (pending) ...[
                 const SizedBox(height: 2),
                 Text(
-                  'no route yet — long-press to retry',
+                  'no route yet — retries automatically, long-press to retry now',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: textColor.withValues(alpha: 0.45),
                   ),
@@ -731,14 +1114,14 @@ class _ChatScreenState extends State<ChatScreen> {
           .toList();
       final onlineCount = others.where(_onlinePeers.contains).length;
       statusLabel =
-          '${_groupInfo?.members.length ?? 0} members · $onlineCount online';
+          '${_groupInfo?.members.length ?? 0} members · $onlineCount in range';
       online = onlineCount > 0;
     } else {
       title = (_nickname != null && _nickname!.trim().isNotEmpty)
           ? _nickname!
           : _short(key);
       online = _onlinePeers.contains(key);
-      statusLabel = online ? 'online' : 'offline';
+      statusLabel = online ? 'in range' : 'via mesh';
     }
 
     return Scaffold(
@@ -775,6 +1158,18 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (key != null && !_isGroup) ...[
+            IconButton(
+              tooltip: 'Voice call',
+              icon: const Icon(Icons.call_outlined),
+              onPressed: () => _placeCall(video: false),
+            ),
+            IconButton(
+              tooltip: 'Video call',
+              icon: const Icon(Icons.videocam_outlined),
+              onPressed: () => _placeCall(video: true),
+            ),
+          ],
           if (_isGroup)
             IconButton(
               tooltip: 'Group info',
@@ -830,7 +1225,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                     ? _isGroup
                                         ? 'Some members are reachable right now.'
                                         : 'This peer is reachable right now.'
-                                    : 'Messages you send now will be delivered when peers come online.',
+                                    : 'Messages travel through the mesh: nearby '
+                                        'devices and relays carry them until '
+                                        'your contact is reached.',
                                 textAlign: TextAlign.center,
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: theme.colorScheme.onSurface
@@ -896,6 +1293,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         Row(
                           children: [
+                            IconButton(
+                              tooltip: 'Attach',
+                              onPressed: _sending ? null : _showAttachSheet,
+                              icon: const Icon(Icons.add_circle_outline),
+                            ),
                             Expanded(
                               child: TextField(
                                 controller: _inputController,
@@ -917,13 +1319,22 @@ class _ChatScreenState extends State<ChatScreen> {
                               ),
                             ),
                             const SizedBox(width: 8),
-                            IconButton.filled(
-                              tooltip: _editing != null ? 'Save edit' : 'Send',
-                              onPressed: _sending ? null : _send,
-                              icon: Icon(_editing != null
-                                  ? Icons.check
-                                  : Icons.send),
-                            ),
+                            if (_composerHasText || _editing != null)
+                              IconButton.filled(
+                                tooltip:
+                                    _editing != null ? 'Save edit' : 'Send',
+                                onPressed: _sending ? null : _send,
+                                icon: Icon(_editing != null
+                                    ? Icons.check
+                                    : Icons.send),
+                              )
+                            else
+                              IconButton.filled(
+                                tooltip: 'Record voice message',
+                                onPressed:
+                                    _sending ? null : _recordVoiceNote,
+                                icon: const Icon(Icons.mic),
+                              ),
                           ],
                         ),
                       ],
@@ -933,5 +1344,19 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
     );
+  }
+
+  Future<void> _placeCall({required bool video}) async {
+    final key = _chatKey;
+    if (key == null || _isGroup) return;
+    final started = await CallService.instance.placeCall(key, video: video);
+    if (!started && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content:
+              Text('No mesh route to this contact right now — try later.'),
+        ),
+      );
+    }
   }
 }

@@ -1,14 +1,10 @@
 import 'dart:async';
 
-import '../models/incoming_message.dart';
 import 'mesh_transport.dart';
 
-/// No-op transport for platforms without dart:io sockets (web).
-///
-/// Messages queue as "pending" and the app stays fully usable; delivery
-/// requires a platform with socket support (desktop/mobile).
+/// No-op LAN transport for platforms without dart:io sockets (web).
 class _StubLanTransport implements MeshTransport {
-  final _messages = StreamController<IncomingMessage>.broadcast();
+  final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
 
   @override
@@ -21,32 +17,27 @@ class _StubLanTransport implements MeshTransport {
   Map<String, int> get peerRssi => const <String, int>{};
 
   @override
-  Stream<IncomingMessage> get onMessage => _messages.stream;
+  String? x25519For(String peerAddress) => null;
+
+  @override
+  Stream<Map<String, Object?>> get onPacket => _packets.stream;
 
   @override
   Stream<Set<String>> get onPeersChanged => _peers.stream;
 
   @override
-  Future<void> start() async {}
+  Future<void> start() async {
+    throw StateError('LAN transport is not supported on this platform');
+  }
 
   @override
   Future<void> stop() async {}
 
   @override
-  Future<bool> sendMessage({
-    required String peerAddress,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-    String? groupId,
-    List<String>? groupMembers,
-    String? groupAdmin,
-    String? groupName,
-    String? groupEvent,
-    String? action,
-    String? targetId,
-    int? ttlSeconds,
-  }) async {
+  Future<bool> sendPacket(
+    String peerAddress,
+    Map<String, Object?> packet,
+  ) async {
     return false;
   }
 }

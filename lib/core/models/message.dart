@@ -1,9 +1,12 @@
 enum MessageStatus {
-  /// Waiting for the peer(s) to come online (stored in outbox).
+  /// Waiting for a route (stored in outbox / relay spool).
   pending,
 
-  /// Delivered to the peer (1:1) or to every group member.
+  /// Handed to the mesh: accepted by the peer directly or by ≥1 relay.
   sent,
+
+  /// The recipient's device confirmed receipt (end-to-end ack).
+  delivered,
 }
 
 class ChatMessage {
@@ -19,6 +22,9 @@ class ChatMessage {
   /// For outgoing group messages: members that have not received it yet.
   final List<String> pendingTo;
 
+  /// For outgoing group messages: members whose device confirmed receipt.
+  final List<String> deliveredTo;
+
   /// Local system notice (group renamed, member added, etc.).
   final bool isSystem;
 
@@ -28,6 +34,18 @@ class ChatMessage {
   /// Auto-delete deadline (epoch ms); message disappears after this.
   final int? expiresAtMs;
 
+  // --- Media attachment ---
+  final String? kind; // image | audio | file (null => text)
+  final String? mediaId; // id in the local MediaStore
+  final String? mediaName;
+  final String? mediaMime;
+  final bool mediaTemp; // Snapchat-style view-once
+  final int? durationMs; // audio duration
+  final bool voicemail;
+
+  /// For view-once media: set after the receiver opened it (media deleted).
+  final bool viewed;
+
   const ChatMessage({
     required this.id,
     required this.text,
@@ -36,16 +54,31 @@ class ChatMessage {
     required this.status,
     this.senderAddress,
     this.pendingTo = const <String>[],
+    this.deliveredTo = const <String>[],
     this.isSystem = false,
     this.edited = false,
     this.expiresAtMs,
+    this.kind,
+    this.mediaId,
+    this.mediaName,
+    this.mediaMime,
+    this.mediaTemp = false,
+    this.durationMs,
+    this.voicemail = false,
+    this.viewed = false,
   });
+
+  bool get hasMedia => kind != null && mediaId != null;
 
   ChatMessage copyWith({
     String? text,
     MessageStatus? status,
     List<String>? pendingTo,
+    List<String>? deliveredTo,
     bool? edited,
+    bool? viewed,
+    String? mediaId,
+    bool clearMedia = false,
   }) {
     return ChatMessage(
       id: id,
@@ -55,9 +88,18 @@ class ChatMessage {
       status: status ?? this.status,
       senderAddress: senderAddress,
       pendingTo: pendingTo ?? this.pendingTo,
+      deliveredTo: deliveredTo ?? this.deliveredTo,
       isSystem: isSystem,
       edited: edited ?? this.edited,
       expiresAtMs: expiresAtMs,
+      kind: kind,
+      mediaId: clearMedia ? null : (mediaId ?? this.mediaId),
+      mediaName: mediaName,
+      mediaMime: mediaMime,
+      mediaTemp: mediaTemp,
+      durationMs: durationMs,
+      voicemail: voicemail,
+      viewed: viewed ?? this.viewed,
     );
   }
 
@@ -69,9 +111,18 @@ class ChatMessage {
         'status': status.name,
         if (senderAddress != null) 'sender': senderAddress,
         if (pendingTo.isNotEmpty) 'pendingTo': pendingTo,
+        if (deliveredTo.isNotEmpty) 'deliveredTo': deliveredTo,
         if (isSystem) 'system': true,
         if (edited) 'edited': true,
         if (expiresAtMs != null) 'expires': expiresAtMs,
+        if (kind != null) 'kind': kind,
+        if (mediaId != null) 'mediaId': mediaId,
+        if (mediaName != null) 'mediaName': mediaName,
+        if (mediaMime != null) 'mediaMime': mediaMime,
+        if (mediaTemp) 'mediaTemp': true,
+        if (durationMs != null) 'dur': durationMs,
+        if (voicemail) 'vm': true,
+        if (viewed) 'viewed': true,
       };
 
   static ChatMessage fromJson(Map<String, Object?> json) {
@@ -88,9 +139,20 @@ class ChatMessage {
       senderAddress: json['sender'] as String?,
       pendingTo: (json['pendingTo'] as List?)?.whereType<String>().toList() ??
           <String>[],
+      deliveredTo:
+          (json['deliveredTo'] as List?)?.whereType<String>().toList() ??
+              <String>[],
       isSystem: json['system'] == true,
       edited: json['edited'] == true,
       expiresAtMs: (json['expires'] as num?)?.toInt(),
+      kind: json['kind'] as String?,
+      mediaId: json['mediaId'] as String?,
+      mediaName: json['mediaName'] as String?,
+      mediaMime: json['mediaMime'] as String?,
+      mediaTemp: json['mediaTemp'] == true,
+      durationMs: (json['dur'] as num?)?.toInt(),
+      voicemail: json['vm'] == true,
+      viewed: json['viewed'] == true,
     );
   }
 }

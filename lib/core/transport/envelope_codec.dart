@@ -5,6 +5,7 @@ import 'package:cryptography/cryptography.dart';
 
 import '../models/incoming_message.dart';
 import '../services/identity_service.dart';
+import 'message_body.dart';
 
 /// A verified peer identity learned from a signed announcement.
 class PeerIdentity {
@@ -17,10 +18,17 @@ class PeerIdentity {
 /// Shared message envelope crypto used by every transport (LAN, Bluetooth).
 ///
 /// Envelope: AES-256-GCM ciphertext under an X25519 ECDH shared key,
-/// signed with the sender's Ed25519 identity key. Any relay only ever
-/// sees ciphertext.
+/// signed with the sender's Ed25519 identity key. Relay nodes (other
+/// phones, Raspberry Pi gateways) only ever see ciphertext plus the
+/// routing header (`to`, `hops`, `via`, `exp`) — never the content.
 class EnvelopeCodec {
   EnvelopeCodec._();
+
+  /// Default relay budget for an envelope.
+  static const int defaultMaxHops = 6;
+
+  /// How long relays keep an undeliverable envelope (store-and-forward).
+  static const Duration defaultRelayLifetime = Duration(hours: 48);
 
   static Future<SecretKey> sharedKeyWith(String theirX25519Base64) async {
     final myKeyPair = await IdentityService.instance.getAgreementKeyPair();
@@ -42,41 +50,15 @@ class EnvelopeCodec {
     return base64Encode(publicKey.bytes);
   }
 
-  /// Builds the encrypted + signed message envelope.
-  ///
-  /// [groupId], [groupMembers], [groupAdmin], and [groupName] are included
-  /// inside the encrypted body for group messages and group metadata events.
+  /// Builds the encrypted + signed message envelope with a relay header.
   static Future<Map<String, Object?>> encryptEnvelope({
     required String from,
     required String to,
     required String toX25519Base64,
-    required String messageId,
-    required String text,
-    required DateTime timestamp,
-    String? groupId,
-    List<String>? groupMembers,
-    String? groupAdmin,
-    String? groupName,
-    String? groupEvent,
-    String? action,
-    String? targetId,
-    int? ttlSeconds,
+    required MessageBody body,
   }) async {
     final sharedKey = await sharedKeyWith(toX25519Base64);
-
-    final plaintext = utf8.encode(jsonEncode(<String, Object?>{
-      'id': messageId,
-      'text': text,
-      'ts': timestamp.millisecondsSinceEpoch,
-      if (groupId != null) 'gid': groupId,
-      if (groupMembers != null) 'members': groupMembers,
-      if (groupAdmin != null) 'admin': groupAdmin,
-      if (groupName != null) 'gname': groupName,
-      if (groupEvent != null) 'gevt': groupEvent,
-      if (action != null) 'act': action,
-      if (targetId != null) 'target': targetId,
-      if (ttlSeconds != null) 'ttl': ttlSeconds,
-    }));
+    final plaintext = utf8.encode(jsonEncode(body.toJson()));
 
     final algorithm = AesGcm.with256bits();
     final secretBox = await algorithm.encrypt(plaintext, secretKey: sharedKey);
@@ -87,19 +69,32 @@ class EnvelopeCodec {
     final myX = await myX25519Base64();
 
     final signature = await IdentityService.instance.sign(
-      utf8.encode('msg|$from|$to|$messageId|$nonceB64|$cipherB64|$macB64'),
+      utf8.encode(
+          'msg|$from|$to|${body.messageId}|$nonceB64|$cipherB64|$macB64'),
     );
+
+    final ttl = body.ttlSeconds;
+    final lifetime = (ttl != null && ttl > 0)
+        ? Duration(seconds: ttl) < defaultRelayLifetime
+            ? Duration(seconds: ttl)
+            : defaultRelayLifetime
+        : defaultRelayLifetime;
 
     return <String, Object?>{
       't': 'msg',
       'from': from,
       'to': to,
       'fromX': myX,
-      'id': messageId,
+      'id': body.messageId,
       'nonce': nonceB64,
       'cipher': cipherB64,
       'mac': macB64,
       'sig': base64Encode(signature.bytes),
+      // Relay routing header (mutable by relays; not signed).
+      'hops': 0,
+      'max': defaultMaxHops,
+      'via': const <String>[],
+      'exp': DateTime.now().add(lifetime).millisecondsSinceEpoch,
     };
   }
 
@@ -159,6 +154,79 @@ class EnvelopeCodec {
         action: body['act'] as String?,
         targetId: body['target'] as String?,
         ttlSeconds: (body['ttl'] as num?)?.toInt(),
+        kind: body['kind'] as String?,
+        mediaB64: body['media'] as String?,
+        mediaName: body['mname'] as String?,
+        mediaMime: body['mmime'] as String?,
+        mediaTemp: body['mtemp'] == true,
+        durationMs: (body['dur'] as num?)?.toInt(),
+        voicemail: body['vm'] == true,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Gossip: signed presence records flooded through the mesh so devices
+  // learn about nodes beyond direct radio range (feeds the Mesh Map and
+  // lets senders encrypt to recipients they have not met directly).
+  // -----------------------------------------------------------------------
+
+  /// Builds my signed gossip record. [nickname] is broadcast to the mesh
+  /// (like a Bluetooth device name) so nearby strangers see a friendly name.
+  static Future<Map<String, Object?>> buildGossip({String? nickname}) async {
+    final identity = IdentityService.instance;
+    final address = await identity.getPublicAddressBase64();
+    if (address == null || !identity.isUnlocked) {
+      throw StateError('Identity must be unlocked');
+    }
+    final x25519 = await myX25519Base64();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final nick = nickname ?? '';
+    final signature = await identity
+        .sign(utf8.encode('gossip|$address|$x25519|$nick|$ts'));
+
+    return <String, Object?>{
+      't': 'gossip',
+      'addr': address,
+      'x25519': x25519,
+      'nick': nick,
+      'ts': ts,
+      'sig': base64Encode(signature.bytes),
+      'hops': 0,
+      'max': defaultMaxHops,
+    };
+  }
+
+  /// Verifies a gossip record's signature. Returns null when invalid.
+  static Future<GossipRecord?> verifyGossip(
+    Map<Object?, Object?> decoded,
+  ) async {
+    try {
+      if (decoded['t'] != 'gossip') return null;
+      final addr = decoded['addr'] as String?;
+      final x25519 = decoded['x25519'] as String?;
+      final nick = decoded['nick'] as String? ?? '';
+      final ts = (decoded['ts'] as num?)?.toInt();
+      final sig = decoded['sig'] as String?;
+      if (addr == null || x25519 == null || ts == null || sig == null) {
+        return null;
+      }
+
+      final valid = await IdentityService.verify(
+        message: utf8.encode('gossip|$addr|$x25519|$nick|$ts'),
+        signatureBytes: base64Decode(sig),
+        publicKeyBase64: addr,
+      );
+      if (!valid) return null;
+
+      return GossipRecord(
+        address: addr,
+        x25519Base64: x25519,
+        nickname: nick.isEmpty ? null : nick,
+        tsMs: ts,
+        hops: (decoded['hops'] as num?)?.toInt() ?? 0,
       );
     } catch (_) {
       return null;
@@ -211,4 +279,22 @@ class EnvelopeCodec {
       return null;
     }
   }
+}
+
+/// A verified gossip record: a node somewhere in the mesh (not necessarily
+/// in direct range) with its encryption key and optional public nickname.
+class GossipRecord {
+  final String address;
+  final String x25519Base64;
+  final String? nickname;
+  final int tsMs;
+  final int hops;
+
+  const GossipRecord({
+    required this.address,
+    required this.x25519Base64,
+    required this.nickname,
+    required this.tsMs,
+    required this.hops,
+  });
 }
