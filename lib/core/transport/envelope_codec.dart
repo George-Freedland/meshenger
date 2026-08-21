@@ -25,7 +25,10 @@ class EnvelopeCodec {
   EnvelopeCodec._();
 
   /// Default relay budget for an envelope.
-  static const int defaultMaxHops = 6;
+  /// Long chains through phones and gateway relays are the point of the
+  /// mesh (e.g. mac → pi → pi → iPhone → android → … → mac); 10 hops keeps
+  /// city-block-scale paths viable while the epidemic flood stays bounded.
+  static const int defaultMaxHops = 10;
 
   /// How long relays keep an undeliverable envelope (store-and-forward).
   static const Duration defaultRelayLifetime = Duration(hours: 48);

@@ -12,7 +12,7 @@ import 'transport.dart';
 /// what lets a Raspberry Pi stitch two Bluetooth islands together over a
 /// house's Wi-Fi (or a long Ethernet run).
 class RelayCore {
-  static const int defaultMaxHops = 6;
+  static const int defaultMaxHops = 10;
   static const Duration defaultEnvelopeLifetime = Duration(hours: 48);
   static const Duration gossipInterval = Duration(seconds: 25);
 

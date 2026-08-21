@@ -15,9 +15,11 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 - **App launcher**: after unlock you land on an iPhone-style home screen with the built-in apps: Messages, Phone, FaceTime, Camera, Storage, Voice Memos, Mesh Map, Stories, App Store, and Settings.
 - **Contacts via QR**: share your public address as a QR code; add contacts by scanning or pasting an address.
 - **Offline Bluetooth messaging (default)**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
+- **Push delivery (outbox channels)**: every node also serves an *outbox* — a notify characteristic that nearby peers subscribe to. Once subscribed, a relay or phone can **initiate delivery** the instant an envelope arrives, over the already‑open connection — no scanning round trip. This is what lets a Raspberry Pi gateway push a message to an iPhone whose app is in the background: iOS keeps the subscription alive and wakes the app to decrypt.
+- **Background notifications**: messages, voicemails, and incoming calls that arrive while the app is backgrounded show a system banner (sender + kind only — content stays end‑to‑end encrypted and never appears in notifications).
 - **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
 - **Transport switch**: the Bluetooth/Wi‑Fi toggle (chats screen and Settings) switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
-- **Multi‑hop mesh relay**: every device (and standalone gateway) stores and forwards *encrypted envelopes* for others. If Phone B is out of your radio range but a device in the middle can hear you both, your message hops through it — the relay only ever sees ciphertext. Envelopes carry a hop count (max 6), a via‑path to prevent loops, and an expiry (48 h); duplicates are dropped by envelope ID. The relay role can be switched off in Settings.
+- **Multi‑hop mesh relay**: every device (and standalone gateway) stores and forwards *encrypted envelopes* for others. If Phone B is out of your radio range but a device in the middle can hear you both, your message hops through it — the relay only ever sees ciphertext. Envelopes carry a hop count (max 10), a via‑path to prevent loops, and an expiry (48 h); duplicates are dropped by envelope ID. The relay role can be switched off in Settings.
 - **Standalone gateway daemon** (`relay/`): a headless pure‑Dart relay for Raspberry Pi and other Linux boxes — advertises and scans over **Bluetooth (BlueZ)** with the same GATT protocol as the app, speaks the LAN protocol simultaneously, and **bridges the two** (Bluetooth in → Wi‑Fi/Ethernet across → Bluetooth out). Integration‑tested store‑and‑forward, dedup, and gossip.
 - **Delivery receipts, end to end**: a message shows *pending* → *sent* (reached the first hop) → *delivered* (the recipient itself decrypted it and sent a signed ack back through the mesh). Group messages track delivery per member.
 - **Gossip discovery**: nodes periodically share signed peer announcements, so you learn about devices *beyond* your radio range — including their encryption keys, which means you can send end‑to‑end encrypted messages to someone you've never been near, through the mesh.
@@ -53,9 +55,13 @@ Three kinds of nodes exist today:
 How a multi‑hop delivery works, end to end:
 
 1. Phone A encrypts the message to Phone B's key (X25519 → AES‑256‑GCM), signs it, and seals it in an envelope: `{id, to, from, ciphertext, hops, max, via[], exp}`.
-2. Every node that hears the envelope checks: *is it for me?* If yes → decrypt, verify, send a signed **ack** envelope back through the mesh. If no → increment `hops`, append itself to `via` (loop prevention), spool it, and offer it to every peer it meets (except ones already in the path) until it expires (48 h) or the hop cap (6) is hit.
+2. Every node that hears the envelope checks: *is it for me?* If yes → decrypt, verify, send a signed **ack** envelope back through the mesh. If no → increment `hops`, append itself to `via` (loop prevention), spool it, and offer it to every peer it meets (except ones already in the path) until it expires (48 h) or the hop cap (10) is hit.
 3. Phone A shows ✓✓ *delivered* only when B's ack arrives — meaning B itself, not some middle node, has the message.
 4. A phone in someone's pocket with the app running, or a Pi on a windowsill, is equally good as a middle node. Relays hold **no keys** and see **only ciphertext**.
+
+Routing is **epidemic**, not shortest‑path: an envelope takes *every* viable path at once, duplicates are dropped by ID, and the first copy to reach the recipient wins. A ten‑hop chain like `mac → pi → pi → iphone → android → windows → mac → pi → windows → mac` needs no planning — if the chain physically exists, some copy of the envelope walks it.
+
+**How a gateway reaches a phone it cannot see** (push delivery): whenever two Meshenger nodes meet, each subscribes to the other's *outbox* characteristic and identifies itself with a signed hello. The connection stays open. From then on either side can push envelopes over it instantly — which turns every gateway into a true **router that initiates delivery**, including to backgrounded iPhones (iOS holds BLE subscriptions open in the background, wakes the app when the relay notifies, the app decrypts and posts a local notification banner). No Apple/Google push servers involved — the "push" is a Bluetooth packet from a $15 Pi.
 
 Because encryption is end‑to‑end, relaying through strangers' hardware carries no confidentiality risk: only the sender and receiver hold the keys.
 
@@ -190,7 +196,7 @@ flutter run -d linux
 
 #### Pi as a standalone gateway
 
-The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It is **Bluetooth‑first**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It simultaneously speaks the LAN protocol and **bridges the two links** — a phone's Bluetooth message can cross a house over Ethernet/Wi‑Fi between two Pis and come out as Bluetooth on the far side. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, and shows up on everyone's Mesh Map under the name you give it.
+The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It is **Bluetooth‑first**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It simultaneously speaks the LAN protocol and **bridges the two links** — a phone's Bluetooth message can cross a house over Ethernet/Wi‑Fi between two Pis and come out as Bluetooth on the far side. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, **pushes spooled envelopes to phones that subscribe to its outbox** (that's how it reaches backgrounded iPhones), and shows up on everyone's Mesh Map under the name you give it.
 
 **Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. Any Linux box with BlueZ works the same (old laptops make great gateways).
 
@@ -217,7 +223,7 @@ You should see:
 [12:00:01] Meshenger relay "Garden Gateway"
 [12:00:01] Address: qIBX9YZ2aJ93k0Ls…
 [12:00:01] This node forwards encrypted envelopes it cannot read.
-[12:00:02] BLE: GATT inbox registered (announce + inbox characteristics)
+[12:00:02] BLE: GATT registered (announce + inbox + outbox characteristics)
 [12:00:02] BLE: advertising Meshenger service as "Garden Gateway"
 [12:00:02] BLE: scanning for Meshenger devices
 [12:00:02] LAN: listening on TCP port 40123, announcing on UDP 45654
@@ -273,8 +279,8 @@ journalctl -u meshenger-relay -f     # watch it forward envelopes
 Notes:
 
 - The relay keeps a persistent keypair in `relay-identity.json` so its address (and Mesh Map name) is stable across reboots. The key only signs presence announcements — the relay holds **no message keys** and can never read traffic.
-- **Coverage math**: BLE reaches ~10–50 m per hop depending on walls. Each gateway roughly doubles the chain; six hops (the default cap) of window‑sill Pis comfortably spans several houses. For a longer street, pair each Pi with Ethernet/Wi‑Fi between two of them — the bridge counts as one hop.
-- **iOS background caveat**: an iPhone with the app *backgrounded* advertises in a format only other Apple devices can scan, so a Linux gateway can't *initiate* delivery to it until the app is foregrounded (delivery from the iPhone through the gateway works regardless, and phone↔phone background delivery works). Planned fix: an outbox characteristic phones subscribe to.
+- **Coverage math**: BLE reaches ~10–50 m per hop depending on walls. Each gateway roughly doubles the chain; ten hops (the default cap) of window‑sill Pis comfortably spans a street. For longer runs, pair Pis with Ethernet/Wi‑Fi between two of them — the bridge counts as one hop.
+- **Backgrounded iPhones**: the gateway *can* initiate delivery to an iPhone whose app is backgrounded — the phone subscribes to the gateway's outbox characteristic while in range, iOS keeps that Bluetooth subscription alive in the background, and the gateway pushes envelopes over it (the phone wakes, decrypts, and shows a notification banner). The caveat that remains: if the user **force‑quits** the app (swipes it away), iOS tears down Bluetooth entirely until the next launch.
 - Placement tip: relays only help where they can hear at least two other nodes. A window sill between two houses, a hallway between apartments, a shed halfway down the street.
 
 ---

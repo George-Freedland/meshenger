@@ -15,6 +15,11 @@ import 'transport.dart';
 ///   characteristic (read) plus an inbox characteristic (chunked writes,
 ///   1-byte flag prefix, bit 0 = final chunk; the final write's response
 ///   is the transport-level ack),
+/// - serves an outbox characteristic (notify): phones subscribe to it and
+///   the relay *pushes* packets to them as chunked notifications — this is
+///   how a gateway initiates delivery to a phone it cannot scan (e.g. a
+///   backgrounded iPhone). Subscribers identify themselves by writing a
+///   signed announce ("hello") into the inbox,
 /// - scans for other Meshenger devices, verifies their announcements, and
 ///   delivers packets as chunked writes into *their* inbox.
 ///
@@ -25,10 +30,21 @@ class BleTransport implements RelayTransport {
   static const String announceCharUuid =
       '4d455348-454e-4745-5242-4c4530303032';
   static const String inboxCharUuid = '4d455348-454e-4745-5242-4c4530303033';
+  static const String outboxCharUuid = '4d455348-454e-4745-5242-4c4530303034';
 
   static const Duration peerTimeout = Duration(seconds: 40);
+
+  /// Subscribers are dropped after this long without a write (the app
+  /// hellos every 20 s over open channels).
+  static const Duration inboundTimeout = Duration(seconds: 65);
+
   static const Duration gattTimeout = Duration(seconds: 15);
   static const int _finalChunkFlag = 0x01;
+
+  /// Notification payload budget. BlueZ truncates notifications to the
+  /// link's MTU-3; phones negotiate ≥185 automatically, so 180 is safe on
+  /// anything modern.
+  static const int _notifyChunkSize = 180;
 
   final RelayIdentity identity;
   final String localName;
@@ -47,6 +63,7 @@ class BleTransport implements RelayTransport {
   BlueZAdapter? _adapter;
   BlueZAdvertisement? _advertisement;
   _GattApplication? _application;
+  _OutboxCharacteristic? _outbox;
   DBusObjectPath? _adapterPath;
   Uint8List _announcementBytes = Uint8List(0);
 
@@ -54,6 +71,15 @@ class BleTransport implements RelayTransport {
   final Map<String, String> _addressByDevicePath = <String, String>{};
   final Set<String> _resolving = <String>{};
   final Set<String> _watchedDevicePaths = <String>{};
+
+  /// Push subscribers: devices that subscribed to our outbox and identified
+  /// themselves with a signed hello (device path → peer).
+  final Map<String, _InboundBlePeer> _inboundPeers =
+      <String, _InboundBlePeer>{};
+
+  /// Fan-out dedup: notifications reach every subscriber, so pushing the
+  /// same packet once per addressed peer would duplicate it on air.
+  final Map<String, int> _recentPushes = <String, int>{};
 
   final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peersChanged = StreamController<Set<String>>.broadcast();
@@ -70,10 +96,22 @@ class BleTransport implements RelayTransport {
   @override
   Set<String> get onlinePeers {
     final now = DateTime.now();
-    return _peersByAddress.entries
-        .where((e) => now.difference(e.value.lastSeen) < peerTimeout)
-        .map((e) => e.key)
-        .toSet();
+    final result = <String>{};
+    for (final entry in _peersByAddress.entries) {
+      if (now.difference(entry.value.lastSeen) < peerTimeout) {
+        result.add(entry.key);
+      }
+    }
+    // Subscribers we can push to count as reachable even when they can't
+    // be scanned (backgrounded iPhones connected to this gateway).
+    if (_outbox?.notifying ?? false) {
+      for (final peer in _inboundPeers.values) {
+        if (now.difference(peer.lastSeen) < inboundTimeout) {
+          result.add(peer.address);
+        }
+      }
+    }
+    return result;
   }
 
   @override
@@ -199,15 +237,27 @@ class BleTransport implements RelayTransport {
       DBusObjectPath('/com/meshenger/gatt/service0/char1'),
       servicePath: servicePath,
       uuid: inboxCharUuid,
-      onPacket: _packets.add,
+      onInboundPacket: _handleInboundPacket,
       log: log,
     );
-    application.children.addAll([service, announce, inbox]);
+    final outbox = _outbox = _OutboxCharacteristic(
+      DBusObjectPath('/com/meshenger/gatt/service0/char2'),
+      servicePath: servicePath,
+      uuid: outboxCharUuid,
+      onNotifyingChanged: (notifying) {
+        log(notifying
+            ? 'BLE: a device subscribed to our outbox (push channel live)'
+            : 'BLE: last outbox subscriber left');
+        _peersChanged.add(onlinePeers);
+      },
+    );
+    application.children.addAll([service, announce, inbox, outbox]);
 
     await bus.registerObject(application);
     await bus.registerObject(service);
     await bus.registerObject(announce);
     await bus.registerObject(inbox);
+    await bus.registerObject(outbox);
 
     final gattManager = DBusRemoteObject(
       bus,
@@ -309,7 +359,58 @@ class BleTransport implements RelayTransport {
           _maybeResolve(device);
         }
       }
+      // A subscriber's link dropped: it is no longer pushable.
+      if (props.contains('Connected') && !device.connected) {
+        final inbound = _inboundPeers.remove(device.path.value);
+        if (inbound != null) {
+          log('BLE: subscriber ${_short(inbound.address)} disconnected');
+          _peersChanged.add(onlinePeers);
+        }
+      }
     }));
+  }
+
+  /// Every packet written into our inbox lands here. Hellos (signed
+  /// announces) bind the writing device to a mesh address and are consumed;
+  /// everything else flows to the relay core. Returns false to reject the
+  /// write (the writer sees a failed final chunk).
+  Future<bool> _handleInboundPacket(
+    Map<String, Object?> packet,
+    List<int> payload,
+    String devicePath,
+  ) async {
+    if (packet['t'] == 'announce') {
+      final addr = packet['addr'] as String?;
+      final x25519 = packet['x25519'] as String?;
+      final sig = packet['sig'] as String?;
+      if (addr == null || x25519 == null || sig == null) return false;
+      if (addr == identity.address) return false;
+      final valid =
+          await RelayIdentity.verify('announce|$addr|$x25519|ble', sig, addr);
+      if (!valid) {
+        log('BLE: rejected hello with bad signature');
+        return false;
+      }
+      final isNew = _inboundPeers[devicePath]?.address != addr;
+      _inboundPeers[devicePath] = _InboundBlePeer(
+        address: addr,
+        x25519: x25519,
+        lastSeen: DateTime.now(),
+      );
+      if (isNew) {
+        log('BLE: hello from ${_short(addr)} — push delivery available');
+      }
+      _peersChanged.add(onlinePeers);
+      return true;
+    }
+
+    final inbound = _inboundPeers[devicePath];
+    if (inbound != null) {
+      _inboundPeers[devicePath] = inbound.touch();
+    }
+    log('BLE: received ${packet['t']} packet (${payload.length} bytes)');
+    _packets.add(packet);
+    return true;
   }
 
   bool _isMeshengerDevice(BlueZDevice device) =>
@@ -404,7 +505,6 @@ class BleTransport implements RelayTransport {
         .where((e) => now.difference(e.value.lastSeen) > peerTimeout)
         .map((e) => e.key)
         .toList();
-    if (stale.isEmpty) return;
     for (final address in stale) {
       final peer = _peersByAddress.remove(address);
       if (peer != null) {
@@ -412,7 +512,21 @@ class BleTransport implements RelayTransport {
       }
       log('BLE: peer offline ${_short(address)} (silent too long)');
     }
-    _peersChanged.add(onlinePeers);
+
+    final staleInbound = _inboundPeers.entries
+        .where((e) => now.difference(e.value.lastSeen) > inboundTimeout)
+        .map((e) => e.key)
+        .toList();
+    for (final devicePath in staleInbound) {
+      final inbound = _inboundPeers.remove(devicePath);
+      if (inbound != null) {
+        log('BLE: subscriber ${_short(inbound.address)} timed out');
+      }
+    }
+
+    if (stale.isNotEmpty || staleInbound.isNotEmpty) {
+      _peersChanged.add(onlinePeers);
+    }
   }
 
   static String _short(String address) =>
@@ -427,18 +541,52 @@ class BleTransport implements RelayTransport {
     String peerAddress,
     Map<String, Object?> packet,
   ) async {
-    final peer = _peersByAddress[peerAddress];
-    if (peer == null) return false;
-
     final payload = utf8.encode(jsonEncode(packet));
-    var delivered = false;
-    await _enqueueGatt(() async {
-      delivered = await _deliverPayload(peer.device, payload);
-    });
-    if (delivered) {
-      _peersByAddress[peerAddress] = peer.touch();
+
+    // 1. Scan-resolved peer: connect and write into its inbox (real ack).
+    final peer = _peersByAddress[peerAddress];
+    if (peer != null) {
+      var delivered = false;
+      await _enqueueGatt(() async {
+        delivered = await _deliverPayload(peer.device, payload);
+      });
+      if (delivered) {
+        _peersByAddress[peerAddress] = peer.touch();
+        return true;
+      }
     }
-    return delivered;
+
+    // 2. Push: the peer subscribed to our outbox — notify it. This is how
+    //    the gateway initiates delivery to devices it cannot scan.
+    return _pushToSubscriber(peerAddress, payload, packet);
+  }
+
+  Future<bool> _pushToSubscriber(
+    String peerAddress,
+    List<int> payload,
+    Map<String, Object?> packet,
+  ) async {
+    final outbox = _outbox;
+    if (outbox == null || !outbox.notifying) return false;
+    final now = DateTime.now();
+    final reachable = _inboundPeers.values.any((p) =>
+        p.address == peerAddress &&
+        now.difference(p.lastSeen) < inboundTimeout);
+    if (!reachable) return false;
+
+    // Notifications fan out to every subscriber, so a flood pass that
+    // targets several subscribed peers needs the packet on air only once.
+    final key = '${packet['t']}|${packet['id'] ?? ''}|${packet['ts'] ?? ''}';
+    final nowMs = now.millisecondsSinceEpoch;
+    _recentPushes.removeWhere((_, ts) => nowMs - ts > 3000);
+    if (_recentPushes.containsKey(key)) return true;
+    _recentPushes[key] = nowMs;
+
+    await outbox.push(payload,
+        chunkSize: _notifyChunkSize, finalFlag: _finalChunkFlag);
+    log('BLE: pushed ${payload.length} bytes toward ${_short(peerAddress)} '
+        '(outbox notify)');
+    return true;
   }
 
   Future<bool> _deliverPayload(BlueZDevice device, List<int> payload) async {
@@ -504,6 +652,23 @@ class _BlePeer {
 
   _BlePeer touch() =>
       _BlePeer(device: device, x25519: x25519, lastSeen: DateTime.now());
+}
+
+/// A device that subscribed to our outbox and identified itself with a
+/// signed hello — pushable until it disconnects or goes silent.
+class _InboundBlePeer {
+  final String address;
+  final String x25519;
+  final DateTime lastSeen;
+
+  const _InboundBlePeer({
+    required this.address,
+    required this.x25519,
+    required this.lastSeen,
+  });
+
+  _InboundBlePeer touch() => _InboundBlePeer(
+      address: address, x25519: x25519, lastSeen: DateTime.now());
 }
 
 // -------------------------------------------------------------------------
@@ -618,10 +783,14 @@ class _AnnounceCharacteristic extends _GattCharacteristic {
 }
 
 /// Accepts chunked packet writes from phones (and other relays). The final
-/// chunk's write response only succeeds after the packet parses, matching
-/// the app's ack semantics.
+/// chunk's write response only succeeds after the packet parses and is
+/// accepted, matching the app's ack semantics.
 class _InboxCharacteristic extends _GattCharacteristic {
-  final void Function(Map<String, Object?>) onPacket;
+  final Future<bool> Function(
+    Map<String, Object?> packet,
+    List<int> payload,
+    String devicePath,
+  ) onInboundPacket;
   final void Function(String) log;
 
   /// Reassembly buffers keyed by the writing device's D-Bus path.
@@ -631,7 +800,7 @@ class _InboxCharacteristic extends _GattCharacteristic {
     super.path, {
     required super.servicePath,
     required super.uuid,
-    required this.onPacket,
+    required this.onInboundPacket,
     required this.log,
   }) : super(flags: const ['write', 'write-without-response']);
 
@@ -675,12 +844,78 @@ class _InboxCharacteristic extends _GattCharacteristic {
       final decoded = jsonDecode(utf8.decode(payload));
       if (decoded is Map && decoded['t'] is String) {
         final packet = decoded.cast<String, Object?>();
-        log('BLE: received ${packet['t']} packet (${payload.length} bytes)');
-        onPacket(packet);
-        return DBusMethodSuccessResponse();
+        final accepted = await onInboundPacket(packet, payload, writer);
+        return accepted
+            ? DBusMethodSuccessResponse()
+            : DBusMethodErrorResponse('org.bluez.Error.Failed');
       }
     } catch (_) {}
     log('BLE: rejected malformed packet (${payload.length} bytes)');
     return DBusMethodErrorResponse('org.bluez.Error.Failed');
+  }
+}
+
+/// The push channel. Phones subscribe (StartNotify) and the relay delivers
+/// packets to them as flag-framed chunk notifications: each Value change
+/// BlueZ fans out to every subscribed central.
+class _OutboxCharacteristic extends _GattCharacteristic {
+  final void Function(bool) onNotifyingChanged;
+  bool notifying = false;
+
+  _OutboxCharacteristic(
+    super.path, {
+    required super.servicePath,
+    required super.uuid,
+    required this.onNotifyingChanged,
+  }) : super(flags: const ['notify']);
+
+  @override
+  Map<String, DBusValue> get _properties => {
+        ...super._properties,
+        'Notifying': DBusBoolean(notifying),
+      };
+
+  @override
+  Future<DBusMethodResponse> handleMethodCall(DBusMethodCall methodCall) async {
+    if (methodCall.interface != _GattCharacteristic.interfaceName) {
+      return DBusMethodErrorResponse.unknownMethod();
+    }
+    switch (methodCall.name) {
+      case 'StartNotify':
+        notifying = true;
+        onNotifyingChanged(true);
+        return DBusMethodSuccessResponse();
+      case 'StopNotify':
+        notifying = false;
+        onNotifyingChanged(false);
+        return DBusMethodSuccessResponse();
+      default:
+        return DBusMethodErrorResponse.unknownMethod();
+    }
+  }
+
+  /// Emits [payload] as chunked Value notifications. A short pause between
+  /// chunks keeps bluetoothd's TX queue from overflowing on large payloads.
+  Future<void> push(
+    List<int> payload, {
+    required int chunkSize,
+    required int finalFlag,
+  }) async {
+    for (var offset = 0; offset < payload.length; offset += chunkSize) {
+      final end = (offset + chunkSize < payload.length)
+          ? offset + chunkSize
+          : payload.length;
+      final isLast = end == payload.length;
+      final chunk = Uint8List(end - offset + 1);
+      chunk[0] = isLast ? finalFlag : 0x00;
+      chunk.setRange(1, chunk.length, payload, offset);
+      await emitPropertiesChanged(
+        _GattCharacteristic.interfaceName,
+        changedProperties: {'Value': DBusArray.byte(chunk)},
+      );
+      if (!isLast) {
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+      }
+    }
   }
 }

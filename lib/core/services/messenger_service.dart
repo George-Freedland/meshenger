@@ -19,6 +19,7 @@ import 'contacts_service.dart';
 import 'identity_scope.dart';
 import 'identity_service.dart';
 import 'media_store.dart';
+import 'notification_service.dart';
 import 'peer_directory.dart';
 import 'settings_service.dart';
 import 'stories_service.dart';
@@ -93,6 +94,7 @@ class MessengerService {
   Future<void> start() async {
     _mode = await TransportSettings.instance.getMode();
     PeerDirectory.instance.resetCache();
+    unawaited(NotificationService.instance.init());
     await _startTransport();
     _sweepTimer ??=
         Timer.periodic(const Duration(seconds: 15), (_) => _sweepExpired());
@@ -539,6 +541,9 @@ class MessengerService {
     }
 
     if (action != null && action.startsWith('call-')) {
+      if (action == 'call-invite') {
+        unawaited(_notifyBanner(incoming.fromAddress, 'Incoming call'));
+      }
       _callSignals.add(incoming);
       return;
     }
@@ -629,6 +634,18 @@ class MessengerService {
     await ChatStorage.instance.markUnread(chatKey);
     _changed.add(chatKey);
 
+    // Banner when the app is backgrounded (never shows message content).
+    unawaited(_notifyBanner(
+      incoming.fromAddress,
+      switch (incoming.kind) {
+        'image' => 'Sent you a photo',
+        'audio' =>
+          incoming.voicemail ? 'Left you a voicemail' : 'Sent a voice message',
+        'file' => 'Sent you a file',
+        _ => 'Sent you an encrypted message',
+      },
+    ));
+
     // Send the end-to-end delivery receipt (works across relays too).
     unawaited(_deliverBody(
       incoming.fromAddress,
@@ -641,6 +658,24 @@ class MessengerService {
         groupId: incoming.groupId,
       ),
     ));
+  }
+
+  /// System banner naming the sender (nickname when known, short address
+  /// otherwise). Message content never appears — it stays end-to-end
+  /// encrypted inside the app.
+  Future<void> _notifyBanner(String fromAddress, String body) async {
+    try {
+      final contact = await ContactsService.instance.getContact(fromAddress);
+      final nickname = contact?.nickname?.trim();
+      final title = (nickname != null && nickname.isNotEmpty)
+          ? nickname
+          : (fromAddress.length <= 12
+              ? fromAddress
+              : '${fromAddress.substring(0, 12)}…');
+      await NotificationService.instance.notify(title: title, body: body);
+    } catch (_) {
+      // Banners are best-effort.
+    }
   }
 
   Future<void> _handleAck(IncomingMessage incoming) async {
