@@ -112,7 +112,7 @@ class _MemosScreenState extends State<MemosScreen> {
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Memo sent — delivering over the mesh.')),
+        const SnackBar(content: Text('Memo sent. Delivering over the mesh.')),
       );
     }
   }
@@ -147,7 +147,7 @@ class _MemosScreenState extends State<MemosScreen> {
                             theme.colorScheme.onSurface.withValues(alpha: 0.3)),
                     const SizedBox(height: 12),
                     Text(
-                      'No memos yet. Tap Record to capture one — you can '
+                      'No memos yet. Tap Record to capture one. You can '
                       'play it back here or send it to a contact.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodySmall?.copyWith(

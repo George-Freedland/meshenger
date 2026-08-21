@@ -107,8 +107,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           error != null
               ? 'Transport error: $error'
               : mode == TransportMode.bluetooth
-                  ? 'Bluetooth transport active — no network needed'
-                  : 'LAN transport active — same Wi-Fi/hotspot required',
+                  ? 'Bluetooth transport active, no network needed'
+                  : 'LAN transport active, same Wi-Fi/hotspot required',
         ),
       ),
     );
@@ -209,7 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   subtitle: Text(
                     _relayEnabled
                         ? 'This device stores and forwards encrypted envelopes '
-                            'for others — extending everyone\'s range. Content '
+                            'for others, extending everyone\'s range. Content '
                             'is never readable here.'
                         : 'This device does not carry traffic for others.',
                   ),
@@ -241,7 +241,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Auto-delete messages'),
                   subtitle: const Text(
-                    'New messages disappear after this long — for you and '
+                    'New messages disappear after this long, for you and '
                     'the receiver (Telegram-style).',
                   ),
                   trailing: DropdownButton<int>(
@@ -273,7 +273,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  'Meshenger — offline, end-to-end encrypted mesh messenger.',
+                  'Meshenger: offline, end-to-end encrypted mesh messenger.',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
                   ),

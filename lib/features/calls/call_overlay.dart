@@ -66,7 +66,7 @@ class _CallOverlayState extends State<CallOverlay> {
           },
         );
       case CallEvent.unreachable:
-        _snack('Out of range — no mesh route to this contact right now.');
+        _snack('Out of range. No mesh route to this contact right now.');
       case CallEvent.ended:
       case CallEvent.failed:
         break;
@@ -127,7 +127,7 @@ class _CallOverlayState extends State<CallOverlay> {
       voicemail: true,
     );
     if (mounted) {
-      _snack('Voicemail queued — it delivers when a mesh route exists.');
+      _snack('Voicemail queued. It delivers when a mesh route exists.');
     }
   }
 
@@ -338,7 +338,7 @@ class _CallScreenState extends State<_CallScreen> {
                 child: Text(
                   call.video
                       ? 'Live video needs more bandwidth than the mesh radio '
-                          'provides — voice works: hold the mic to talk.'
+                          'provides. Voice works: hold the mic to talk.'
                       : 'Half-duplex mesh voice: hold the mic, talk, release. '
                           'Your clip plays on their device seconds later.',
                   textAlign: TextAlign.center,
@@ -383,7 +383,7 @@ class _CallScreenState extends State<_CallScreen> {
               const SizedBox(height: 8),
               Text(
                 _talking
-                    ? 'Recording — release to send'
+                    ? 'Recording, release to send'
                     : _sendingClip
                         ? 'Sending…'
                         : 'Hold to talk',

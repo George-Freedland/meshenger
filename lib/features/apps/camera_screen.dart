@@ -152,7 +152,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Photo sent — delivering over the mesh.')),
+        const SnackBar(content: Text('Photo sent. Delivering over the mesh.')),
       );
     }
   }
@@ -207,7 +207,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       supportsCameraCapture
                           ? 'No photos yet. Take one with the camera or pull '
                               'one in from your gallery.'
-                          : 'No photos yet. Import photos here — live camera '
+                          : 'No photos yet. Import photos here. Live camera '
                               'capture activates on the iPhone/Android build.',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodySmall?.copyWith(

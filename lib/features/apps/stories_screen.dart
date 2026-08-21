@@ -134,7 +134,7 @@ class _StoriesScreenState extends State<StoriesScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Posted — delivered to contacts as they come in range',
+              'Posted. Delivered to contacts as they come in range',
             ),
           ),
         );

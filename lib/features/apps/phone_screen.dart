@@ -180,7 +180,7 @@ class _PhoneScreenState extends State<PhoneScreen>
           _recents.isEmpty
               ? _empty(theme, Icons.call_outlined,
                   'No calls yet. Calls ring over Bluetooth or LAN with no '
-                  'internet — voice travels the mesh as push-to-talk clips.')
+                  'internet. Voice travels the mesh as push-to-talk clips.')
               : ListView.builder(
                   itemCount: _recents.length,
                   itemBuilder: (context, i) {

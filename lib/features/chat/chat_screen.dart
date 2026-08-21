@@ -422,7 +422,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.refresh),
                 title: Text(message.status == MessageStatus.failed
-                    ? 'Resend (mesh gap — retries are unlimited)'
+                    ? 'Resend (mesh gap, retries are unlimited)'
                     : 'Try sending now'),
                 onTap: () async {
                   Navigator.pop(ctx);
@@ -823,7 +823,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 size: 18, color: textColor.withValues(alpha: 0.5)),
             const SizedBox(width: 6),
             Text(
-              'View-once photo — opened',
+              'View-once photo, opened',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: textColor.withValues(alpha: 0.6),
                 fontStyle: FontStyle.italic,
@@ -847,7 +847,7 @@ class _ChatScreenState extends State<ChatScreen> {
               const Icon(Icons.local_fire_department,
                   color: Colors.orangeAccent),
               const SizedBox(width: 8),
-              Text('Tap to view — disappears after',
+              Text('Tap to view. Disappears after',
                   style: theme.textTheme.bodyMedium
                       ?.copyWith(color: textColor)),
             ],
@@ -1088,7 +1088,7 @@ class _ChatScreenState extends State<ChatScreen> {
               if (pending) ...[
                 const SizedBox(height: 2),
                 Text(
-                  'no route yet — retries automatically, long-press to retry now',
+                  'no route yet, retries automatically, long-press to retry now',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: textColor.withValues(alpha: 0.45),
                   ),
@@ -1097,7 +1097,7 @@ class _ChatScreenState extends State<ChatScreen> {
               if (failed) ...[
                 const SizedBox(height: 2),
                 Text(
-                  'failed — gap in mesh network (not enough nodes). '
+                  'failed: gap in mesh network (not enough nodes). '
                   'still retrying in background; long-press to resend',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.error,
@@ -1371,7 +1371,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content:
-              Text('No mesh route to this contact right now — try later.'),
+              Text('No mesh route to this contact right now. Try later.'),
         ),
       );
     }

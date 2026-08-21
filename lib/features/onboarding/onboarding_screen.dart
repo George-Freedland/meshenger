@@ -269,7 +269,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ),
         const SizedBox(height: 24),
         Text(
-          'Each identity keeps its own chats, contacts, and settings — '
+          'Each identity keeps its own chats, contacts, and settings, '
           'fully separate on this device.',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall?.copyWith(

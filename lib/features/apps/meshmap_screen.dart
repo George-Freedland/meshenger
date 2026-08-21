@@ -251,7 +251,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                       padding: const EdgeInsets.all(24),
                       child: Text(
                         'No Meshenger devices in range right now.\n'
-                        'Devices appear here automatically — no contact '
+                        'Devices appear here automatically, no contact '
                         'exchange needed. Nodes heard through relays show '
                         'up too.',
                         textAlign: TextAlign.center,
@@ -318,7 +318,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
           Padding(
             padding: const EdgeInsets.all(12),
             child: Text(
-              'Green: direct radio link. Blue: heard through relays — '
+              'Green: direct radio link. Blue: heard through relays. '
               'messages to them ride the mesh from device to device.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(

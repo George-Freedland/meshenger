@@ -141,8 +141,8 @@ class _StorageScreenState extends State<StorageScreen>
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sent to ${target.nickname ?? 'contact'} '
-              '— delivering over the mesh.')),
+          SnackBar(content: Text('Sent to ${target.nickname ?? 'contact'}. '
+              'Delivering over the mesh.')),
         );
       }
     } on StateError catch (e) {
@@ -265,7 +265,7 @@ class _StorageScreenState extends State<StorageScreen>
                       padding: const EdgeInsets.all(32),
                       child: Text(
                         'Nothing here yet.\nImport files, take photos in the '
-                        'Camera app, or receive media in chats — everything '
+                        'Camera app, or receive media in chats. Everything '
                         'lands in this library.',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodySmall?.copyWith(

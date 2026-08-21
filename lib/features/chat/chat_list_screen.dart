@@ -83,8 +83,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
           error != null
               ? 'Transport error: $error'
               : mode == TransportMode.bluetooth
-                  ? 'Bluetooth transport active — no network needed'
-                  : 'LAN transport active — same Wi-Fi/hotspot required',
+                  ? 'Bluetooth transport active, no network needed'
+                  : 'LAN transport active, same Wi-Fi/hotspot required',
         ),
       ),
     );
@@ -956,12 +956,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 ButtonSegment(
                   value: TransportMode.bluetooth,
                   icon: Icon(Icons.bluetooth, size: 18),
-                  tooltip: 'Bluetooth — works with no network at all',
+                  tooltip: 'Bluetooth: works with no network at all',
                 ),
                 ButtonSegment(
                   value: TransportMode.lan,
                   icon: Icon(Icons.wifi, size: 18),
-                  tooltip: 'LAN — same Wi-Fi network or hotspot',
+                  tooltip: 'LAN: same Wi-Fi network or hotspot',
                 ),
               ],
               selected: {_transportMode},
@@ -986,7 +986,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             onPressed: _showTransportLogModal,
           ),
           IconButton(
-            tooltip: 'Mesh map — nearby devices',
+            tooltip: 'Mesh map: nearby devices',
             icon: const Icon(Icons.hub_outlined),
             onPressed: () => context.push('/app/meshmap'),
           ),
