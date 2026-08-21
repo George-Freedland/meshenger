@@ -98,12 +98,20 @@ class _IoBleTransport implements MeshTransport {
     _announcementBytes = await EnvelopeCodec.buildBleAnnouncementBytes();
 
     final central = _central ??= CentralManager();
-    final peripheral = _peripheral ??= PeripheralManager();
+
+    // Desktop Linux ships central-only BLE (no peripheral channel); the
+    // relay daemon covers the peripheral role there.
+    PeripheralManager? peripheral;
+    try {
+      peripheral = _peripheral ??= PeripheralManager();
+    } catch (_) {
+      peripheral = null;
+    }
 
     if (Platform.isAndroid) {
       try {
         await central.authorize();
-        await peripheral.authorize();
+        await peripheral?.authorize();
       } catch (_) {
         // Permission dialogs are best-effort; state check below is decisive.
       }
@@ -113,53 +121,69 @@ class _IoBleTransport implements MeshTransport {
     log.log('BLE: starting (my address ${address.substring(0, 8)}…)');
 
     await _waitPoweredOn(central);
-    await _waitPoweredOn(peripheral);
-    log.log('BLE: central+peripheral powered on');
 
     // --- Peripheral role: advertise + accept inbound packets ---
-    _subscriptions.add(
-      peripheral.characteristicReadRequested.listen(_scheduleReadRequest),
-    );
-    _subscriptions.add(
-      peripheral.characteristicWriteRequested.listen(_scheduleWriteRequest),
-    );
+    var advertising = false;
+    if (peripheral != null) {
+      try {
+        await _waitPoweredOn(peripheral);
+        _subscriptions.add(
+          peripheral.characteristicReadRequested.listen(_scheduleReadRequest),
+        );
+        _subscriptions.add(
+          peripheral.characteristicWriteRequested
+              .listen(_scheduleWriteRequest),
+        );
 
-    await peripheral.removeAllServices();
-    await peripheral.addService(
-      GATTService(
-        uuid: serviceUuid,
-        isPrimary: true,
-        includedServices: [],
-        characteristics: [
-          GATTCharacteristic.mutable(
-            uuid: announceCharUuid,
-            properties: [GATTCharacteristicProperty.read],
-            permissions: [GATTCharacteristicPermission.read],
-            descriptors: [],
-          ),
-          GATTCharacteristic.mutable(
-            uuid: inboxCharUuid,
-            properties: [
-              GATTCharacteristicProperty.write,
-              GATTCharacteristicProperty.writeWithoutResponse,
+        await peripheral.removeAllServices();
+        await peripheral.addService(
+          GATTService(
+            uuid: serviceUuid,
+            isPrimary: true,
+            includedServices: [],
+            characteristics: [
+              GATTCharacteristic.mutable(
+                uuid: announceCharUuid,
+                properties: [GATTCharacteristicProperty.read],
+                permissions: [GATTCharacteristicPermission.read],
+                descriptors: [],
+              ),
+              GATTCharacteristic.mutable(
+                uuid: inboxCharUuid,
+                properties: [
+                  GATTCharacteristicProperty.write,
+                  GATTCharacteristicProperty.writeWithoutResponse,
+                ],
+                permissions: [GATTCharacteristicPermission.write],
+                descriptors: [],
+              ),
             ],
-            permissions: [GATTCharacteristicPermission.write],
-            descriptors: [],
           ),
-        ],
-      ),
-    );
+        );
 
-    // Windows: addService() already calls GattServiceProvider.StartAdvertising,
-    // which makes the Meshenger service discoverable. Calling
-    // BluetoothLEAdvertisementPublisher with ServiceUuids on top of that
-    // throws winrt "The parameter is incorrect." (see plugin example).
-    if (!Platform.isWindows) {
-      await peripheral.startAdvertising(
-        Advertisement(serviceUUIDs: [serviceUuid]),
-      );
+        // Windows: addService() already calls
+        // GattServiceProvider.StartAdvertising, which makes the Meshenger
+        // service discoverable. Calling BluetoothLEAdvertisementPublisher
+        // with ServiceUuids on top of that throws winrt "The parameter is
+        // incorrect." (see plugin example).
+        if (!Platform.isWindows) {
+          await peripheral.startAdvertising(
+            Advertisement(serviceUUIDs: [serviceUuid]),
+          );
+        }
+        advertising = true;
+      } catch (e) {
+        log.log('BLE: peripheral role unavailable ($e)');
+      }
     }
-    log.log('BLE: advertising Meshenger service');
+    if (advertising) {
+      log.log('BLE: advertising Meshenger service');
+    } else {
+      _peripheral = null;
+      log.log('BLE: running central-only — this device can discover and '
+          'send, but is not discoverable. Run the meshenger relay daemon '
+          'alongside for full mesh participation.');
+    }
 
     // --- Central role: discover peers ---
     _subscriptions.add(central.discovered.listen(_handleDiscovered));

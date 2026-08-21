@@ -18,6 +18,7 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 - **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
 - **Transport switch**: the Bluetooth/Wi‑Fi toggle (chats screen and Settings) switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
 - **Multi‑hop mesh relay**: every device (and standalone gateway) stores and forwards *encrypted envelopes* for others. If Phone B is out of your radio range but a device in the middle can hear you both, your message hops through it — the relay only ever sees ciphertext. Envelopes carry a hop count (max 6), a via‑path to prevent loops, and an expiry (48 h); duplicates are dropped by envelope ID. The relay role can be switched off in Settings.
+- **Standalone gateway daemon** (`relay/`): a headless pure‑Dart relay for Raspberry Pi and other Linux boxes — advertises and scans over **Bluetooth (BlueZ)** with the same GATT protocol as the app, speaks the LAN protocol simultaneously, and **bridges the two** (Bluetooth in → Wi‑Fi/Ethernet across → Bluetooth out). Integration‑tested store‑and‑forward, dedup, and gossip.
 - **Delivery receipts, end to end**: a message shows *pending* → *sent* (reached the first hop) → *delivered* (the recipient itself decrypted it and sent a signed ack back through the mesh). Group messages track delivery per member.
 - **Gossip discovery**: nodes periodically share signed peer announcements, so you learn about devices *beyond* your radio range — including their encryption keys, which means you can send end‑to‑end encrypted messages to someone you've never been near, through the mesh.
 - **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* (with a retry action) and delivered automatically as soon as that peer appears on the network — directly or through relays.
@@ -46,7 +47,7 @@ Bluetooth (and any single radio) only reaches so far. Meshenger grows its covera
 Three kinds of nodes exist today:
 
 1. **The app** (this repo) — runs on any device: Windows, macOS, Linux, Android, iOS, or Chrome. Sends, receives, and relays for others (toggle in Settings).
-2. **Standalone gateways** (`relay/` in this repo) — a headless pure‑Dart daemon for cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. They extend the mesh's reach: place a chain of gateways and the total coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read. See [Pi as a standalone gateway](#pi-as-a-standalone-gateway) below.
+2. **Standalone gateways** (`relay/` in this repo) — a headless pure‑Dart daemon for cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. On Linux it speaks **Bluetooth LE via BlueZ** with the exact same GATT protocol as the phones — phones see a gateway as just another mesh device — *and* the LAN protocol at the same time, **bridging between the two**: Bluetooth in one side, Wi‑Fi/Ethernet out the other. Place a chain of gateways and the coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read. See [Pi as a standalone gateway](#pi-as-a-standalone-gateway) below.
 3. **Specialized devices ("mesh walkie‑talkie" phones)** — down the line, purpose‑built handsets running our own OS image (see MeshOS below) that are simultaneously a full messenger client *and* a gateway, so every device in the field automatically thickens the mesh.
 
 How a multi‑hop delivery works, end to end:
@@ -160,6 +161,8 @@ flutter devices          # optional: list available targets
 flutter run -d linux
 ```
 
+> **Linux Bluetooth note**: the desktop‑Linux BLE plugin is central‑only — the app can *discover and message* nearby devices over Bluetooth but cannot *be discovered* (no peripheral/advertising role). For full two‑way Bluetooth on Linux, run the relay daemon alongside the app: the daemon advertises and receives over BlueZ and bridges to the app over the loopback LAN transport. One command: `cd relay && dart run bin/relay.dart --name "My Linux Box"` (see below), then switch the app to the Wi‑Fi transport.
+
 ---
 
 ### Raspberry Pi
@@ -187,42 +190,76 @@ flutter run -d linux
 
 #### Pi as a standalone gateway
 
-The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It stores and forwards encrypted envelopes it cannot read, and re‑floods gossip so phones on opposite sides of it learn about each other. It shows up on everyone's Mesh Map under the name you give it.
+The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It is **Bluetooth‑first**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It simultaneously speaks the LAN protocol and **bridges the two links** — a phone's Bluetooth message can cross a house over Ethernet/Wi‑Fi between two Pis and come out as Bluetooth on the far side. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, and shows up on everyone's Mesh Map under the name you give it.
 
-**Quick start (any machine with the Dart SDK, including a Pi):**
+**Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. Any Linux box with BlueZ works the same (old laptops make great gateways).
+
+**1. Install the Dart SDK (ARM64):**
 
 ```bash
-# On Raspberry Pi OS (64-bit): install the Dart SDK
-sudo apt-get update && sudo apt-get install -y wget unzip
+sudo apt-get update && sudo apt-get install -y wget unzip bluez
 wget https://storage.googleapis.com/dart-archive/channels/stable/release/latest/sdk/dartsdk-linux-arm64-release.zip
 unzip dartsdk-linux-arm64-release.zip && sudo mv dart-sdk /opt/dart
 export PATH="/opt/dart/bin:$PATH"    # add to ~/.bashrc to persist
-
-# Get the relay and run it
-cd meshenger/relay
-dart pub get
-dart run bin/relay.dart --name "Garden Gateway"
 ```
 
-**Compile to a single native binary** (starts faster, no SDK needed at runtime):
+**2. Get the relay onto the Pi** (`git clone` the repo, or `scp` just the `relay/` folder) and run it:
+
+```bash
+cd meshenger/relay
+dart pub get
+sudo /opt/dart/bin/dart run bin/relay.dart --name "Garden Gateway"
+```
+
+You should see:
+
+```
+[12:00:01] Meshenger relay "Garden Gateway"
+[12:00:01] Address: qIBX9YZ2aJ93k0Ls…
+[12:00:01] This node forwards encrypted envelopes it cannot read.
+[12:00:02] BLE: GATT inbox registered (announce + inbox characteristics)
+[12:00:02] BLE: advertising Meshenger service as "Garden Gateway"
+[12:00:02] BLE: scanning for Meshenger devices
+[12:00:02] LAN: listening on TCP port 40123, announcing on UDP 45654
+[12:00:02] Relay running with ble + lan. Ctrl-C to stop.
+[12:00:15] BLE: peer online AbCdEf123456… (F4:5C:89:AA:BB:CC)
+```
+
+Open the Mesh Map on your phone — the gateway appears by name within ~30 seconds.
+
+> **Why sudo?** Registering a GATT service with BlueZ needs D‑Bus permission. Either run the daemon as root (simplest for a dedicated gateway box) or add your user to the `bluetooth` group: `sudo usermod -aG bluetooth $USER` then re‑login. If Bluetooth fails to power on, try `sudo rfkill unblock bluetooth`.
+
+**Flags:**
+
+| Flag | Meaning |
+| --- | --- |
+| `--name "Shed"` | Public name shown on peers' Mesh Maps |
+| `--no-lan` | **Strict Bluetooth‑only relay** — zero network footprint, pure radio |
+| `--no-ble` | LAN‑only (also what you get automatically on macOS/Windows) |
+| `--identity <path>` | Where the relay keypair persists |
+| `--max-spool 512` | Envelopes carried at once (default 256, expire after 48 h) |
+| `--adapter 1` | Use `hci1` instead of `hci0` (USB BLE dongle setups) |
+
+**3. Compile to a single native binary** (starts faster, no SDK needed at runtime):
 
 ```bash
 dart compile exe bin/relay.dart -o meshenger-relay
-./meshenger-relay --name "Garden Gateway"
+sudo ./meshenger-relay --name "Garden Gateway"
 ```
 
-**Run it on boot** — create `/etc/systemd/system/meshenger-relay.service`:
+**4. Run it on boot** — create `/etc/systemd/system/meshenger-relay.service`:
 
 ```ini
 [Unit]
 Description=Meshenger mesh gateway
-After=network.target
+After=bluetooth.target network.target
+Wants=bluetooth.target
 
 [Service]
 ExecStart=/home/pi/meshenger-relay --name "Garden Gateway" --identity /home/pi/relay-identity.json
 Restart=always
 RestartSec=5
-User=pi
+User=root
 
 [Install]
 WantedBy=multi-user.target
@@ -236,8 +273,8 @@ journalctl -u meshenger-relay -f     # watch it forward envelopes
 Notes:
 
 - The relay keeps a persistent keypair in `relay-identity.json` so its address (and Mesh Map name) is stable across reboots. The key only signs presence announcements — the relay holds **no message keys** and can never read traffic.
-- `--max-spool 512` raises how many envelopes it carries at once (default 256). Envelopes expire after 48 h.
-- Today the daemon speaks the **LAN transport** (UDP 45654 discovery + TCP delivery), so it bridges anything on the same Wi‑Fi/hotspot — including phones on the far side of the building. A BlueZ‑based Bluetooth transport for fully cable‑free Pi chains is the next step; a Pi that shares its own Wi‑Fi hotspot (`raspi-config` → hotspot) already works as a standalone island the mesh can hop through.
+- **Coverage math**: BLE reaches ~10–50 m per hop depending on walls. Each gateway roughly doubles the chain; six hops (the default cap) of window‑sill Pis comfortably spans several houses. For a longer street, pair each Pi with Ethernet/Wi‑Fi between two of them — the bridge counts as one hop.
+- **iOS background caveat**: an iPhone with the app *backgrounded* advertises in a format only other Apple devices can scan, so a Linux gateway can't *initiate* delivery to it until the app is foregrounded (delivery from the iPhone through the gateway works regardless, and phone↔phone background delivery works). Planned fix: an outbox characteristic phones subscribe to.
 - Placement tip: relays only help where they can hear at least two other nodes. A window sill between two houses, a hallway between apartments, a shed halfway down the street.
 
 ---
@@ -292,6 +329,17 @@ flutter devices          # optional: list available targets
 flutter run -d android
 ```
 
+#### Ship to real Android phones (no store needed)
+
+```bash
+flutter build apk --release
+# APK lands at build/app/outputs/flutter-apk/app-release.apk
+```
+
+Send that file any way you like (AirDrop‑equivalent, USB, web link); recipients enable "install from unknown sources" when prompted and tap it. This is the fastest way to get testers on Android — no accounts, no review. For Google Play later, use `flutter build appbundle` and a proper signing key (`android/key.properties`).
+
+> Android background note: the app relays while open or backgrounded briefly; Android eventually suspends background Bluetooth for battery. Keeping the app open (or the screen on in a pocket of testers) is fine for demos; a foreground service for always‑on relaying is on the roadmap.
+
 ---
 
 ### iOS
@@ -318,6 +366,33 @@ Start the iOS Simulator from Xcode (**Xcode → Open Developer Tool → Simulato
 flutter devices          # optional: list available targets
 flutter run -d ios
 ```
+
+> The Simulator has no Bluetooth; use a physical iPhone to test the mesh.
+
+#### Deploy to TestFlight (Apple Developer account required)
+
+One‑time setup:
+
+1. In [App Store Connect](https://appstoreconnect.apple.com) → **Apps → +** create the app. Pick a unique bundle ID (e.g. `com.yourname.meshenger`) — register it first under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) if it isn't listed.
+2. Point the project at your bundle ID and team: open `ios/Runner.xcworkspace` in Xcode → select the **Runner** target → **Signing & Capabilities** → set **Team** to your developer account and **Bundle Identifier** to the ID from step 1, with **Automatically manage signing** on.
+3. Export compliance is already answered in code: `ITSAppUsesNonExemptEncryption=false` is set in `ios/Runner/Info.plist` (the app uses only standard, exempt encryption — AES‑GCM/X25519/Ed25519). No questionnaire on every upload. (US distribution formality: file the [annual self‑classification report](https://www.bis.doc.gov/index.php/policy-guidance/encryption) once.)
+
+Every release:
+
+```bash
+flutter build ipa --release
+# Archive lands at build/ios/archive/Runner.xcarchive
+# IPA lands at    build/ios/ipa/meshenger.ipa
+```
+
+Upload the IPA with the **Transporter** app (Mac App Store — drag the `.ipa` in, press Deliver), or from Xcode: **Window → Organizer → Distribute App**. Processing takes ~5–15 minutes, then the build appears in App Store Connect → your app → **TestFlight**.
+
+Testing tiers:
+
+- **Internal testing** (up to 100 devices, instant, no review): add your own Apple ID under **Internal Testing**, install the TestFlight app on the iPhone, accept the invite. New uploads auto‑distribute.
+- **External testing** (up to 10,000 testers, ~1‑day Beta App Review the first time): create an **External Testing** group and share the public invite link — this is the link to drop on social media.
+
+Version bumps: raise `version:` in `pubspec.yaml` (e.g. `1.0.0+2` — the `+N` build number must increase every upload), rebuild, re‑upload.
 
 ---
 

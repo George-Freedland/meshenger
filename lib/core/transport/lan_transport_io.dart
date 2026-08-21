@@ -118,11 +118,10 @@ class _IoLanTransport implements MeshTransport {
   // ---------------------------------------------------------------------
 
   Future<void> _announce() async {
-    final udp = _udp;
     final server = _server;
     final address = _myAddress;
     final x25519 = _myX25519Base64;
-    if (udp == null || server == null || address == null || x25519 == null) {
+    if (server == null || address == null || x25519 == null) {
       return;
     }
 
@@ -158,12 +157,30 @@ class _IoLanTransport implements MeshTransport {
       // Interface enumeration is best-effort.
     }
 
-    for (final target in targets) {
-      try {
-        udp.send(payload, target, discoveryPort);
-      } catch (_) {
-        // Some interfaces reject broadcast; ignore.
+    // Send from a throwaway socket, NOT the 45654 receive socket: on
+    // networks that block global broadcast, the failed send closes the
+    // sending socket (macOS errno 49) — which would leave discovery deaf
+    // for the rest of the session if the receive socket were used.
+    RawDatagramSocket? tx;
+    try {
+      tx = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      tx.broadcastEnabled = true;
+      tx.listen((_) {}, onError: (Object _) {
+        // Async send failures land here; the socket is disposable.
+      });
+      for (final target in targets) {
+        try {
+          tx.send(payload, target, discoveryPort);
+        } catch (_) {
+          // Some interfaces reject broadcast; ignore.
+        }
       }
+      // Give the datagrams a moment to flush before closing.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    } catch (_) {
+      // Binding can fail while the network stack is down; retry next tick.
+    } finally {
+      tx?.close();
     }
   }
 

@@ -1,8 +1,8 @@
 name: meshenger_relay
 description: >-
   Headless Meshenger mesh gateway: stores and forwards end-to-end encrypted
-  envelopes it cannot read. Runs anywhere the Dart SDK runs — Raspberry Pi,
-  old laptops, servers. No Flutter required.
+  envelopes it cannot read, over Bluetooth LE (BlueZ) and LAN. Runs anywhere
+  the Dart SDK runs — Raspberry Pi, old laptops, servers. No Flutter required.
 publish_to: "none"
 
 environment:
@@ -11,3 +11,9 @@ environment:
 dependencies:
   # Ed25519 signing for the relay's own announcements/gossip (pure Dart).
   cryptography: ^2.7.0
+  # Bluetooth LE via the BlueZ daemon (Linux / Raspberry Pi).
+  bluez: ^0.8.3
+  dbus: ^0.7.11
+
+dev_dependencies:
+  test: ^1.25.0
