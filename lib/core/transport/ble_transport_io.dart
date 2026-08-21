@@ -65,6 +65,10 @@ class _IoBleTransport implements MeshTransport {
   bool _running = false;
   String? _myAddress;
   Uint8List? _announcementBytes;
+  String? _startupWarning;
+
+  @override
+  String? get startupWarning => _startupWarning;
 
   final Map<String, _BlePeer> _peersByAddress = <String, _BlePeer>{};
   final Map<String, String> _addressByDeviceUuid = <String, String>{};
@@ -250,10 +254,16 @@ class _IoBleTransport implements MeshTransport {
       }
     }
     if (advertising) {
+      _startupWarning = null;
       log.log('BLE: advertising Meshenger service (announce+inbox+outbox)');
     } else {
       _peripheral = null;
       _outboxChar = null;
+      _startupWarning =
+          'This device can discover others but is not discoverable itself '
+          '(Bluetooth adapter cannot advertise). Nearby devices will still '
+          'appear here once this device finds them; for full two-way mesh '
+          'participation run the meshenger relay daemon alongside.';
       log.log('BLE: running central-only — this device can discover and '
           'send, but is not discoverable. Run the meshenger relay daemon '
           'alongside for full mesh participation.');
@@ -328,6 +338,7 @@ class _IoBleTransport implements MeshTransport {
     _inboundByAddress.clear();
     _notifySubscribed.clear();
     _outboxChar = null;
+    _startupWarning = null;
     _emitPeersIfChanged();
   }
 
@@ -361,17 +372,40 @@ class _IoBleTransport implements MeshTransport {
   Future<void> _waitPoweredOn(BluetoothLowEnergyManager manager) async {
     if (manager.state == BluetoothLowEnergyState.poweredOn) return;
     if (manager.state == BluetoothLowEnergyState.unsupported) {
-      throw StateError('Bluetooth LE is not supported on this device');
+      throw StateError('This device does not support Bluetooth LE.');
     }
     try {
       await manager.stateChanged
           .firstWhere((e) => e.state == BluetoothLowEnergyState.poweredOn)
           .timeout(const Duration(seconds: 8));
     } on TimeoutException {
-      throw StateError(
-        'Bluetooth is not available (state: ${manager.state.name}). '
-        'Make sure Bluetooth is turned on.',
-      );
+      throw StateError(_unavailableMessage(manager.state));
+    }
+  }
+
+  /// Turns a stuck Bluetooth state into instructions the user can act on.
+  static String _unavailableMessage(BluetoothLowEnergyState state) {
+    switch (state) {
+      case BluetoothLowEnergyState.unauthorized:
+        if (Platform.isMacOS) {
+          return 'Bluetooth permission denied. Open System Settings → '
+              'Privacy & Security → Bluetooth, allow meshenger, then retry.';
+        }
+        if (Platform.isIOS) {
+          return 'Bluetooth permission denied. Open Settings → Privacy & '
+              'Security → Bluetooth, allow Meshenger, then retry.';
+        }
+        if (Platform.isAndroid) {
+          return 'Bluetooth permission denied. Grant the "Nearby devices" '
+              'permission in system settings, then retry.';
+        }
+        return 'Bluetooth permission denied. Grant Bluetooth access to '
+            'this app, then retry.';
+      case BluetoothLowEnergyState.poweredOff:
+        return 'Bluetooth is turned off. Turn it on and retry.';
+      default:
+        return 'Bluetooth is not available (state: ${state.name}). '
+            'Make sure Bluetooth is turned on, then retry.';
     }
   }
 

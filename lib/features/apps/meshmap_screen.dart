@@ -9,6 +9,8 @@ import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../../core/services/transport_settings.dart';
+import '../shared/transport_status_banner.dart';
 
 /// Live map of the mesh as seen from this device: nodes in direct radio
 /// range (positioned by signal strength) plus nodes known through gossip
@@ -179,6 +181,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
       ),
       body: Column(
         children: [
+          const TransportStatusBanner(),
           Expanded(
             flex: 3,
             child: LayoutBuilder(
@@ -253,7 +256,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                         'No Meshenger devices in range right now.\n'
                         'Devices appear here automatically, no contact '
                         'exchange needed. Nodes heard through relays show '
-                        'up too.',
+                        'up too.\n\n'
+                        '${MessengerService.instance.isTransportRunning ? '${MessengerService.instance.mode == TransportMode.bluetooth ? 'Bluetooth' : 'LAN'} transport is running and scanning. For discovery details, open the connection log (Chats → receipt icon).' : 'The transport is not running — see the banner above.'}',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurface

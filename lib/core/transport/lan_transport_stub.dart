@@ -11,6 +11,9 @@ class _StubLanTransport implements MeshTransport {
   bool get isRunning => false;
 
   @override
+  String? get startupWarning => null;
+
+  @override
   Set<String> get onlinePeers => const <String>{};
 
   @override

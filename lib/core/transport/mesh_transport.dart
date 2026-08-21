@@ -14,6 +14,12 @@ import 'dart:async';
 abstract class MeshTransport {
   bool get isRunning;
 
+  /// Non-fatal degradation the user should know about (e.g. Bluetooth
+  /// running central-only because this adapter cannot advertise — the
+  /// device can discover others but is not discoverable itself). Null when
+  /// the transport is fully operational.
+  String? get startupWarning;
+
   /// Addresses (base64 Ed25519 public keys) currently reachable directly.
   Set<String> get onlinePeers;
 

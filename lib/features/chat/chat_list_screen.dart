@@ -17,6 +17,7 @@ import '../../core/services/peer_directory.dart';
 import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
 import '../../core/transport/envelope_codec.dart';
+import '../shared/transport_status_banner.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -992,13 +993,23 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _chats.isEmpty
-              ? const Center(
-                  child: Text('No chats yet. Add a contact to get started.'),
-                )
-              : ListView.separated(
+      body: Column(
+        children: [
+          const TransportStatusBanner(),
+          Expanded(child: _buildChatList()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChatList() {
+    return _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _chats.isEmpty
+            ? const Center(
+                child: Text('No chats yet. Add a contact to get started.'),
+              )
+            : ListView.separated(
                   itemCount: _chats.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) {
@@ -1091,7 +1102,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       ),
                     );
                   },
-                ),
-    );
+              );
   }
 }

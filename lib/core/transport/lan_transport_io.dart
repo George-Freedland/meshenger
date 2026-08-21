@@ -38,6 +38,9 @@ class _IoLanTransport implements MeshTransport {
   bool get isRunning => _server != null;
 
   @override
+  String? get startupWarning => null;
+
+  @override
   Set<String> get onlinePeers {
     final now = DateTime.now();
     return _peers.entries

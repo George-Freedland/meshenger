@@ -79,6 +79,11 @@ class MessengerService {
 
   String? transportError;
 
+  /// Non-fatal transport degradation worth showing (e.g. Bluetooth running
+  /// central-only because this adapter cannot advertise).
+  String? get transportWarning =>
+      isTransportRunning ? _transport?.startupWarning : null;
+
   final _changed = StreamController<String>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
   final _transportChanged = StreamController<TransportMode>.broadcast();
@@ -142,6 +147,13 @@ class MessengerService {
     await _startTransport();
   }
 
+  /// Stops and restarts the active transport — the retry action after a
+  /// startup failure (e.g. once the user granted Bluetooth permission).
+  Future<void> restartTransport() async {
+    await _stopTransport();
+    await _startTransport();
+  }
+
   Future<void> stop() async {
     _sweepTimer?.cancel();
     _sweepTimer = null;
@@ -169,6 +181,8 @@ class MessengerService {
       await transport.start();
     } catch (e) {
       transportError = e is StateError ? e.message : e.toString();
+      TransportLog.instance
+          .log('Transport failed to start (${_mode.name}): $transportError');
       _transportChanged.add(_mode);
       _peers.add(const <String>{});
       return;
