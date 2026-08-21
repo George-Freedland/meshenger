@@ -4,14 +4,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/group_info.dart';
 import '../models/message.dart';
+import 'identity_scope.dart';
 
 /// Chat keys are either a peer address (1:1) or `group:{id}` (group chat).
+/// All storage is namespaced to the active identity via [IdentityScope].
 class ChatStorage {
   ChatStorage._();
   static final ChatStorage instance = ChatStorage._();
 
   static const _chatsKey = 'chats_v1'; // list of chat keys
-  static const _unreadKey = 'chats_unread_v1'; // set of chat keys
   static const groupPrefix = 'group:';
 
   static bool isGroupChat(String chatKey) => chatKey.startsWith(groupPrefix);
@@ -23,7 +24,7 @@ class ChatStorage {
 
   Future<List<String>> listChats() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_chatsKey);
+    final raw = prefs.getString(IdentityScope.key(_chatsKey));
     if (raw == null || raw.isEmpty) return <String>[];
     final decoded = jsonDecode(raw);
     if (decoded is! List) return <String>[];
@@ -49,8 +50,7 @@ class ChatStorage {
     final chats = await listChats();
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
-    await prefs.remove(_messagesKey(chatKey));
-    await markRead(chatKey);
+    await prefs.remove(IdentityScope.key(_messagesKey(chatKey)));
   }
 
   /// Hides a group chat from the list without leaving the group. Message
@@ -64,16 +64,23 @@ class ChatStorage {
     final chats = await listChats();
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
-    await markRead(chatKey);
+  }
+
+  /// Deletes all messages in a chat but keeps the conversation itself.
+  Future<void> clearMessages(String chatKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(IdentityScope.key(_messagesKey(chatKey)));
   }
 
   // ---------------------------------------------------------------------
   // Unread state
   // ---------------------------------------------------------------------
 
+  static const _unreadKey = 'chats_unread_v1'; // set of chat keys
+
   Future<Set<String>> listUnread() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_unreadKey);
+    final raw = prefs.getString(IdentityScope.key(_unreadKey));
     if (raw == null || raw.isEmpty) return <String>{};
     final decoded = jsonDecode(raw);
     if (decoded is! List) return <String>{};
@@ -92,7 +99,10 @@ class ChatStorage {
 
   Future<void> _writeUnread(Set<String> unread) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_unreadKey, jsonEncode(unread.toList()));
+    await prefs.setString(
+      IdentityScope.key(_unreadKey),
+      jsonEncode(unread.toList()),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -106,7 +116,7 @@ class ChatStorage {
 
   Future<GroupInfo?> getGroupInfo(String groupId) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_groupMetaKey(groupId));
+    final raw = prefs.getString(IdentityScope.key(_groupMetaKey(groupId)));
     if (raw != null && raw.isNotEmpty) {
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
@@ -115,7 +125,8 @@ class ChatStorage {
     }
 
     // Migrate legacy member-list-only records.
-    final legacy = prefs.getString(_legacyGroupInfoKey(groupId));
+    final legacy =
+        prefs.getString(IdentityScope.key(_legacyGroupInfoKey(groupId)));
     if (legacy == null || legacy.isEmpty) return null;
     final decoded = jsonDecode(legacy);
     if (decoded is! List) return null;
@@ -127,13 +138,16 @@ class ChatStorage {
       members: members,
     );
     await saveGroupInfo(info);
-    await prefs.remove(_legacyGroupInfoKey(groupId));
+    await prefs.remove(IdentityScope.key(_legacyGroupInfoKey(groupId)));
     return info;
   }
 
   Future<void> saveGroupInfo(GroupInfo info) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_groupMetaKey(info.id), jsonEncode(info.toJson()));
+    await prefs.setString(
+      IdentityScope.key(_groupMetaKey(info.id)),
+      jsonEncode(info.toJson()),
+    );
   }
 
   /// Merges [members] into an existing group, or creates a minimal record
@@ -159,17 +173,14 @@ class ChatStorage {
 
   /// Removes this device from the group and deletes all local chat data.
   Future<void> leaveGroup(String groupId, String myAddress) async {
-    final info = await getGroupInfo(groupId);
-    if (info == null) return;
     final chatKey = groupChatKey(groupId);
     final prefs = await SharedPreferences.getInstance();
     final chats = await listChats();
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
-    await prefs.remove(_messagesKey(chatKey));
-    await prefs.remove(_groupMetaKey(groupId));
-    await prefs.remove(_legacyGroupInfoKey(groupId));
-    await markRead(chatKey);
+    await prefs.remove(IdentityScope.key(_messagesKey(chatKey)));
+    await prefs.remove(IdentityScope.key(_groupMetaKey(groupId)));
+    await prefs.remove(IdentityScope.key(_legacyGroupInfoKey(groupId)));
   }
 
   /// Applies a remote group metadata update. Returns false when this device
@@ -201,9 +212,9 @@ class ChatStorage {
 
   String _messagesKey(String chatKey) => 'chat_messages_v1:$chatKey';
 
-  Future<List<ChatMessage>> listMessages(String chatKey) async {
+  Future<List<ChatMessage>> _rawMessages(String chatKey) async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_messagesKey(chatKey));
+    final raw = prefs.getString(IdentityScope.key(_messagesKey(chatKey)));
     if (raw == null || raw.isEmpty) return <ChatMessage>[];
     final decoded = jsonDecode(raw);
     if (decoded is! List) return <ChatMessage>[];
@@ -213,8 +224,17 @@ class ChatStorage {
         .toList();
   }
 
+  /// Messages in the chat, excluding ones past their auto-delete deadline.
+  Future<List<ChatMessage>> listMessages(String chatKey) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final messages = await _rawMessages(chatKey);
+    return messages
+        .where((m) => m.expiresAtMs == null || m.expiresAtMs! > now)
+        .toList();
+  }
+
   Future<void> appendMessage(String chatKey, ChatMessage message) async {
-    final messages = await listMessages(chatKey);
+    final messages = await _rawMessages(chatKey);
     if (messages.any((m) => m.id == message.id)) return;
     messages.add(message);
     await _writeMessages(chatKey, messages);
@@ -225,11 +245,53 @@ class ChatStorage {
     String messageId,
     MessageStatus status,
   ) async {
-    final messages = await listMessages(chatKey);
+    final messages = await _rawMessages(chatKey);
     final idx = messages.indexWhere((m) => m.id == messageId);
     if (idx < 0) return;
     messages[idx] = messages[idx].copyWith(status: status);
     await _writeMessages(chatKey, messages);
+  }
+
+  /// Applies an edit. When [requireSender] is set (remote edits), only a
+  /// received message from that sender may be edited; otherwise only own
+  /// messages are editable.
+  Future<bool> editMessage(
+    String chatKey,
+    String messageId,
+    String newText, {
+    String? requireSender,
+  }) async {
+    final messages = await _rawMessages(chatKey);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return false;
+    final message = messages[idx];
+    if (!_mayModify(chatKey, message, requireSender)) return false;
+    messages[idx] = message.copyWith(text: newText, edited: true);
+    await _writeMessages(chatKey, messages);
+    return true;
+  }
+
+  /// Removes a message entirely (delete for everyone). Same permission
+  /// rules as [editMessage].
+  Future<bool> deleteMessage(
+    String chatKey,
+    String messageId, {
+    String? requireSender,
+  }) async {
+    final messages = await _rawMessages(chatKey);
+    final idx = messages.indexWhere((m) => m.id == messageId);
+    if (idx < 0) return false;
+    if (!_mayModify(chatKey, messages[idx], requireSender)) return false;
+    messages.removeAt(idx);
+    await _writeMessages(chatKey, messages);
+    return true;
+  }
+
+  bool _mayModify(String chatKey, ChatMessage message, String? requireSender) {
+    if (requireSender == null) return message.isMe;
+    if (message.isMe) return false;
+    final sender = message.senderAddress ?? chatKey;
+    return sender == requireSender;
   }
 
   Future<void> markGroupMessageDelivered(
@@ -237,7 +299,7 @@ class ChatStorage {
     String messageId,
     String deliveredTo,
   ) async {
-    final messages = await listMessages(chatKey);
+    final messages = await _rawMessages(chatKey);
     final idx = messages.indexWhere((m) => m.id == messageId);
     if (idx < 0) return;
     final remaining =
@@ -249,19 +311,36 @@ class ChatStorage {
     await _writeMessages(chatKey, messages);
   }
 
+  /// Physically purges expired messages. Returns the chat keys that changed.
+  Future<Set<String>> sweepExpired() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final changed = <String>{};
+    for (final chatKey in await listChats()) {
+      final messages = await _rawMessages(chatKey);
+      final kept = messages
+          .where((m) => m.expiresAtMs == null || m.expiresAtMs! > now)
+          .toList();
+      if (kept.length != messages.length) {
+        await _writeMessages(chatKey, kept);
+        changed.add(chatKey);
+      }
+    }
+    return changed;
+  }
+
   Future<void> _writeMessages(
     String chatKey,
     List<ChatMessage> messages,
   ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-      _messagesKey(chatKey),
+      IdentityScope.key(_messagesKey(chatKey)),
       jsonEncode(messages.map((m) => m.toJson()).toList()),
     );
   }
 
   Future<void> _writeChats(List<String> chats) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_chatsKey, jsonEncode(chats));
+    await prefs.setString(IdentityScope.key(_chatsKey), jsonEncode(chats));
   }
 }

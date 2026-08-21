@@ -15,6 +15,9 @@ class _StubBleTransport implements MeshTransport {
   Set<String> get onlinePeers => const <String>{};
 
   @override
+  Map<String, int> get peerRssi => const <String, int>{};
+
+  @override
   Stream<IncomingMessage> get onMessage => _messages.stream;
 
   @override
@@ -39,6 +42,9 @@ class _StubBleTransport implements MeshTransport {
     String? groupAdmin,
     String? groupName,
     String? groupEvent,
+    String? action,
+    String? targetId,
+    int? ttlSeconds,
   }) async {
     return false;
   }

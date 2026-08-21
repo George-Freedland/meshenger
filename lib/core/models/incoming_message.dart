@@ -21,6 +21,17 @@ class IncomingMessage {
   /// Values: `rename`, `members`, `leave`.
   final String? groupEvent;
 
+  /// Message-level action: `edit`, `delete`, or `story`. Absent for normal
+  /// chat messages.
+  final String? action;
+
+  /// Target message id for `edit`/`delete` actions.
+  final String? targetId;
+
+  /// Auto-delete TTL in seconds requested by the sender (also used as the
+  /// story lifetime for `story` actions).
+  final int? ttlSeconds;
+
   const IncomingMessage({
     required this.fromAddress,
     required this.id,
@@ -31,6 +42,9 @@ class IncomingMessage {
     this.groupAdmin,
     this.groupName,
     this.groupEvent,
+    this.action,
+    this.targetId,
+    this.ttlSeconds,
   });
 
   bool get isGroupEvent => groupEvent != null;

@@ -11,12 +11,17 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 
 ### Current features
 
-- **Identity onboarding**: create a new identity (password with strength meter + optional nickname) or unlock an existing one. The start screen shows just the two choices and fades to the relevant form.
+- **Multiple identities (Netflix-style profiles)**: the start screen lists every identity on the device with its avatar — pick one and unlock with its password, or create a new one (preset avatars + nickname). Each identity's chats, contacts, and settings are fully separate, and logging out locks all key material.
+- **App launcher**: after unlock you land on an iPhone-style home screen with the built-in apps: Messages, Phone, FaceTime, Camera, Storage, Voice Memos, Mesh Map, Stories, App Store, and Settings.
 - **Contacts via QR**: share your public address as a QR code; add contacts by scanning or pasting an address.
 - **Offline Bluetooth messaging (default)**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
 - **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
-- **Transport switch**: the Bluetooth/Wi‑Fi toggle in the chats screen switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
-- **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* and delivered automatically as soon as that peer appears on the network.
+- **Transport switch**: the Bluetooth/Wi‑Fi toggle (chats screen and Settings) switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
+- **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* (with a retry action) and delivered automatically as soon as that peer appears on the network.
+- **Message control**: edit or delete your sent messages (synced to the peer, Telegram-style), auto-delete timers (30 s – 1 week, applied on both ends), date separators, clear-messages vs delete-chat, unread indicators.
+- **Group chats**: multi-recipient compose creates a group; the creator (admin) can name it and add/remove members; members can leave.
+- **Mesh Map**: live graph of every Meshenger device in radio range (contact or not), with approximate distance from Bluetooth signal strength — message or save any device directly from the map.
+- **Stories**: text status updates shared with all contacts, active for 24 h / 3 d / 1 week.
 
 ### Architecture: mesh, gateways, and coverage zones
 
@@ -77,7 +82,7 @@ Fix any issues `flutter doctor` reports before running on a specific platform.
 
 1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (Community edition is fine) with the **Desktop development with C++** workload.
 2. Install [Git for Windows](https://git-scm.com/download/win) if you do not already have it.
-3. Ensure Flutter is on your `PATH`, then run `flutter doctor` and confirm the **Windows** toolchain shows as available.
+3. Ensure Flutter is on your `PATH`, then run `flutter doctor` and confirm the **Windows** toolchain shows as available.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            n
 
 #### Run
 

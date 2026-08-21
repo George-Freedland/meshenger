@@ -46,6 +46,9 @@ class _IoLanTransport implements MeshTransport {
   }
 
   @override
+  Map<String, int> get peerRssi => const <String, int>{};
+
+  @override
   Stream<IncomingMessage> get onMessage => _messages.stream;
 
   @override
@@ -222,6 +225,9 @@ class _IoLanTransport implements MeshTransport {
     String? groupAdmin,
     String? groupName,
     String? groupEvent,
+    String? action,
+    String? targetId,
+    int? ttlSeconds,
   }) async {
     final peer = _peers[peerAddress];
     final from = _myAddress;
@@ -240,6 +246,9 @@ class _IoLanTransport implements MeshTransport {
         groupAdmin: groupAdmin,
         groupName: groupName,
         groupEvent: groupEvent,
+        action: action,
+        targetId: targetId,
+        ttlSeconds: ttlSeconds,
       );
 
       final socket = await Socket.connect(

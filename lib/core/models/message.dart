@@ -22,6 +22,12 @@ class ChatMessage {
   /// Local system notice (group renamed, member added, etc.).
   final bool isSystem;
 
+  /// True when the message text was edited after sending.
+  final bool edited;
+
+  /// Auto-delete deadline (epoch ms); message disappears after this.
+  final int? expiresAtMs;
+
   const ChatMessage({
     required this.id,
     required this.text,
@@ -31,18 +37,27 @@ class ChatMessage {
     this.senderAddress,
     this.pendingTo = const <String>[],
     this.isSystem = false,
+    this.edited = false,
+    this.expiresAtMs,
   });
 
-  ChatMessage copyWith({MessageStatus? status, List<String>? pendingTo}) {
+  ChatMessage copyWith({
+    String? text,
+    MessageStatus? status,
+    List<String>? pendingTo,
+    bool? edited,
+  }) {
     return ChatMessage(
       id: id,
-      text: text,
+      text: text ?? this.text,
       isMe: isMe,
       timestamp: timestamp,
       status: status ?? this.status,
       senderAddress: senderAddress,
       pendingTo: pendingTo ?? this.pendingTo,
       isSystem: isSystem,
+      edited: edited ?? this.edited,
+      expiresAtMs: expiresAtMs,
     );
   }
 
@@ -55,6 +70,8 @@ class ChatMessage {
         if (senderAddress != null) 'sender': senderAddress,
         if (pendingTo.isNotEmpty) 'pendingTo': pendingTo,
         if (isSystem) 'system': true,
+        if (edited) 'edited': true,
+        if (expiresAtMs != null) 'expires': expiresAtMs,
       };
 
   static ChatMessage fromJson(Map<String, Object?> json) {
@@ -72,6 +89,8 @@ class ChatMessage {
       pendingTo: (json['pendingTo'] as List?)?.whereType<String>().toList() ??
           <String>[],
       isSystem: json['system'] == true,
+      edited: json['edited'] == true,
+      expiresAtMs: (json['expires'] as num?)?.toInt(),
     );
   }
 }

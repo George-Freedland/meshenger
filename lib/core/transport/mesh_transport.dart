@@ -13,6 +13,10 @@ abstract class MeshTransport {
   /// Addresses (base64 Ed25519 public keys) currently reachable.
   Set<String> get onlinePeers;
 
+  /// Signal strength (RSSI, dBm) per reachable address, when the transport
+  /// can measure it (Bluetooth). Empty for transports without signal info.
+  Map<String, int> get peerRssi;
+
   Stream<IncomingMessage> get onMessage;
 
   Stream<Set<String>> get onPeersChanged;
@@ -25,7 +29,9 @@ abstract class MeshTransport {
 
   /// Attempts direct delivery to [peerAddress].
   ///
-  /// [groupId]/[groupMembers] tag the message as belonging to a group chat.
+  /// [groupId]/[groupMembers]/[groupAdmin]/[groupName]/[groupEvent] tag
+  /// group traffic; [action]/[targetId] carry message-level operations
+  /// (edit/delete/story); [ttlSeconds] requests receiver-side auto-delete.
   ///
   /// Returns true only if the peer acknowledged receipt.
   Future<bool> sendMessage({
@@ -38,5 +44,8 @@ abstract class MeshTransport {
     String? groupAdmin,
     String? groupName,
     String? groupEvent,
+    String? action,
+    String? targetId,
+    int? ttlSeconds,
   });
 }

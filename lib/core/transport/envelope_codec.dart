@@ -58,6 +58,9 @@ class EnvelopeCodec {
     String? groupAdmin,
     String? groupName,
     String? groupEvent,
+    String? action,
+    String? targetId,
+    int? ttlSeconds,
   }) async {
     final sharedKey = await sharedKeyWith(toX25519Base64);
 
@@ -70,6 +73,9 @@ class EnvelopeCodec {
       if (groupAdmin != null) 'admin': groupAdmin,
       if (groupName != null) 'gname': groupName,
       if (groupEvent != null) 'gevt': groupEvent,
+      if (action != null) 'act': action,
+      if (targetId != null) 'target': targetId,
+      if (ttlSeconds != null) 'ttl': ttlSeconds,
     }));
 
     final algorithm = AesGcm.with256bits();
@@ -150,6 +156,9 @@ class EnvelopeCodec {
         groupAdmin: body['admin'] as String?,
         groupName: body['gname'] as String?,
         groupEvent: body['gevt'] as String?,
+        action: body['act'] as String?,
+        targetId: body['target'] as String?,
+        ttlSeconds: (body['ttl'] as num?)?.toInt(),
       );
     } catch (_) {
       return null;

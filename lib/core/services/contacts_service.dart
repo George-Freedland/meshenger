@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/contact.dart';
+import 'identity_scope.dart';
 
 class ContactsService {
   ContactsService._();
@@ -12,7 +13,7 @@ class ContactsService {
 
   Future<List<Contact>> listContacts() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_contactsKey);
+    final raw = prefs.getString(IdentityScope.key(_contactsKey));
     if (raw == null || raw.isEmpty) return <Contact>[];
 
     final decoded = jsonDecode(raw);
@@ -60,7 +61,6 @@ class ContactsService {
   Future<void> _writeAll(List<Contact> contacts) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = jsonEncode(contacts.map((c) => c.toJson()).toList());
-    await prefs.setString(_contactsKey, raw);
+    await prefs.setString(IdentityScope.key(_contactsKey), raw);
   }
 }
-

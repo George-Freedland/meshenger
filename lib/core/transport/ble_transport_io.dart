@@ -43,6 +43,7 @@ class _IoBleTransport implements MeshTransport {
 
   final Map<String, _BlePeer> _peersByAddress = <String, _BlePeer>{};
   final Map<String, String> _addressByDeviceUuid = <String, String>{};
+  final Map<String, int> _rssiByDeviceUuid = <String, int>{};
   final Set<String> _resolving = <String>{};
 
   /// Inbound chunk reassembly buffers, keyed by the writing central's UUID.
@@ -195,6 +196,7 @@ class _IoBleTransport implements MeshTransport {
 
     _peersByAddress.clear();
     _addressByDeviceUuid.clear();
+    _rssiByDeviceUuid.clear();
     _resolving.clear();
     _inboxBuffers.clear();
     _emitPeersIfChanged();
@@ -246,8 +248,19 @@ class _IoBleTransport implements MeshTransport {
 
   final Set<String> _loggedDevices = <String>{};
 
+  @override
+  Map<String, int> get peerRssi {
+    final result = <String, int>{};
+    for (final entry in _addressByDeviceUuid.entries) {
+      final rssi = _rssiByDeviceUuid[entry.key];
+      if (rssi != null) result[entry.value] = rssi;
+    }
+    return result;
+  }
+
   void _handleDiscovered(DiscoveredEventArgs event) {
     final deviceUuid = event.peripheral.uuid.toString();
+    _rssiByDeviceUuid[deviceUuid] = event.rssi;
     // On non-Windows platforms the native scan filter already guarantees
     // this is a Meshenger device (and the callback may omit the UUID list).
     final advertisesMeshenger = !Platform.isWindows ||
@@ -389,6 +402,9 @@ class _IoBleTransport implements MeshTransport {
     String? groupAdmin,
     String? groupName,
     String? groupEvent,
+    String? action,
+    String? targetId,
+    int? ttlSeconds,
   }) async {
     final peer = _peersByAddress[peerAddress];
     final from = _myAddress;
@@ -406,6 +422,9 @@ class _IoBleTransport implements MeshTransport {
       groupAdmin: groupAdmin,
       groupName: groupName,
       groupEvent: groupEvent,
+      action: action,
+      targetId: targetId,
+      ttlSeconds: ttlSeconds,
     );
     final payload = utf8.encode(jsonEncode(envelope));
 

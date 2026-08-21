@@ -3,10 +3,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
-import '../../core/services/profile_service.dart';
+import '../../core/ui/avatars.dart';
 
-enum _OnboardingStage { choice, create, unlock }
+enum _Stage { loading, picker, unlock, create }
 
+/// Netflix-style profile screen: pick an identity to unlock, or create a
+/// new one. Each identity's data is fully separate on this device.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
 
@@ -17,93 +19,47 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _nicknameController = TextEditingController();
-  final ValueNotifier<bool> _isBusy = ValueNotifier<bool>(false);
 
-  _OnboardingStage _stage = _OnboardingStage.choice;
+  _Stage _stage = _Stage.loading;
+  List<StoredIdentity> _identities = const <StoredIdentity>[];
+  StoredIdentity? _selected;
   String? _error;
+  bool _busy = false;
   bool _obscurePassword = true;
+  int _avatarId = 0;
 
   String _password = '';
-  double _strengthProgress = 0;
-  String _strengthLabel = 'Too weak';
-  String _strengthDetail = '';
-  Color? _strengthColor;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadIdentities();
+  }
 
   @override
   void dispose() {
     _passwordController.dispose();
     _nicknameController.dispose();
-    _isBusy.dispose();
     super.dispose();
   }
 
-  void _selectStage(_OnboardingStage stage) {
+  Future<void> _loadIdentities() async {
+    final identities = await IdentityService.instance.listIdentities();
+    if (!mounted) return;
+    setState(() {
+      _identities = identities;
+      _stage = identities.isEmpty ? _Stage.create : _Stage.picker;
+    });
+  }
+
+  void _goTo(_Stage stage, {StoredIdentity? selected}) {
     setState(() {
       _stage = stage;
+      _selected = selected;
       _error = null;
       _password = '';
       _passwordController.clear();
-      _computeStrength('');
     });
-  }
-
-  void _updatePassword(String value) {
-    setState(() {
-      _password = value;
-      _computeStrength(value);
-    });
-  }
-
-  void _computeStrength(String password) {
-    if (password.isEmpty) {
-      _strengthProgress = 0;
-      _strengthLabel = 'Too weak';
-      _strengthDetail = '';
-      _strengthColor = null;
-      return;
-    }
-
-    final hasUpper = password.contains(RegExp(r'[A-Z]'));
-    final hasDigit = password.contains(RegExp(r'[0-9]'));
-    final hasSymbol = password.contains(RegExp(r'[^A-Za-z0-9]'));
-    final length = password.length;
-
-    int score = 0;
-    if (length >= 8) score++;
-    if (length >= 11) score++;
-    if (hasUpper) score++;
-    if (hasDigit) score++;
-    if (hasSymbol) score++;
-
-    score = score.clamp(0, 5);
-    _strengthProgress = score / 5.0;
-
-    if (score <= 1) {
-      _strengthLabel = 'Very weak';
-      _strengthDetail =
-          'Easy to guess or brute-force. Avoid common words or short phrases.';
-      _strengthColor = Colors.redAccent;
-    } else if (score == 2) {
-      _strengthLabel = 'Weak';
-      _strengthDetail =
-          'Adds some complexity, but short or predictable passwords can still be cracked quickly.';
-      _strengthColor = Colors.orange;
-    } else if (score == 3) {
-      _strengthLabel = 'Okay';
-      _strengthDetail =
-          'Better, but offline attackers can still test billions of guesses per second.';
-      _strengthColor = Colors.amber;
-    } else if (score == 4) {
-      _strengthLabel = 'Strong';
-      _strengthDetail =
-          'Good balance of length and complexity. Harder to crack, but add more length for offline safety.';
-      _strengthColor = Colors.lightGreen;
-    } else {
-      _strengthLabel = 'Very strong';
-      _strengthDetail =
-          'Long + mixed case + digits + symbols. Offline brute-force would take years or more.';
-      _strengthColor = Colors.greenAccent;
-    }
   }
 
   bool _meetsPolicy(String password) {
@@ -115,12 +71,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return lengthOk && hasUpper && hasLower && hasDigit && hasSymbol;
   }
 
-  Future<void> _handleCreateAccount() async {
+  double _strength(String password) {
+    if (password.isEmpty) return 0;
+    int score = 0;
+    if (password.length >= 8) score++;
+    if (password.length >= 11) score++;
+    if (password.contains(RegExp(r'[A-Z]'))) score++;
+    if (password.contains(RegExp(r'[0-9]'))) score++;
+    if (password.contains(RegExp(r'[^A-Za-z0-9]'))) score++;
+    return score / 5.0;
+  }
+
+  Future<void> _enterApp() async {
+    await MessengerService.instance.start();
+    if (mounted) context.go('/home');
+  }
+
+  Future<void> _handleCreate() async {
     final password = _passwordController.text;
-    if (password.isEmpty) {
-      setState(() => _error = 'Please choose a password');
-      return;
-    }
     if (!_meetsPolicy(password)) {
       setState(() {
         _error =
@@ -128,54 +96,75 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       });
       return;
     }
-    _error = null;
-    _isBusy.value = true;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      await IdentityService.instance.createIdentity(password);
-      await ProfileService.instance.setNickname(_nicknameController.text);
-      await MessengerService.instance.start();
-      if (mounted) {
-        context.go('/chats');
-      }
+      await IdentityService.instance.createIdentity(
+        password: password,
+        nickname: _nicknameController.text,
+        avatarId: _avatarId,
+      );
+      await _enterApp();
     } catch (e) {
       setState(() => _error = 'Failed to create identity: $e');
     } finally {
-      _isBusy.value = false;
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _handleLogin() async {
+  Future<void> _handleUnlock() async {
+    final selected = _selected;
+    if (selected == null) return;
     final password = _passwordController.text;
     if (password.isEmpty) {
       setState(() => _error = 'Enter your password');
       return;
     }
-    _error = null;
-    _isBusy.value = true;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final ok = await IdentityService.instance.unlockIdentity(password);
+      final ok = await IdentityService.instance.unlockIdentity(
+        publicKey: selected.publicKey,
+        password: password,
+      );
       if (!ok) {
-        setState(() => _error = 'Incorrect password or no identity found');
+        setState(() => _error = 'Incorrect password');
         return;
       }
-      await MessengerService.instance.start();
-      if (mounted) {
-        context.go('/chats');
-      }
+      await _enterApp();
     } catch (e) {
-      setState(() => _error = 'Failed to unlock identity: $e');
+      setState(() => _error = 'Failed to unlock: $e');
     } finally {
-      _isBusy.value = false;
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Widget _buildPasswordField({required bool isNew}) {
+  String _labelFor(StoredIdentity identity) {
+    final nick = identity.nickname;
+    if (nick != null && nick.trim().isNotEmpty) return nick.trim();
+    final key = identity.publicKey;
+    return key.length <= 10 ? key : '${key.substring(0, 8)}…';
+  }
+
+  Widget _buildError(ThemeData theme) {
+    if (_error == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+    );
+  }
+
+  Widget _buildPasswordField({required bool isNew, required VoidCallback onSubmit}) {
     return TextField(
       controller: _passwordController,
       obscureText: _obscurePassword,
-      onChanged: isNew ? _updatePassword : null,
       autofocus: true,
-      onSubmitted: (_) => isNew ? _handleCreateAccount() : _handleLogin(),
+      onChanged: isNew ? (v) => setState(() => _password = v) : null,
+      onSubmitted: (_) => onSubmit(),
       decoration: InputDecoration(
         labelText: 'Password',
         hintText: isNew ? 'Choose a strong password' : 'Enter your password',
@@ -184,64 +173,104 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           icon: Icon(
             _obscurePassword ? Icons.visibility_off : Icons.visibility,
           ),
-          onPressed: () {
-            setState(() {
-              _obscurePassword = !_obscurePassword;
-            });
-          },
+          onPressed: () =>
+              setState(() => _obscurePassword = !_obscurePassword),
         ),
       ),
     );
   }
 
-  Widget _buildError(ThemeData theme) {
-    if (_error == null) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Text(
-        _error!,
-        style: TextStyle(color: theme.colorScheme.error),
-      ),
-    );
-  }
-
-  Widget _buildBackButton() {
+  Widget _buildBackToPicker() {
+    if (_identities.isEmpty) return const SizedBox.shrink();
     return Align(
       alignment: Alignment.centerLeft,
       child: TextButton.icon(
-        onPressed: () => _selectStage(_OnboardingStage.choice),
+        onPressed: () => _goTo(_Stage.picker),
         icon: const Icon(Icons.arrow_back, size: 18),
         label: const Text('Back'),
       ),
     );
   }
 
-  /// Initial stage: just the two choices.
-  Widget _buildChoiceStage(ThemeData theme) {
+  Widget _buildPicker(ThemeData theme) {
     return Column(
-      key: const ValueKey('choice'),
+      key: const ValueKey('picker'),
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        FilledButton(
-          onPressed: () => _selectStage(_OnboardingStage.create),
-          child: const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4),
-            child: Text('Create New Identity'),
-          ),
+        Text("Who's messaging?", style: theme.textTheme.titleLarge),
+        const SizedBox(height: 24),
+        Wrap(
+          spacing: 24,
+          runSpacing: 24,
+          alignment: WrapAlignment.center,
+          children: [
+            for (final identity in _identities)
+              InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () => _goTo(_Stage.unlock, selected: identity),
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      presetAvatar(identity.avatarId, size: 88),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: 104,
+                        child: Text(
+                          _labelFor(identity),
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () {
+                _nicknameController.clear();
+                _avatarId = (_identities.length) % kAvatarPresets.length;
+                _goTo(_Stage.create);
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 88,
+                      height: 88,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color:
+                              theme.colorScheme.onSurface.withValues(alpha: 0.35),
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.add,
+                        size: 40,
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text('New identity', style: theme.textTheme.bodyMedium),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 12),
-        OutlinedButton(
-          onPressed: () => _selectStage(_OnboardingStage.unlock),
-          child: const Padding(
-            padding: EdgeInsets.symmetric(vertical: 4),
-            child: Text('Unlock Existing Identity'),
-          ),
-        ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 24),
         Text(
-          'Your identity is a cryptographic keypair. '
-          'Your password never leaves this device and is only used to unlock your private key.',
+          'Each identity keeps its own chats, contacts, and settings — '
+          'fully separate on this device.',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
@@ -251,54 +280,68 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  /// New identity: password + strength indicator + optional nickname.
-  Widget _buildCreateStage(ThemeData theme) {
+  Widget _buildUnlock(ThemeData theme) {
+    final selected = _selected!;
+    return Column(
+      key: const ValueKey('unlock'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildBackToPicker(),
+        const SizedBox(height: 8),
+        Center(child: presetAvatar(selected.avatarId, size: 72)),
+        const SizedBox(height: 8),
+        Center(
+          child: Text(_labelFor(selected), style: theme.textTheme.titleMedium),
+        ),
+        const SizedBox(height: 16),
+        _buildPasswordField(isNew: false, onSubmit: _handleUnlock),
+        _buildError(theme),
+        const SizedBox(height: 24),
+        FilledButton(
+          onPressed: _busy ? null : _handleUnlock,
+          child: Text(_busy ? 'Working…' : 'Unlock'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCreate(ThemeData theme) {
+    final strength = _strength(_password);
     return Column(
       key: const ValueKey('create'),
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _buildBackButton(),
+        _buildBackToPicker(),
         const SizedBox(height: 8),
-        _buildPasswordField(isNew: true),
-        if (_password.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: LinearProgressIndicator(
-              value: _strengthProgress,
-              minHeight: 8,
-              backgroundColor: theme.colorScheme.onSurface.withValues(alpha: 0.2),
-              valueColor: AlwaysStoppedAnimation<Color>(
-                _strengthColor ?? theme.colorScheme.primary,
+        Text('Pick an avatar', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            for (var i = 0; i < kAvatarPresets.length; i++)
+              InkWell(
+                borderRadius: BorderRadius.circular(28),
+                onTap: () => setState(() => _avatarId = i),
+                child: Container(
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: i == _avatarId
+                          ? theme.colorScheme.primary
+                          : Colors.transparent,
+                      width: 2.5,
+                    ),
+                  ),
+                  child: presetAvatar(i, size: 44),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Strength: $_strengthLabel',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: _strengthColor ?? theme.colorScheme.primary,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            _strengthDetail,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Tip: Use at least 11 characters with upper/lowercase, numbers, and symbols. '
-            'Offline attackers can try huge numbers of guesses per second.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-        ],
-        const SizedBox(height: 12),
+          ],
+        ),
+        const SizedBox(height: 16),
         TextField(
           controller: _nicknameController,
           decoration: const InputDecoration(
@@ -306,41 +349,40 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             hintText: 'Shown to contacts you share your address with',
           ),
         ),
+        const SizedBox(height: 12),
+        _buildPasswordField(isNew: true, onSubmit: _handleCreate),
+        if (_password.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: strength,
+              minHeight: 8,
+              backgroundColor:
+                  theme.colorScheme.onSurface.withValues(alpha: 0.2),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                strength < 0.5
+                    ? Colors.redAccent
+                    : strength < 0.9
+                        ? Colors.amber
+                        : Colors.greenAccent,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Use at least 11 characters with upper/lowercase, numbers, and '
+            'symbols. Your password never leaves this device.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
         _buildError(theme),
         const SizedBox(height: 24),
-        ValueListenableBuilder<bool>(
-          valueListenable: _isBusy,
-          builder: (context, busy, _) {
-            return FilledButton(
-              onPressed: busy ? null : _handleCreateAccount,
-              child: Text(busy ? 'Working…' : 'Create Identity'),
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  /// Existing identity: just the password field, no strength indicator.
-  Widget _buildUnlockStage(ThemeData theme) {
-    return Column(
-      key: const ValueKey('unlock'),
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildBackButton(),
-        const SizedBox(height: 8),
-        _buildPasswordField(isNew: false),
-        _buildError(theme),
-        const SizedBox(height: 24),
-        ValueListenableBuilder<bool>(
-          valueListenable: _isBusy,
-          builder: (context, busy, _) {
-            return FilledButton(
-              onPressed: busy ? null : _handleLogin,
-              child: Text(busy ? 'Working…' : 'Unlock'),
-            );
-          },
+        FilledButton(
+          onPressed: _busy ? null : _handleCreate,
+          child: Text(_busy ? 'Working…' : 'Create Identity'),
         ),
       ],
     );
@@ -351,15 +393,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final theme = Theme.of(context);
 
     final Widget stage = switch (_stage) {
-      _OnboardingStage.choice => _buildChoiceStage(theme),
-      _OnboardingStage.create => _buildCreateStage(theme),
-      _OnboardingStage.unlock => _buildUnlockStage(theme),
+      _Stage.loading =>
+        const Center(child: CircularProgressIndicator()),
+      _Stage.picker => _buildPicker(theme),
+      _Stage.unlock => _buildUnlock(theme),
+      _Stage.create => _buildCreate(theme),
     };
 
     return Scaffold(
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420),
+          constraints: const BoxConstraints(maxWidth: 520),
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: SingleChildScrollView(
@@ -382,7 +426,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
                     ),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 28),
                   AnimatedSwitcher(
                     duration: const Duration(milliseconds: 250),
                     switchInCurve: Curves.easeOut,

@@ -12,6 +12,20 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 
+const _monthNames = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+/// Either a date separator or a message row.
+class _ChatRow {
+  final DateTime? day;
+  final ChatMessage? message;
+
+  const _ChatRow.header(this.day) : message = null;
+  const _ChatRow.message(this.message) : day = null;
+}
+
 class ChatScreen extends StatefulWidget {
   /// A peer address (1:1) or a `group:{id}` chat key.
   final String? peerAddress;
@@ -37,6 +51,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Set<String> _onlinePeers = const <String>{};
   bool _sending = false;
   String? _myAddress;
+  ChatMessage? _editing;
 
   StreamSubscription<String>? _changesSub;
   StreamSubscription<Set<String>>? _peersSub;
@@ -74,10 +89,19 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  void _goBack() {
+    if (context.canPop()) {
+      context.pop();
+    } else {
+      context.go('/chats');
+    }
+  }
+
   Future<void> _load() async {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
     await ChatStorage.instance.ensureChatExists(key);
+    await ChatStorage.instance.markRead(key);
 
     _myAddress = await IdentityService.instance.getPublicAddressBase64();
     final contacts = await ContactsService.instance.listContacts();
@@ -86,10 +110,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final info = await ChatStorage.instance
           .getGroupInfo(ChatStorage.groupIdOf(key));
       if (!mounted) return;
-      if (info != null &&
-          _myAddress != null &&
-          !info.contains(_myAddress!)) {
-        context.go('/chats');
+      if (info != null && _myAddress != null && !info.contains(_myAddress!)) {
+        _goBack();
         return;
       }
       setState(() {
@@ -112,8 +134,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
     final messages = await ChatStorage.instance.listMessages(key);
-    // The chat is open, so everything in it counts as read.
-    await ChatStorage.instance.markRead(key);
     if (!mounted) return;
     setState(() => _messages = messages);
     _scrollToBottom();
@@ -135,7 +155,11 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _sending = true);
     _inputController.clear();
     try {
-      if (_isGroup) {
+      final editing = _editing;
+      if (editing != null) {
+        setState(() => _editing = null);
+        await MessengerService.instance.sendEditMessage(key, editing.id, text);
+      } else if (_isGroup) {
         await MessengerService.instance.sendGroupText(key, text);
       } else {
         await MessengerService.instance.sendText(key, text);
@@ -170,6 +194,116 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  String _dayLabel(DateTime day) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(day.year, day.month, day.day);
+    final diff = today.difference(target).inDays;
+    if (diff == 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    final base = '${_monthNames[day.month - 1]} ${day.day}';
+    return day.year == now.year ? base : '$base, ${day.year}';
+  }
+
+  List<_ChatRow> _buildRows() {
+    final rows = <_ChatRow>[];
+    DateTime? lastDay;
+    for (final message in _messages) {
+      final day = DateTime(
+        message.timestamp.year,
+        message.timestamp.month,
+        message.timestamp.day,
+      );
+      if (lastDay == null || day != lastDay) {
+        rows.add(_ChatRow.header(day));
+        lastDay = day;
+      }
+      rows.add(_ChatRow.message(message));
+    }
+    return rows;
+  }
+
+  // -----------------------------------------------------------------------
+  // Message actions
+  // -----------------------------------------------------------------------
+
+  Future<void> _showMessageActions(ChatMessage message) async {
+    final key = _chatKey;
+    if (key == null || message.isSystem || !message.isMe) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (message.status == MessageStatus.pending)
+              ListTile(
+                leading: const Icon(Icons.refresh),
+                title: const Text('Try sending now'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await MessengerService.instance.retryChat(key);
+                  await _loadMessages();
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit message'),
+              onTap: () {
+                Navigator.pop(ctx);
+                setState(() {
+                  _editing = message;
+                  _inputController.text = message.text;
+                });
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete for everyone'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                await MessengerService.instance.sendDeleteMessage(
+                  key,
+                  message.id,
+                );
+                await _loadMessages();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _clearMessages() async {
+    final key = _chatKey;
+    if (key == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear all messages?'),
+        content: const Text(
+          'Deletes every message in this conversation on this device. '
+          'The conversation itself is kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await ChatStorage.instance.clearMessages(key);
+    await _loadMessages();
+  }
+
   Future<void> _hideOrDeleteChat() async {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
@@ -178,7 +312,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       await ChatStorage.instance.deleteChat(key);
     }
-    if (mounted) context.go('/chats');
+    if (mounted) _goBack();
   }
 
   Future<void> _addAsContact() async {
@@ -214,6 +348,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     await _load();
   }
+
+  // -----------------------------------------------------------------------
+  // Group info (name, members, admin controls, leave)
+  // -----------------------------------------------------------------------
 
   Future<void> _showGroupInfoModal() async {
     final key = _chatKey;
@@ -255,14 +393,12 @@ class _ChatScreenState extends State<ChatScreen> {
             Future<void> addMember() async {
               final raw = addMemberController.text.trim();
               if (!_isValidAddress(raw)) {
-                setModalState(
-                    () => error = 'Not a valid public address');
+                setModalState(() => error = 'Not a valid public address');
                 return;
               }
               try {
                 error = null;
-                await MessengerService.instance
-                    .addGroupMembers(key, [raw]);
+                await MessengerService.instance.addGroupMembers(key, [raw]);
                 addMemberController.clear();
                 await reload();
               } catch (e) {
@@ -273,8 +409,7 @@ class _ChatScreenState extends State<ChatScreen> {
             Future<void> removeMember(String address) async {
               try {
                 error = null;
-                await MessengerService.instance
-                    .removeGroupMember(key, address);
+                await MessengerService.instance.removeGroupMember(key, address);
                 await reload();
               } catch (e) {
                 setModalState(() => error = e.toString());
@@ -307,7 +442,7 @@ class _ChatScreenState extends State<ChatScreen> {
               if (!context.mounted) return;
               Navigator.pop(dialogContext);
               if (!mounted) return;
-              this.context.go('/chats');
+              _goBack();
             }
 
             final current = info!;
@@ -374,7 +509,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                 : (isAdmin && !isMe)
                                     ? IconButton(
                                         tooltip: 'Remove member',
-                                        icon: const Icon(Icons.remove_circle_outline),
+                                        icon: const Icon(
+                                            Icons.remove_circle_outline),
                                         onPressed: () => removeMember(address),
                                       )
                                     : null,
@@ -435,6 +571,31 @@ class _ChatScreenState extends State<ChatScreen> {
     await _load();
   }
 
+  // -----------------------------------------------------------------------
+  // Rendering
+  // -----------------------------------------------------------------------
+
+  Widget _buildDateHeader(BuildContext context, DateTime day) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest
+              .withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          _dayLabel(day),
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildBubble(BuildContext context, ChatMessage message) {
     final theme = Theme.of(context);
 
@@ -464,64 +625,87 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final time = TimeOfDay.fromDateTime(message.timestamp).format(context);
     final showSender = _isGroup && !isMe && message.senderAddress != null;
+    final pending = isMe && message.status == MessageStatus.pending;
 
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 480),
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isMe ? 16 : 4),
-            bottomRight: Radius.circular(isMe ? 4 : 16),
+      child: GestureDetector(
+        onLongPress: isMe ? () => _showMessageActions(message) : null,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          constraints: const BoxConstraints(maxWidth: 480),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isMe ? 16 : 4),
+              bottomRight: Radius.circular(isMe ? 4 : 16),
+            ),
           ),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (showSender) ...[
-              Text(
-                _labelFor(message.senderAddress!),
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 2),
-            ],
-            Text(
-              message.text,
-              style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (showSender) ...[
                 Text(
-                  time,
+                  _labelFor(message.senderAddress!),
                   style: theme.textTheme.labelSmall?.copyWith(
-                    color: textColor.withValues(alpha: 0.6),
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                if (isMe) ...[
-                  const SizedBox(width: 4),
-                  Icon(
-                    message.status == MessageStatus.sent
-                        ? Icons.done
-                        : Icons.schedule,
-                    size: 14,
-                    color: textColor.withValues(alpha: 0.6),
-                  ),
-                ],
+                const SizedBox(height: 2),
               ],
-            ),
-          ],
+              Text(
+                message.text,
+                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (message.edited) ...[
+                    Text(
+                      'edited',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: textColor.withValues(alpha: 0.5),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(
+                    time,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: textColor.withValues(alpha: 0.6),
+                    ),
+                  ),
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      message.status == MessageStatus.sent
+                          ? Icons.done
+                          : Icons.schedule,
+                      size: 14,
+                      color: textColor.withValues(alpha: 0.6),
+                    ),
+                  ],
+                ],
+              ),
+              if (pending) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'no route yet — long-press to retry',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: textColor.withValues(alpha: 0.45),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -531,6 +715,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final key = _chatKey;
+    final rows = _buildRows();
 
     final String title;
     final String statusLabel;
@@ -561,7 +746,7 @@ class _ChatScreenState extends State<ChatScreen> {
         leading: IconButton(
           tooltip: 'Back to chats',
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => context.go('/chats'),
+          onPressed: _goBack,
         ),
         title: Row(
           children: [
@@ -602,10 +787,26 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: _addAsContact,
               icon: const Icon(Icons.person_add_alt_1),
             ),
-          IconButton(
-            tooltip: _isGroup ? 'Hide chat' : 'Delete chat',
-            onPressed: key == null ? null : _hideOrDeleteChat,
-            icon: const Icon(Icons.delete_outline),
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            onSelected: (value) {
+              switch (value) {
+                case 'clear':
+                  _clearMessages();
+                case 'remove':
+                  _hideOrDeleteChat();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'clear',
+                child: Text('Clear messages'),
+              ),
+              PopupMenuItem(
+                value: 'remove',
+                child: Text(_isGroup ? 'Hide chat' : 'Delete chat'),
+              ),
+            ],
           ),
         ],
       ),
@@ -645,39 +846,85 @@ class _ChatScreenState extends State<ChatScreen> {
                             horizontal: 16,
                             vertical: 12,
                           ),
-                          itemCount: _messages.length,
-                          itemBuilder: (context, i) =>
-                              _buildBubble(context, _messages[i]),
+                          itemCount: rows.length,
+                          itemBuilder: (context, i) {
+                            final row = rows[i];
+                            if (row.day != null) {
+                              return _buildDateHeader(context, row.day!);
+                            }
+                            return _buildBubble(context, row.message!);
+                          },
                         ),
                 ),
                 SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                    child: Row(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _inputController,
-                            onSubmitted: (_) => _send(),
-                            textInputAction: TextInputAction.send,
-                            decoration: const InputDecoration(
-                              hintText: 'Message…',
-                              border: OutlineInputBorder(
-                                borderRadius:
-                                    BorderRadius.all(Radius.circular(24)),
-                              ),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
+                        if (_editing != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Row(
+                              children: [
+                                Icon(Icons.edit_outlined,
+                                    size: 16,
+                                    color: theme.colorScheme.primary),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Editing message',
+                                    style:
+                                        theme.textTheme.labelMedium?.copyWith(
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: 'Cancel edit',
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () {
+                                    setState(() {
+                                      _editing = null;
+                                      _inputController.clear();
+                                    });
+                                  },
+                                ),
+                              ],
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton.filled(
-                          tooltip: 'Send',
-                          onPressed: _sending ? null : _send,
-                          icon: const Icon(Icons.send),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _inputController,
+                                onSubmitted: (_) => _send(),
+                                textInputAction: TextInputAction.send,
+                                decoration: InputDecoration(
+                                  hintText: _editing != null
+                                      ? 'Edit message…'
+                                      : 'Message…',
+                                  border: const OutlineInputBorder(
+                                    borderRadius:
+                                        BorderRadius.all(Radius.circular(24)),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 12,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            IconButton.filled(
+                              tooltip: _editing != null ? 'Save edit' : 'Send',
+                              onPressed: _sending ? null : _send,
+                              icon: Icon(_editing != null
+                                  ? Icons.check
+                                  : Icons.send),
+                            ),
+                          ],
                         ),
                       ],
                     ),

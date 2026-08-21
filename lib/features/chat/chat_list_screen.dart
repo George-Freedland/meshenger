@@ -13,7 +13,6 @@ import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
-import '../../core/services/settings_service.dart';
 import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
 
@@ -514,7 +513,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                                 .ensureChatExists(c.address);
                                             if (context.mounted) {
                                               Navigator.pop(context);
-                                              context.go(
+                                              context.push(
                                                 '/chat?peer=${Uri.encodeComponent(c.address)}',
                                               );
                                             }
@@ -660,55 +659,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
-  Future<void> _showSettingsModal() async {
-    var allowAnyone =
-        await SettingsService.instance.getAllowMessagesFromAnyone();
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return AlertDialog(
-              title: const Text('Settings'),
-              content: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 480),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Allow messages from anyone'),
-                      subtitle: Text(
-                        allowAnyone
-                            ? 'Anyone with your public address can message you.'
-                            : 'Only your contacts can message you. Messages '
-                                'from unknown addresses are discarded.',
-                      ),
-                      value: allowAnyone,
-                      onChanged: (value) async {
-                        setModalState(() => allowAnyone = value);
-                        await SettingsService.instance
-                            .setAllowMessagesFromAnyone(value);
-                      },
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Close'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
   bool _isValidAddress(String value) {
     try {
       return base64Decode(value).length == 32;
@@ -810,7 +760,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 Navigator.pop(dialogContext);
               }
               if (mounted) {
-                this.context.go('/chat?peer=${Uri.encodeComponent(chatKey)}');
+                this.context.push('/chat?peer=${Uri.encodeComponent(chatKey)}');
               }
             }
 
@@ -946,6 +896,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
         child: const Icon(Icons.edit_outlined),
       ),
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Home',
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            if (context.canPop()) {
+              context.pop();
+            } else {
+              context.go('/home');
+            }
+          },
+        ),
         title: const Text('Chats'),
         actions: [
           Padding(
@@ -989,9 +950,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
             onPressed: _showTransportLogModal,
           ),
           IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: _showSettingsModal,
+            tooltip: 'Mesh map — nearby devices',
+            icon: const Icon(Icons.hub_outlined),
+            onPressed: () => context.push('/app/meshmap'),
           ),
         ],
       ),
@@ -1079,7 +1040,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       ),
                       subtitle: Text(subtitle),
                       onTap: () =>
-                          context.go('/chat?peer=${Uri.encodeComponent(chatKey)}'),
+                          context.push('/chat?peer=${Uri.encodeComponent(chatKey)}'),
                       trailing: IconButton(
                         tooltip: isGroup ? 'Hide chat' : 'Delete chat',
                         icon: const Icon(Icons.delete_outline),
