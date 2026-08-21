@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import 'features/calls/call_overlay.dart';
@@ -24,7 +25,7 @@ class MeshengerApp extends StatelessWidget {
         ),
         // iOS-style horizontal slide: forward pushes slide in from the
         // right, back pops slide out to the right on every platform.
-        pageTransitionsTheme: const PageTransitionsTheme(
+        pageTransitionsTheme: PageTransitionsTheme(
           builders: <TargetPlatform, PageTransitionsBuilder>{
             TargetPlatform.android: CupertinoPageTransitionsBuilder(),
             TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
