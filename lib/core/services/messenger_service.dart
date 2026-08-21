@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -21,6 +22,7 @@ import 'identity_service.dart';
 import 'media_store.dart';
 import 'notification_service.dart';
 import 'peer_directory.dart';
+import 'route_table.dart';
 import 'settings_service.dart';
 import 'stories_service.dart';
 import 'transport_log.dart';
@@ -47,9 +49,28 @@ class MessengerService {
   static const int _spoolMaxChars = 3 * 1024 * 1024;
 
   /// How many online peers get a copy when the recipient is unreachable.
+  /// Best-known next hops (route table) fill the first slots; random
+  /// carriers fill the rest, so gradients guide but never gate delivery.
   static const int _relayFanout = 4;
 
+  /// A carrier that failed to accept (mid-transfer shutdown, link drop) is
+  /// retried after this long — other carriers are tried in the meantime.
+  static const Duration _offerRetryBackoff = Duration(seconds: 90);
+
+  /// Never handed to anyone within this window → flag as failed (mesh gap).
+  static const Duration _pendingFailAfter = Duration(minutes: 3);
+
+  /// Handed off but no end-to-end ack within this window → flag as failed.
+  /// Background retries continue regardless; delivery any time later still
+  /// flips the message to delivered.
+  static const Duration _ackFailAfter = Duration(minutes: 30);
+
+  /// After an app restart, give the mesh a moment before re-flagging old
+  /// unconfirmed messages.
+  static const Duration _failRecheckGrace = Duration(minutes: 2);
+
   final _uuid = const Uuid();
+  final Random _random = Random();
 
   MeshTransport? _transport;
   TransportMode _mode = TransportMode.bluetooth;
@@ -73,6 +94,15 @@ class MessengerService {
   /// Which peers already received a given spooled envelope (memory-only).
   final Map<String, Set<String>> _spoolOfferedTo = <String, Set<String>>{};
 
+  /// Failed handoff attempts ('envelopeId:peer' → last attempt ms): the
+  /// next-hop died mid-transfer or rejected; retried after backoff while
+  /// other paths are tried immediately.
+  final Map<String, int> _offerFailureMs = <String, int>{};
+
+  /// Delivery-confirmation deadlines per outgoing message (memory-only;
+  /// rebuilt lazily after restart).
+  final Map<String, int> _ackDeadlineMs = <String, int>{};
+
   /// Throttle for relay-handoff retries of pending messages.
   final Map<String, int> _lastRelayAttemptMs = <String, int>{};
 
@@ -94,6 +124,7 @@ class MessengerService {
   Future<void> start() async {
     _mode = await TransportSettings.instance.getMode();
     PeerDirectory.instance.resetCache();
+    RouteTable.instance.reset();
     unawaited(NotificationService.instance.init());
     await _startTransport();
     _sweepTimer ??=
@@ -118,6 +149,8 @@ class MessengerService {
     _meshTimer = null;
     _seen.clear();
     _spoolOfferedTo.clear();
+    _offerFailureMs.clear();
+    _ackDeadlineMs.clear();
     _lastRelayAttemptMs.clear();
     await _stopTransport();
   }
@@ -174,6 +207,56 @@ class MessengerService {
     await StoriesService.instance.sweepExpired();
   }
 
+  void _armDeliveryDeadline(String messageId, MessageStatus status) {
+    final window =
+        status == MessageStatus.pending ? _pendingFailAfter : _ackFailAfter;
+    _ackDeadlineMs[messageId] =
+        DateTime.now().millisecondsSinceEpoch + window.inMilliseconds;
+  }
+
+  /// Time-monitors every unconfirmed outgoing message. When the deadline
+  /// passes without an end-to-end ack, the message is flagged failed so
+  /// the sender *knows* — the biggest signal that there is a gap in the
+  /// mesh. Background retries keep running; a late ack still delivers.
+  Future<void> _sweepDeliveryDeadlines() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final chats = await ChatStorage.instance.listChats();
+    for (final chatKey in chats) {
+      // Group messages surface per-member pending badges instead.
+      if (ChatStorage.isGroupChat(chatKey)) continue;
+      final messages = await ChatStorage.instance.listMessages(chatKey);
+      var changed = false;
+      for (final message in messages) {
+        if (!message.isMe || message.isSystem) continue;
+        if (message.status != MessageStatus.pending &&
+            message.status != MessageStatus.sent) {
+          continue;
+        }
+        // Rebuild deadlines lazily after a restart, with a grace period so
+        // the mesh gets a chance before old messages are re-flagged.
+        final deadline = _ackDeadlineMs[message.id] ??= max(
+          message.timestamp.millisecondsSinceEpoch +
+              (message.status == MessageStatus.pending
+                      ? _pendingFailAfter
+                      : _ackFailAfter)
+                  .inMilliseconds,
+          now + _failRecheckGrace.inMilliseconds,
+        );
+        if (now <= deadline) continue;
+
+        await ChatStorage.instance
+            .updateMessageStatus(chatKey, message.id, MessageStatus.failed);
+        _ackDeadlineMs.remove(message.id);
+        changed = true;
+        TransportLog.instance.log(
+            'Mesh: message ${message.id.length <= 8 ? message.id : message.id.substring(0, 8)} '
+            'unconfirmed past deadline — flagged failed (mesh gap?). '
+            'Background retries continue.');
+      }
+      if (changed) _changed.add(chatKey);
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Mesh maintenance: gossip + spool
   // ---------------------------------------------------------------------
@@ -199,6 +282,12 @@ class MessengerService {
 
   Future<void> _meshTick() async {
     if (!IdentityScope.hasActive || !isTransportRunning) return;
+    // Deadline sweep runs even with zero peers — "no nodes in range at
+    // all" is exactly the mesh-gap signal the sender must see.
+    await _sweepDeliveryDeadlines();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _offerFailureMs.removeWhere(
+        (_, ts) => now - ts > _offerRetryBackoff.inMilliseconds * 8);
     final peersNow = onlinePeers;
     if (peersNow.isEmpty) {
       await _pruneSpool();
@@ -247,6 +336,16 @@ class MessengerService {
     final me = await IdentityService.instance.getPublicAddressBase64();
     if (record.address == me) return;
 
+    // Route learning: the neighbor that forwarded this record ('v', or the
+    // origin itself for hops=0) leads toward record.address. Even stale
+    // duplicates teach alternate paths.
+    final forwarder = packet['v'] as String?;
+    RouteTable.instance.learn(
+      record.address,
+      forwarder ?? record.address,
+      record.hops + 1,
+    );
+
     final fresher = await PeerDirectory.instance.recordGossip(
       record.address,
       record.x25519Base64,
@@ -256,15 +355,17 @@ class MessengerService {
     );
     if (!fresher) return;
 
-    // Re-flood fresher gossip so presence spreads across the mesh.
+    // Re-flood fresher gossip so presence spreads across the mesh, stamped
+    // with our address so receivers learn the gradient back toward it.
     final maxHops =
-        (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.defaultMaxHops;
+        (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.gossipMaxHops;
     final nextHops = record.hops + 1;
     if (nextHops > maxHops) return;
     final transport = _transport;
     if (transport == null) return;
     final forwarded = Map<String, Object?>.from(packet);
     forwarded['hops'] = nextHops;
+    forwarded['v'] = me;
     for (final peer in onlinePeers) {
       if (peer == record.address) continue;
       unawaited(transport.sendPacket(peer, forwarded));
@@ -275,6 +376,11 @@ class MessengerService {
     final id = packet['id'];
     final to = packet['to'];
     if (id is! String || to is! String) return;
+
+    // Every arriving copy teaches reverse routes (duplicates included —
+    // they prove alternate paths), so acks and replies flow back along
+    // the gradient instead of flooding.
+    _learnFromEnvelope(packet);
 
     // Dedup: relayed envelopes can arrive several times over several paths.
     if (_seen.contains(id)) return;
@@ -300,6 +406,23 @@ class MessengerService {
     }
   }
 
+  /// The envelope's via list is a breadcrumb trail: its last entry handed
+  /// us the packet, so everything on the trail (and the original sender)
+  /// is reachable through that neighbor.
+  void _learnFromEnvelope(Map<String, Object?> packet) {
+    final via =
+        (packet['via'] as List?)?.whereType<String>().toList() ?? const [];
+    if (via.isEmpty) return; // Came straight from the sender.
+    final nextHop = via.last;
+    final from = packet['from'] as String?;
+    if (from != null) {
+      RouteTable.instance.learn(from, nextHop, via.length + 1);
+    }
+    for (var i = 0; i < via.length; i++) {
+      RouteTable.instance.learn(via[i], nextHop, via.length - i);
+    }
+  }
+
   // ---------------------------------------------------------------------
   // Relaying (store-and-forward for other people's envelopes)
   // ---------------------------------------------------------------------
@@ -319,10 +442,16 @@ class MessengerService {
 
     final envelope = Map<String, Object?>.from(packet);
     envelope['hops'] = hops;
+    // The via list is a sliding window of recent relayers: dedup-by-ID
+    // already prevents loops, so ancient path history is dead weight on
+    // thousand-hop journeys.
     final via = [
       ...((packet['via'] as List?)?.whereType<String>() ?? const <String>[]),
       me,
     ];
+    while (via.length > EnvelopeCodec.viaWindow) {
+      via.removeAt(0);
+    }
     envelope['via'] = via;
 
     // Direct delivery to the recipient doesn't count against the hop cap.
@@ -342,12 +471,12 @@ class MessengerService {
         'Relay: carrying envelope ${_shortId(packet)} (hop $hops/$maxHops)');
 
     final from = packet['from'] as String?;
-    final skip = <String>{...via, if (from != null) from};
-    for (final peer in onlinePeers) {
-      if (skip.contains(peer)) continue;
-      _noteOffered(envelope, peer);
-      unawaited(transport.sendPacket(peer, envelope));
-    }
+    await _offerToCarriers(
+      envelope,
+      to,
+      candidates: onlinePeers,
+      exclude: {...via, if (from != null) from},
+    );
   }
 
   String _shortId(Map<String, Object?> packet) {
@@ -363,6 +492,54 @@ class MessengerService {
     _spoolOfferedTo
         .putIfAbsent(_spoolEntryKey(envelope), () => <String>{})
         .add(peer);
+  }
+
+  /// Hands [envelope] to up to [budget] carriers: neighbors the route
+  /// table ranks as leading toward [to] first, then random carriers
+  /// (epidemic fallback). Only *accepted* handoffs are marked as offered —
+  /// a carrier that dies mid-transfer is retried after
+  /// [_offerRetryBackoff] while other paths are tried right away.
+  Future<int> _offerToCarriers(
+    Map<String, Object?> envelope,
+    String to, {
+    required Set<String> candidates,
+    Set<String> exclude = const {},
+    int budget = _relayFanout,
+  }) async {
+    final transport = _transport;
+    if (transport == null || candidates.isEmpty) return 0;
+    final id = _spoolEntryKey(envelope);
+    final offered = _spoolOfferedTo[id] ?? const <String>{};
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    bool eligible(String peer) =>
+        peer != to &&
+        !exclude.contains(peer) &&
+        !offered.contains(peer) &&
+        now - (_offerFailureMs['$id:$peer'] ?? 0) >
+            _offerRetryBackoff.inMilliseconds;
+
+    final ranked = RouteTable.instance
+        .nextHopsFor(to, online: candidates)
+        .where(eligible)
+        .toList();
+    final rest = candidates
+        .where((peer) => eligible(peer) && !ranked.contains(peer))
+        .toList()
+      ..shuffle(_random);
+
+    var accepted = 0;
+    for (final peer in [...ranked, ...rest]) {
+      if (accepted >= budget) break;
+      if (await transport.sendPacket(peer, envelope)) {
+        _noteOffered(envelope, peer);
+        _offerFailureMs.remove('$id:$peer');
+        accepted++;
+      } else {
+        _offerFailureMs['$id:$peer'] = now;
+      }
+    }
+    return accepted;
   }
 
   Future<void> _addToSpool(Map<String, Object?> envelope) async {
@@ -425,14 +602,12 @@ class MessengerService {
         continue;
       }
 
-      final offered =
-          _spoolOfferedTo[_spoolEntryKey(envelope)] ?? const <String>{};
-      for (final peer in peersNow) {
-        if (peer == to || peer == from) continue;
-        if (via.contains(peer) || offered.contains(peer)) continue;
-        _noteOffered(envelope, peer);
-        unawaited(transport.sendPacket(peer, envelope));
-      }
+      await _offerToCarriers(
+        envelope,
+        to ?? '',
+        candidates: peersNow,
+        exclude: {...via, if (from != null) from},
+      );
       remaining.add(envelope);
     }
 
@@ -498,24 +673,18 @@ class MessengerService {
       }
     }
 
-    // Recipient unreachable: hand to nearby carriers.
-    var accepted = false;
-    var fanout = 0;
-    for (final peer in onlinePeers) {
-      if (peer == recipient) continue;
-      if (fanout >= _relayFanout) break;
-      fanout++;
-      _noteOffered(envelope, peer);
-      if (await transport.sendPacket(peer, envelope)) {
-        accepted = true;
-      }
-    }
-    if (accepted) {
+    // Recipient unreachable: hand to carriers, best-known routes first.
+    final accepted = await _offerToCarriers(
+      envelope,
+      recipient,
+      candidates: onlinePeers,
+    );
+    if (accepted > 0) {
       // Also keep a local copy: if we meet the recipient before a relay
       // does, we deliver it ourselves. Recipient deduplicates.
       await _addToSpool(envelope);
     }
-    return accepted;
+    return accepted > 0;
   }
 
   // ---------------------------------------------------------------------
@@ -681,6 +850,7 @@ class MessengerService {
   Future<void> _handleAck(IncomingMessage incoming) async {
     final target = incoming.targetId;
     if (target == null) return;
+    _ackDeadlineMs.remove(target);
     final me = await IdentityService.instance.getPublicAddressBase64();
     if (me == null) return;
 
@@ -935,6 +1105,7 @@ class MessengerService {
     await ChatStorage.instance.ensureChatExists(peerAddress);
     await ChatStorage.instance.appendMessage(peerAddress, message);
     _changed.add(peerAddress);
+    _armDeliveryDeadline(message.id, MessageStatus.pending);
 
     final handedOff = await _deliverBody(
       peerAddress,
@@ -945,6 +1116,7 @@ class MessengerService {
       await ChatStorage.instance
           .updateMessageStatus(peerAddress, message.id, MessageStatus.sent);
       _changed.add(peerAddress);
+      _armDeliveryDeadline(message.id, MessageStatus.sent);
       return message.copyWith(status: MessageStatus.sent);
     }
     return message;
@@ -1440,12 +1612,31 @@ class MessengerService {
   // Store-and-forward retries
   // ---------------------------------------------------------------------
 
-  /// Immediately retries everything pending in [chatKey].
+  /// Immediately retries everything pending or failed in [chatKey].
+  /// Unlimited: each manual resend re-arms the deadline, clears the
+  /// per-path backoff state, and re-floods — so once someone plants a new
+  /// gateway in the gap, a retry gets through.
   Future<void> retryChat(String chatKey) async {
     _lastRelayAttemptMs.clear();
     if (ChatStorage.isGroupChat(chatKey)) {
       await _flushGroupPending(chatKey, onlinePeers, force: true);
     } else {
+      // Failed → pending: the full state machine runs again from scratch.
+      final messages = await ChatStorage.instance.listMessages(chatKey);
+      var reset = false;
+      for (final message in messages) {
+        if (!message.isMe || message.status != MessageStatus.failed) continue;
+        await ChatStorage.instance
+            .updateMessageStatus(chatKey, message.id, MessageStatus.pending);
+        _armDeliveryDeadline(message.id, MessageStatus.pending);
+        // Forget which carriers already have it and which paths failed, so
+        // the resend genuinely re-explores the mesh.
+        _spoolOfferedTo.remove(message.id);
+        _offerFailureMs
+            .removeWhere((key, _) => key.startsWith('${message.id}:'));
+        reset = true;
+      }
+      if (reset) _changed.add(chatKey);
       await _flushDirectPending(chatKey, force: true);
     }
     await _flushControlOutbox(onlinePeers);
@@ -1482,7 +1673,11 @@ class MessengerService {
     final ttl = await SettingsService.instance.getAutoDeleteSeconds();
     final messages = await ChatStorage.instance.listMessages(peerAddress);
     for (final message in messages) {
-      if (!message.isMe || message.status != MessageStatus.pending) continue;
+      // Failed messages keep retrying silently in the background; only a
+      // real delivery ack (or a manual resend) changes what the user sees.
+      final retriable = message.status == MessageStatus.pending ||
+          message.status == MessageStatus.failed;
+      if (!message.isMe || !retriable) continue;
       if (message.isSystem) continue;
       if (!_shouldAttempt(message.id, peerAddress, force)) continue;
 
@@ -1491,10 +1686,11 @@ class MessengerService {
         peerAddress,
         _bodyFor(message, media, ttl),
       );
-      if (handedOff) {
+      if (handedOff && message.status == MessageStatus.pending) {
         await ChatStorage.instance
             .updateMessageStatus(peerAddress, message.id, MessageStatus.sent);
         _changed.add(peerAddress);
+        _armDeliveryDeadline(message.id, MessageStatus.sent);
       }
     }
   }

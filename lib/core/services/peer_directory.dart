@@ -111,6 +111,27 @@ class PeerDirectory {
       DateTime.now().millisecondsSinceEpoch - peer.lastSeenMs <
       freshWindow.inMilliseconds;
 
+  /// Stores an encryption key learned out-of-band (QR contact exchange).
+  ///
+  /// This is what makes truly long-range first contact possible: gossip
+  /// only propagates keys so far, but a scanned QR carries the key
+  /// directly, so the mesh can start relaying encrypted envelopes toward
+  /// someone thousands of hops away immediately. Never counts as
+  /// "recently seen" and never overrides live gossip.
+  Future<void> seedKey(String address, String x25519Base64) async {
+    final peers = await _read();
+    if (peers.containsKey(address)) return;
+    peers[address] = KnownPeer(
+      address: address,
+      x25519Base64: x25519Base64,
+      nickname: null,
+      hops: 999,
+      lastSeenMs: 0,
+    );
+    await _write(peers);
+    _changed.add(null);
+  }
+
   /// The known encryption key for [address], regardless of freshness
   /// (identity keys are long-lived).
   Future<String?> x25519For(String address) async =>

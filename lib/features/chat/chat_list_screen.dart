@@ -13,8 +13,10 @@ import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/peer_directory.dart';
 import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
+import '../../core/transport/envelope_codec.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -126,12 +128,30 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return '${address.substring(0, 8)}…${address.substring(address.length - 6)}';
   }
 
+  /// QR payloads are `meshenger:<address>[:<x25519 key>]`. This returns
+  /// just the address; [_extractScannedKey] pulls the optional key.
   String _normalizeScannedAddress(String raw) {
     var v = raw.trim();
     if (v.startsWith('meshenger:')) {
       v = v.substring('meshenger:'.length);
     }
+    final sep = v.indexOf(':');
+    if (sep > 0) v = v.substring(0, sep);
     return v.trim();
+  }
+
+  /// The encryption key embedded in a scanned QR, when present. Seeding it
+  /// lets the mesh carry encrypted messages to this contact immediately —
+  /// no need to wait for gossip to propagate their key across the mesh.
+  String? _extractScannedKey(String raw) {
+    var v = raw.trim();
+    if (v.startsWith('meshenger:')) {
+      v = v.substring('meshenger:'.length);
+    }
+    final sep = v.indexOf(':');
+    if (sep <= 0 || sep >= v.length - 1) return null;
+    final key = v.substring(sep + 1).trim();
+    return key.isEmpty ? null : key;
   }
 
   Future<void> _showMyQrModal() async {
@@ -170,7 +190,17 @@ class _ChatListScreenState extends State<ChatListScreen> {
       return;
     }
 
-    final payload = 'meshenger:$addressBase64';
+    // The QR also carries the X25519 encryption key: whoever scans it can
+    // send end-to-end encrypted messages immediately, through any number
+    // of relays, without waiting for gossip to deliver the key.
+    String payload = 'meshenger:$addressBase64';
+    try {
+      final x25519 = await EnvelopeCodec.myX25519Base64();
+      payload = 'meshenger:$addressBase64:$x25519';
+    } catch (_) {
+      // Identity locked mid-flight; address-only QR still works.
+    }
+    if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) {
@@ -260,6 +290,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
           nickname: nickname.trim().isEmpty ? null : nickname.trim(),
         ),
       );
+      // A QR-carried encryption key enables end-to-end encrypted sending
+      // right away, even to someone far beyond gossip range.
+      final scannedKey = _extractScannedKey(rawAddress);
+      if (scannedKey != null) {
+        await PeerDirectory.instance.seedKey(address, scannedKey);
+      }
       await _refresh();
       if (mounted) {
         Navigator.pop(context);

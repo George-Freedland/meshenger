@@ -417,10 +417,13 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (message.status == MessageStatus.pending)
+            if (message.status == MessageStatus.pending ||
+                message.status == MessageStatus.failed)
               ListTile(
                 leading: const Icon(Icons.refresh),
-                title: const Text('Try sending now'),
+                title: Text(message.status == MessageStatus.failed
+                    ? 'Resend (mesh gap — retries are unlimited)'
+                    : 'Try sending now'),
                 onTap: () async {
                   Navigator.pop(ctx);
                   await MessengerService.instance.retryChat(key);
@@ -997,11 +1000,13 @@ class _ChatScreenState extends State<ChatScreen> {
     final time = TimeOfDay.fromDateTime(message.timestamp).format(context);
     final showSender = _isGroup && !isMe && message.senderAddress != null;
     final pending = isMe && message.status == MessageStatus.pending;
+    final failed = isMe && message.status == MessageStatus.failed;
 
     final IconData statusIcon = switch (message.status) {
       MessageStatus.pending => Icons.schedule,
       MessageStatus.sent => Icons.done,
       MessageStatus.delivered => Icons.done_all,
+      MessageStatus.failed => Icons.error_outline,
     };
 
     return Align(
@@ -1071,9 +1076,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     Icon(
                       statusIcon,
                       size: 14,
-                      color: message.status == MessageStatus.delivered
-                          ? theme.colorScheme.primary
-                          : textColor.withValues(alpha: 0.6),
+                      color: switch (message.status) {
+                        MessageStatus.delivered => theme.colorScheme.primary,
+                        MessageStatus.failed => theme.colorScheme.error,
+                        _ => textColor.withValues(alpha: 0.6),
+                      },
                     ),
                   ],
                 ],
@@ -1084,6 +1091,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   'no route yet — retries automatically, long-press to retry now',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: textColor.withValues(alpha: 0.45),
+                  ),
+                ),
+              ],
+              if (failed) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'failed — gap in mesh network (not enough nodes). '
+                  'still retrying in background; long-press to resend',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.error,
                   ),
                 ),
               ],

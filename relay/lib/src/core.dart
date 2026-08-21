@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'identity.dart';
 import 'transport.dart';
@@ -12,9 +13,31 @@ import 'transport.dart';
 /// what lets a Raspberry Pi stitch two Bluetooth islands together over a
 /// house's Wi-Fi (or a long Ethernet run).
 class RelayCore {
-  static const int defaultMaxHops = 10;
+  /// Safety valve, not a range limit: dedup + the via window prevent
+  /// loops, and physical distance is finite (SF→NY through bridged
+  /// freeway gateways is hundreds of hops).
+  static const int defaultMaxHops = 1000;
+
+  /// Gossip floods more aggressively than envelopes; keep its depth
+  /// bounded (matches the app's cap).
+  static const int gossipMaxHops = 128;
+
+  /// Envelopes carry only the most recent relayers.
+  static const int viaWindow = 16;
+
   static const Duration defaultEnvelopeLifetime = Duration(hours: 48);
   static const Duration gossipInterval = Duration(seconds: 25);
+
+  /// Carriers get an envelope re-offered this long after a failed handoff
+  /// (e.g. the next hop was shut down mid-transfer).
+  static const Duration offerRetryBackoff = Duration(seconds: 90);
+
+  /// Routes stop influencing forwarding after this long unrefreshed.
+  static const Duration routeLifetime = Duration(minutes: 30);
+
+  /// Gateways forward wider than phones — pushing traffic across is
+  /// their whole job.
+  static const int relayFanout = 8;
 
   final RelayIdentity identity;
   final String name;
@@ -25,8 +48,16 @@ class RelayCore {
   final List<String> _seenOrder = <String>[];
   final List<Map<String, Object?>> _spool = <Map<String, Object?>>[];
   final Map<String, Set<String>> _offeredTo = <String, Set<String>>{};
+  final Map<String, int> _offerFailureMs = <String, int>{};
   final Map<String, int> _gossipFreshness = <String, int>{};
   final Map<String, String> _nicknames = <String, String>{};
+
+  /// Learned gradients: destination → next-hop neighbor → (hops, learned
+  /// ms). Gossip forwarder stamps and envelope via-trails feed it; ranked
+  /// next hops get envelopes first, epidemic spread stays the fallback.
+  final Map<String, Map<String, (int, int)>> _routes =
+      <String, Map<String, (int, int)>>{};
+  final Random _random = Random();
 
   final List<StreamSubscription<dynamic>> _subs = [];
   Timer? _tick;
@@ -57,6 +88,9 @@ class RelayCore {
     _tick = Timer.periodic(gossipInterval, (_) async {
       await _broadcastOwnGossip();
       _pruneSpool();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      _offerFailureMs.removeWhere(
+          (_, ts) => now - ts > offerRetryBackoff.inMilliseconds * 8);
       await _offerSpoolEverywhere();
     });
     await _broadcastOwnGossip();
@@ -76,7 +110,7 @@ class RelayCore {
       address.length <= 12 ? address : '${address.substring(0, 12)}…';
 
   String _shortId(String id) =>
-      id.length <= 8 ? id : _shortId(id);
+      id.length <= 8 ? id : id.substring(0, 8);
 
   String _label(String address) {
     final nick = _nicknames[address];
@@ -119,6 +153,11 @@ class RelayCore {
     final id = packet['id'];
     final to = packet['to'];
     if (id is! String || to is! String) return;
+
+    // Every copy (duplicates included) teaches reverse routes: the via
+    // trail is reachable through the neighbor that handed it over.
+    _learnFromEnvelope(packet);
+
     if (to == identity.address) {
       // Addressed to the relay itself (someone messaged the gateway);
       // nothing to read here — relays hold no message keys.
@@ -136,10 +175,15 @@ class RelayCore {
 
     final envelope = Map<String, Object?>.from(packet);
     envelope['hops'] = hops;
-    envelope['via'] = <String>[
+    // Sliding window of recent relayers; dedup-by-ID prevents loops.
+    final via = <String>[
       ...((packet['via'] as List?)?.whereType<String>() ?? const <String>[]),
       identity.address,
     ];
+    while (via.length > viaWindow) {
+      via.removeAt(0);
+    }
+    envelope['via'] = via;
     envelope['exp'] =
         exp ?? DateTime.now().add(defaultEnvelopeLifetime).millisecondsSinceEpoch;
 
@@ -167,15 +211,111 @@ class RelayCore {
         '(hop $hops/$maxHops, spool ${_spool.length})');
 
     final from = packet['from'] as String?;
-    final via = (envelope['via'] as List).whereType<String>().toSet();
     for (final transport in transports) {
-      for (final peer in transport.onlinePeers) {
-        if (peer == from || via.contains(peer)) continue;
+      await _offerToCarriers(
+        transport,
+        envelope,
+        to,
+        exclude: {...via, if (from != null) from},
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Route gradients
+  // ---------------------------------------------------------------------
+
+  void _learnRoute(String destination, String nextHop, int hops) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final viaMap =
+        _routes.putIfAbsent(destination, () => <String, (int, int)>{});
+    final existing = viaMap[nextHop];
+    if (existing != null &&
+        now - existing.$2 < routeLifetime.inMilliseconds &&
+        existing.$1 < hops) {
+      viaMap[nextHop] = (existing.$1, now);
+    } else {
+      viaMap[nextHop] = (hops, now);
+    }
+    while (viaMap.length > 4) {
+      final worst = viaMap.entries
+          .reduce((a, b) => a.value.$1 >= b.value.$1 ? a : b);
+      viaMap.remove(worst.key);
+    }
+    if (_routes.length > 2048) {
+      _routes.remove(_routes.keys.first);
+    }
+  }
+
+  void _learnFromEnvelope(Map<String, Object?> packet) {
+    final via =
+        (packet['via'] as List?)?.whereType<String>().toList() ?? const [];
+    if (via.isEmpty) return;
+    final nextHop = via.last;
+    final from = packet['from'] as String?;
+    if (from != null) _learnRoute(from, nextHop, via.length + 1);
+    for (var i = 0; i < via.length; i++) {
+      _learnRoute(via[i], nextHop, via.length - i);
+    }
+  }
+
+  /// Online neighbors most likely to lead toward [destination], best first.
+  List<String> _rankedNextHops(String destination, Set<String> online) {
+    final viaMap = _routes[destination];
+    if (viaMap == null) return const <String>[];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final fresh = viaMap.entries
+        .where((e) =>
+            online.contains(e.key) &&
+            now - e.value.$2 < routeLifetime.inMilliseconds)
+        .toList()
+      ..sort((a, b) => a.value.$1.compareTo(b.value.$1));
+    return fresh.map((e) => e.key).toList();
+  }
+
+  /// Offers [envelope] to up to [budget] of [transport]'s peers — ranked
+  /// next hops first, then random carriers. Only accepted handoffs count
+  /// as offered; failures (peer died mid-transfer) retry after
+  /// [offerRetryBackoff] while other paths are tried immediately.
+  Future<int> _offerToCarriers(
+    RelayTransport transport,
+    Map<String, Object?> envelope,
+    String to, {
+    Set<String> exclude = const {},
+    int budget = relayFanout,
+  }) async {
+    final peers = transport.onlinePeers;
+    if (peers.isEmpty) return 0;
+    final id = envelope['id'] as String? ?? '';
+    final offered = _offeredTo[id] ?? const <String>{};
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    bool eligible(String peer) =>
+        peer != to &&
+        !exclude.contains(peer) &&
+        !offered.contains(peer) &&
+        now - (_offerFailureMs['$id:$peer'] ?? 0) >
+            offerRetryBackoff.inMilliseconds;
+
+    final ranked = _rankedNextHops(to, peers).where(eligible).toList();
+    final rest = peers
+        .where((peer) => eligible(peer) && !ranked.contains(peer))
+        .toList()
+      ..shuffle(_random);
+
+    var accepted = 0;
+    for (final peer in [...ranked, ...rest]) {
+      if (accepted >= budget) break;
+      if (await transport.sendPacket(peer, envelope)) {
         _noteOffered(id, peer);
+        _offerFailureMs.remove('$id:$peer');
         _forwarded++;
-        unawaited(transport.sendPacket(peer, envelope));
+        accepted++;
+      } else {
+        _offerFailureMs['$id:$peer'] = now;
       }
     }
+    return accepted;
   }
 
   Future<void> _handleGossip(
@@ -185,6 +325,12 @@ class RelayCore {
     final addr = packet['addr'] as String?;
     final ts = (packet['ts'] as num?)?.toInt();
     if (addr == null || ts == null || addr == identity.address) return;
+
+    // Route learning happens on every copy — even stale duplicates prove
+    // which neighbor leads toward the gossiped node.
+    final gossipHops = (packet['hops'] as num?)?.toInt() ?? 0;
+    final forwarder = packet['v'] as String?;
+    _learnRoute(addr, forwarder ?? addr, gossipHops + 1);
 
     final known = _gossipFreshness[addr];
     if (known != null && known >= ts) return;
@@ -199,12 +345,14 @@ class RelayCore {
       _nicknames[addr] = nick;
     }
 
-    final hops = ((packet['hops'] as num?)?.toInt() ?? 0) + 1;
-    final maxHops = (packet['max'] as num?)?.toInt() ?? defaultMaxHops;
+    final hops = gossipHops + 1;
+    final maxHops = (packet['max'] as num?)?.toInt() ?? gossipMaxHops;
     if (hops > maxHops) return;
 
     final forwarded = Map<String, Object?>.from(packet);
     forwarded['hops'] = hops;
+    // Stamped so receivers learn the gradient back through this gateway.
+    forwarded['v'] = identity.address;
     for (final transport in transports) {
       for (final peer in transport.onlinePeers) {
         if (peer == addr) continue;
@@ -225,7 +373,7 @@ class RelayCore {
       'ts': ts,
       'sig': sig,
       'hops': 0,
-      'max': defaultMaxHops,
+      'max': gossipMaxHops,
     };
     for (final transport in transports) {
       for (final peer in transport.onlinePeers) {
@@ -285,22 +433,22 @@ class RelayCore {
       final via =
           (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
 
-      for (final peer in peers) {
-        if (to == peer) {
-          if (await transport.sendPacket(peer, envelope)) {
-            delivered.add(envelope);
-            _delivered++;
-            log('Spooled envelope ${_shortId(id)} reached '
-                '${_label(peer)} over ${transport.name}');
-          }
+      if (to != null && peers.contains(to)) {
+        if (await transport.sendPacket(to, envelope)) {
+          delivered.add(envelope);
+          _delivered++;
+          log('Spooled envelope ${_shortId(id)} reached '
+              '${_label(to)} over ${transport.name}');
           continue;
         }
-        if (peer == from || via.contains(peer)) continue;
-        if (_offeredTo[id]?.contains(peer) ?? false) continue;
-        _noteOffered(id, peer);
-        _forwarded++;
-        unawaited(transport.sendPacket(peer, envelope));
       }
+
+      await _offerToCarriers(
+        transport,
+        envelope,
+        to ?? '',
+        exclude: {...via, if (from != null) from},
+      );
     }
 
     for (final envelope in delivered) {

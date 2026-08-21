@@ -25,10 +25,23 @@ class EnvelopeCodec {
   EnvelopeCodec._();
 
   /// Default relay budget for an envelope.
-  /// Long chains through phones and gateway relays are the point of the
-  /// mesh (e.g. mac → pi → pi → iPhone → android → … → mac); 10 hops keeps
-  /// city-block-scale paths viable while the epidemic flood stays bounded.
-  static const int defaultMaxHops = 10;
+  ///
+  /// Physical distance is finite, so this is a safety valve, not a range
+  /// limit: SF→NY through freeway gateways is hundreds of hops (each
+  /// Ethernet/Wi-Fi bridge between two gateways counts as one). Loops are
+  /// prevented by per-node dedup and the via window — not by this cap — so
+  /// a huge value costs nothing on healthy paths.
+  static const int defaultMaxHops = 1000;
+
+  /// Gossip (presence + key discovery) floods more aggressively than
+  /// envelopes — every fresher record re-floods to all neighbors — so its
+  /// depth stays bounded. Beyond this radius, keys travel by QR exchange.
+  static const int gossipMaxHops = 128;
+
+  /// Only the most recent relayers ride in the `via` list. Dedup-by-ID at
+  /// every node already prevents loops; the window just keeps envelopes
+  /// small on thousand-hop paths (a full path would add ~45 B per hop).
+  static const int viaWindow = 16;
 
   /// How long relays keep an undeliverable envelope (store-and-forward).
   static const Duration defaultRelayLifetime = Duration(hours: 48);
@@ -198,7 +211,7 @@ class EnvelopeCodec {
       'ts': ts,
       'sig': base64Encode(signature.bytes),
       'hops': 0,
-      'max': defaultMaxHops,
+      'max': gossipMaxHops,
     };
   }
 

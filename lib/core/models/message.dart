@@ -7,6 +7,12 @@ enum MessageStatus {
 
   /// The recipient's device confirmed receipt (end-to-end ack).
   delivered,
+
+  /// No delivery confirmation within the deadline — likely a gap in the
+  /// mesh (not enough nodes between sender and recipient). Background
+  /// retries continue and a late ack still flips this to delivered; the
+  /// user can also manually resend, without limit.
+  failed,
 }
 
 class ChatMessage {
