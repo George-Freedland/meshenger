@@ -51,6 +51,7 @@ class ChatStorage {
     chats.removeWhere((a) => a == chatKey);
     await _writeChats(chats);
     await prefs.remove(IdentityScope.key(_messagesKey(chatKey)));
+    await markRead(chatKey);
   }
 
   /// Hides a group chat from the list without leaving the group. Message
@@ -76,32 +77,72 @@ class ChatStorage {
   // Unread state
   // ---------------------------------------------------------------------
 
-  static const _unreadKey = 'chats_unread_v1'; // set of chat keys
+  static const _unreadKey = 'chats_unread_v1'; // legacy set of chat keys
+  static const _unreadCountsKey = 'chats_unread_counts_v1';
 
-  Future<Set<String>> listUnread() async {
+  /// Chat keys with at least one unread message.
+  Future<Set<String>> listUnread() async =>
+      (await unreadCounts()).keys.toSet();
+
+  /// Per-chat unread counts (iPhone-style badge numbers).
+  Future<Map<String, int>> unreadCounts() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(IdentityScope.key(_unreadKey));
-    if (raw == null || raw.isEmpty) return <String>{};
-    final decoded = jsonDecode(raw);
-    if (decoded is! List) return <String>{};
-    return decoded.whereType<String>().toSet();
+    final raw = prefs.getString(IdentityScope.key(_unreadCountsKey));
+    if (raw != null && raw.isNotEmpty) {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return decoded.map(
+          (key, value) => MapEntry(
+            key.toString(),
+            (value as num?)?.toInt() ?? 0,
+          ),
+        )..removeWhere((_, count) => count <= 0);
+      }
+    }
+    // Migrate the old boolean unread set (each chat counts as 1).
+    final legacy = prefs.getString(IdentityScope.key(_unreadKey));
+    if (legacy != null && legacy.isNotEmpty) {
+      final decoded = jsonDecode(legacy);
+      if (decoded is List) {
+        final migrated = {
+          for (final key in decoded.whereType<String>()) key: 1,
+        };
+        await _writeUnreadCounts(migrated);
+        return migrated;
+      }
+    }
+    return <String, int>{};
+  }
+
+  Future<int> totalUnread() async {
+    var sum = 0;
+    for (final count in (await unreadCounts()).values) {
+      sum += count;
+    }
+    return sum;
   }
 
   Future<void> markUnread(String chatKey) async {
-    final unread = await listUnread();
-    if (unread.add(chatKey)) await _writeUnread(unread);
+    final counts = await unreadCounts();
+    counts[chatKey] = (counts[chatKey] ?? 0) + 1;
+    await _writeUnreadCounts(counts);
   }
 
   Future<void> markRead(String chatKey) async {
-    final unread = await listUnread();
-    if (unread.remove(chatKey)) await _writeUnread(unread);
+    final counts = await unreadCounts();
+    if (counts.remove(chatKey) != null) await _writeUnreadCounts(counts);
   }
 
-  Future<void> _writeUnread(Set<String> unread) async {
+  Future<void> _writeUnreadCounts(Map<String, int> counts) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
+      IdentityScope.key(_unreadCountsKey),
+      jsonEncode(counts),
+    );
+    // Keep the legacy key in sync so older readers still see a set.
+    await prefs.setString(
       IdentityScope.key(_unreadKey),
-      jsonEncode(unread.toList()),
+      jsonEncode(counts.keys.toList()),
     );
   }
 

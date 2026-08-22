@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/services/chat_storage.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/ui/avatars.dart';
+import '../../core/ui/unread_badge.dart';
 
 class _AppEntry {
   final String label;
@@ -28,8 +32,34 @@ const List<_AppEntry> _apps = [
 ];
 
 /// iPhone-style launcher shown after unlock.
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _unread = 0;
+  StreamSubscription<String>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshUnread();
+    _sub = MessengerService.instance.onChanged.listen((_) => _refreshUnread());
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refreshUnread() async {
+    final total = await ChatStorage.instance.totalUnread();
+    if (mounted) setState(() => _unread = total);
+  }
 
   Future<void> _logout(BuildContext context) async {
     final confirmed = await showDialog<bool>(
@@ -116,23 +146,26 @@ class HomeScreen extends StatelessWidget {
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Container(
-                                    width: 58,
-                                    height: 58,
-                                    decoration: BoxDecoration(
-                                      color: app.color,
-                                      borderRadius: BorderRadius.circular(15),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: app.color
-                                              .withValues(alpha: 0.35),
-                                          blurRadius: 12,
-                                          offset: const Offset(0, 4),
-                                        ),
-                                      ],
+                                  UnreadBadge(
+                                    count: app.route == '/chats' ? _unread : 0,
+                                    child: Container(
+                                      width: 58,
+                                      height: 58,
+                                      decoration: BoxDecoration(
+                                        color: app.color,
+                                        borderRadius: BorderRadius.circular(15),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: app.color
+                                                .withValues(alpha: 0.35),
+                                            blurRadius: 12,
+                                            offset: const Offset(0, 4),
+                                          ),
+                                        ],
+                                      ),
+                                      child: Icon(app.icon,
+                                          color: Colors.white, size: 30),
                                     ),
-                                    child: Icon(app.icon,
-                                        color: Colors.white, size: 30),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(

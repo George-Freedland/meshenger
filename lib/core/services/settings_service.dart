@@ -56,4 +56,30 @@ class SettingsService {
     await prefs.setBool(IdentityScope.key(_relayKey), value);
     _changed.add(null);
   }
+
+  static const _soundEnabledKey = 'alert_sound_enabled_v1';
+  static const _soundToneKey = 'alert_sound_tone_v1';
+
+  /// In-app (and desktop) message tone. Default on.
+  Future<bool> getSoundEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(IdentityScope.key(_soundEnabledKey)) ?? true;
+  }
+
+  Future<void> setSoundEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(IdentityScope.key(_soundEnabledKey), value);
+    _changed.add(null);
+  }
+
+  Future<String> getAlertToneName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(IdentityScope.key(_soundToneKey)) ?? 'ping';
+  }
+
+  Future<void> setAlertToneName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(IdentityScope.key(_soundToneKey), name);
+    _changed.add(null);
+  }
 }

@@ -147,6 +147,7 @@ class IdentityService {
     const exact = <String>{
       'chats_v1',
       'chats_unread_v1',
+      'chats_unread_counts_v1',
       'contacts_v1',
       'allow_messages_from_anyone_v1',
       'transport_mode_v1',

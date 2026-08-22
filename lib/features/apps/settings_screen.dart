@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/services/alert_sound_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/settings_service.dart';
@@ -33,6 +34,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _autoDeleteSeconds = 0;
   int _avatarId = 0;
   TransportMode _transportMode = MessengerService.instance.mode;
+  bool _soundEnabled = true;
+  AlertTone _alertTone = AlertTone.ping;
 
   @override
   void initState() {
@@ -52,6 +55,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final relayEnabled = await SettingsService.instance.getRelayEnabled();
     final autoDelete = await SettingsService.instance.getAutoDeleteSeconds();
     final identity = IdentityService.instance.active;
+    final soundEnabled = await SettingsService.instance.getSoundEnabled();
+    final tone = AlertTone.fromName(
+      await SettingsService.instance.getAlertToneName(),
+    );
     if (!mounted) return;
     setState(() {
       _allowAnyone = allowAnyone;
@@ -59,6 +66,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _autoDeleteSeconds = autoDelete;
       _avatarId = identity?.avatarId ?? 0;
       _nicknameController.text = identity?.nickname ?? '';
+      _soundEnabled = soundEnabled;
+      _alertTone = tone;
       _loading = false;
     });
   }
@@ -256,6 +265,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       await SettingsService.instance
                           .setAutoDeleteSeconds(value);
                     },
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text('Sounds', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Message sounds'),
+                  subtitle: const Text(
+                    'Play a tone when a message arrives and you are not '
+                    'already in that chat.',
+                  ),
+                  value: _soundEnabled,
+                  onChanged: (value) async {
+                    setState(() => _soundEnabled = value);
+                    await SettingsService.instance.setSoundEnabled(value);
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  enabled: _soundEnabled,
+                  title: const Text('Alert tone'),
+                  subtitle: Text(_alertTone.blurb),
+                  trailing: DropdownButton<AlertTone>(
+                    value: _alertTone,
+                    items: [
+                      for (final tone in AlertTone.values)
+                        DropdownMenuItem(
+                          value: tone,
+                          child: Text(tone.label),
+                        ),
+                    ],
+                    onChanged: !_soundEnabled
+                        ? null
+                        : (value) async {
+                            if (value == null) return;
+                            setState(() => _alertTone = value);
+                            await SettingsService.instance
+                                .setAlertToneName(value.name);
+                            await AlertSoundService.instance
+                                .play(tone: value, ignoreMute: true);
+                          },
                   ),
                 ),
                 const SizedBox(height: 24),

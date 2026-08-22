@@ -20,6 +20,8 @@ import 'contacts_service.dart';
 import 'identity_scope.dart';
 import 'identity_service.dart';
 import 'media_store.dart';
+import 'alert_sound_service.dart';
+import 'in_app_notice_service.dart';
 import 'notification_service.dart';
 import 'peer_directory.dart';
 import 'route_table.dart';
@@ -733,7 +735,11 @@ class MessengerService {
 
     if (action != null && action.startsWith('call-')) {
       if (action == 'call-invite') {
-        unawaited(_notifyBanner(incoming.fromAddress, 'Incoming call'));
+        unawaited(_notifyIncoming(
+          chatKey: incoming.fromAddress,
+          fromAddress: incoming.fromAddress,
+          body: 'Incoming call',
+        ));
       }
       _callSignals.add(incoming);
       return;
@@ -771,7 +777,7 @@ class MessengerService {
         id: incoming.groupId!,
         adminAddress: incoming.groupAdmin ??
             existing?.adminAddress ??
-            incoming.fromAddress,
+        incoming.fromAddress,
         name: incoming.groupName ?? existing?.name,
         members: incoming.groupMembers ?? existing?.members ?? <String>[],
       ));
@@ -805,12 +811,12 @@ class MessengerService {
     await ChatStorage.instance.ensureChatExists(chatKey);
     await ChatStorage.instance.appendMessage(
       chatKey,
-      ChatMessage(
-        id: incoming.id,
-        text: incoming.text,
-        isMe: false,
-        timestamp: incoming.timestamp,
-        status: MessageStatus.sent,
+        ChatMessage(
+          id: incoming.id,
+          text: incoming.text,
+          isMe: false,
+          timestamp: incoming.timestamp,
+          status: MessageStatus.sent,
         senderAddress: incoming.fromAddress,
         expiresAtMs: expiresAtMs,
         kind: mediaId != null ? incoming.kind : null,
@@ -825,10 +831,10 @@ class MessengerService {
     await ChatStorage.instance.markUnread(chatKey);
     _changed.add(chatKey);
 
-    // Banner when the app is backgrounded (never shows message content).
-    unawaited(_notifyBanner(
-      incoming.fromAddress,
-      switch (incoming.kind) {
+    unawaited(_notifyIncoming(
+      chatKey: chatKey,
+      fromAddress: incoming.fromAddress,
+      body: switch (incoming.kind) {
         'image' => 'Sent you a photo',
         'audio' =>
           incoming.voicemail ? 'Left you a voicemail' : 'Sent a voice message',
@@ -851,10 +857,13 @@ class MessengerService {
     ));
   }
 
-  /// System banner naming the sender (nickname when known, short address
-  /// otherwise). Message content never appears — it stays end-to-end
-  /// encrypted inside the app.
-  Future<void> _notifyBanner(String fromAddress, String body) async {
+  /// Sound + in-app banner when you are looking at another screen; OS
+  /// banner when the app is backgrounded. Never includes message content.
+  Future<void> _notifyIncoming({
+    required String chatKey,
+    required String fromAddress,
+    required String body,
+  }) async {
     try {
       final contact = await ContactsService.instance.getContact(fromAddress);
       final nickname = contact?.nickname?.trim();
@@ -863,9 +872,18 @@ class MessengerService {
           : (fromAddress.length <= 12
               ? fromAddress
               : '${fromAddress.substring(0, 12)}…');
+      final viewing = InAppNoticeService.instance.isViewingChat(chatKey);
+      if (!viewing) {
+        unawaited(AlertSoundService.instance.play());
+        InAppNoticeService.instance.show(InAppNotice(
+          chatKey: chatKey,
+          title: title,
+          body: body,
+        ));
+      }
       await NotificationService.instance.notify(title: title, body: body);
     } catch (_) {
-      // Banners are best-effort.
+      // Alerts are best-effort.
     }
   }
 

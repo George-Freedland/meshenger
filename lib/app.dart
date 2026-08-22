@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'features/calls/call_overlay.dart';
+import 'features/shared/in_app_banner_overlay.dart';
 import 'routing/app_router.dart';
 
 class MeshengerApp extends StatelessWidget {
@@ -11,8 +12,9 @@ class MeshengerApp extends StatelessWidget {
     return MaterialApp.router(
       title: 'Meshenger',
       routerConfig: appRouter,
-      builder: (context, child) =>
-          CallOverlay(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) => CallOverlay(
+        child: InAppBannerOverlay(child: child ?? const SizedBox.shrink()),
+      ),
       theme: ThemeData.dark().copyWith(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.tealAccent,

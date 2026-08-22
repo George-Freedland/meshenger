@@ -17,6 +17,7 @@ import '../../core/services/peer_directory.dart';
 import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
 import '../../core/transport/envelope_codec.dart';
+import '../../core/ui/unread_badge.dart';
 import '../shared/transport_status_banner.dart';
 
 class ChatListScreen extends StatefulWidget {
@@ -31,7 +32,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   List<Contact> _contacts = const <Contact>[];
   Map<String, GroupInfo> _groupInfo = const <String, GroupInfo>{};
   Set<String> _onlinePeers = const <String>{};
-  Set<String> _unreadChats = const <String>{};
+  Map<String, int> _unreadCounts = const <String, int>{};
   String? _myAddress;
 
   bool _isMyAddress(String address) => address == _myAddress;
@@ -96,7 +97,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _myAddress ??= await IdentityService.instance.getPublicAddressBase64();
     final chats = await ChatStorage.instance.listChats();
     final contacts = await ContactsService.instance.listContacts();
-    final unread = await ChatStorage.instance.listUnread();
+    final unread = await ChatStorage.instance.unreadCounts();
 
     final groupInfo = <String, GroupInfo>{};
     for (final chatKey in chats) {
@@ -112,7 +113,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       _chats = chats;
       _contacts = contacts;
       _groupInfo = groupInfo;
-      _unreadChats = unread;
+      _unreadCounts = unread;
       _loading = false;
     });
   }
@@ -1015,7 +1016,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   itemBuilder: (context, i) {
                     final chatKey = _chats[i];
                     final isGroup = ChatStorage.isGroupChat(chatKey);
-                    final unread = _unreadChats.contains(chatKey);
+                    final unreadCount = _unreadCounts[chatKey] ?? 0;
+                    final unread = unreadCount > 0;
 
                     final String title;
                     final String subtitle;
@@ -1041,37 +1043,26 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       subtitle = _short(chatKey);
                     }
 
-                    // A blue dot marks chats with unread messages; it
-                    // disappears once the chat has been opened.
-                    final leading = SizedBox(
-                      width: 32,
-                      height: 40,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          if (isGroup)
-                            Icon(
-                              Icons.group,
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface
-                                  .withValues(alpha: 0.5),
-                            ),
-                          if (unread)
-                            Align(
-                              alignment: isGroup
-                                  ? Alignment.topRight
-                                  : Alignment.center,
-                              child: Container(
-                                width: 12,
-                                height: 12,
-                                decoration: const BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.lightBlueAccent,
-                                ),
+                    final leading = UnreadBadge(
+                      count: unreadCount,
+                      child: SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: isGroup
+                            ? Icon(
+                                Icons.group,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.5),
+                              )
+                            : Icon(
+                                Icons.person_outline,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withValues(alpha: 0.45),
                               ),
-                            ),
-                        ],
                       ),
                     );
 
