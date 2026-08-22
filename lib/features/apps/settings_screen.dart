@@ -150,6 +150,100 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) context.go('/');
   }
 
+  Future<void> _deleteProfileForever() async {
+    final identity = IdentityService.instance.active;
+    if (identity == null) return;
+    final label = identity.nickname?.trim().isNotEmpty == true
+        ? identity.nickname!.trim()
+        : 'this profile';
+
+    final passwordController = TextEditingController();
+    String? error;
+    var working = false;
+
+    final deleted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Permanently delete $label?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'This erases the identity keys, every chat, all contacts, '
+                'all photos and voice notes, and every setting for this '
+                'profile — from this device, forever. There is no server '
+                'copy and no undo.\n\n'
+                'If you only want the tile gone from the login screen, '
+                'cancel and use "Manage profiles" there instead.\n\n'
+                'Enter this profile\'s password to confirm:',
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passwordController,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Password'),
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  error!,
+                  style: TextStyle(color: Theme.of(ctx).colorScheme.error),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: working ? null : () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(ctx).colorScheme.error,
+                foregroundColor: Theme.of(ctx).colorScheme.onError,
+              ),
+              onPressed: working
+                  ? null
+                  : () async {
+                      setDialogState(() {
+                        working = true;
+                        error = null;
+                      });
+                      final ok = await IdentityService.instance.verifyPassword(
+                        publicKey: identity.publicKey,
+                        password: passwordController.text,
+                      );
+                      if (!ok) {
+                        setDialogState(() {
+                          working = false;
+                          error = 'Incorrect password';
+                        });
+                        return;
+                      }
+                      await MessengerService.instance.stop();
+                      await IdentityService.instance
+                          .deleteIdentityPermanently(identity.publicKey);
+                      if (ctx.mounted) Navigator.pop(ctx, true);
+                    },
+              child: Text(working ? 'Deleting…' : 'Delete forever'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (deleted == true && mounted) {
+      context.go('/');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile permanently deleted')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -321,6 +415,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(color: theme.colorScheme.error),
                   ),
                   onTap: _logout,
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.delete_forever_outlined,
+                      color: theme.colorScheme.error),
+                  title: Text(
+                    'Delete profile permanently',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  subtitle: const Text(
+                    'Erases this profile and absolutely all of its data '
+                    'from this device. To just hide the tile on the login '
+                    'screen, use "Manage profiles" there instead.',
+                  ),
+                  onTap: _deleteProfileForever,
                 ),
                 const SizedBox(height: 24),
                 Text(

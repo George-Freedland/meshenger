@@ -46,7 +46,7 @@ class CallLogEntry {
       );
 }
 
-/// Recents list for the Phone and FaceTime apps (identity-scoped).
+/// Recents list for the Phone and Video Chat apps (identity-scoped).
 class CallLogService {
   CallLogService._();
   static final CallLogService instance = CallLogService._();

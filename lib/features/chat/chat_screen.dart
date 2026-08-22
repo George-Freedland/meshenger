@@ -134,7 +134,7 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     } else {
       final contact = await ContactsService.instance.getContact(key);
-      if (!mounted) return;
+    if (!mounted) return;
       setState(() {
         _contacts = contacts;
         _nickname = contact?.nickname;
@@ -1013,24 +1013,24 @@ class _ChatScreenState extends State<ChatScreen> {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
         onLongPress: isMe ? () => _showMessageActions(message) : null,
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          constraints: const BoxConstraints(maxWidth: 480),
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(isMe ? 16 : 4),
-              bottomRight: Radius.circular(isMe ? 4 : 16),
-            ),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        constraints: const BoxConstraints(maxWidth: 480),
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isMe ? 16 : 4),
+            bottomRight: Radius.circular(isMe ? 4 : 16),
           ),
-          child: Column(
+        ),
+        child: Column(
             crossAxisAlignment:
                 isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
+          mainAxisSize: MainAxisSize.min,
+          children: [
               if (showSender) ...[
                 Text(
                   _labelFor(message.senderAddress!),
@@ -1046,15 +1046,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (message.text.isNotEmpty) const SizedBox(height: 6),
               ],
               if (message.text.isNotEmpty)
-                Text(
-                  message.text,
+            Text(
+              message.text,
                   style:
                       theme.textTheme.bodyMedium?.copyWith(color: textColor),
-                ),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                   if (message.edited) ...[
                     Text(
                       'edited',
@@ -1065,26 +1065,26 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     const SizedBox(width: 6),
                   ],
-                  Text(
-                    time,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: textColor.withValues(alpha: 0.6),
-                    ),
+                Text(
+                  time,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: textColor.withValues(alpha: 0.6),
                   ),
-                  if (isMe) ...[
-                    const SizedBox(width: 4),
-                    Icon(
+                ),
+                if (isMe) ...[
+                  const SizedBox(width: 4),
+                  Icon(
                       statusIcon,
-                      size: 14,
+                    size: 14,
                       color: switch (message.status) {
                         MessageStatus.delivered => theme.colorScheme.primary,
                         MessageStatus.failed => theme.colorScheme.error,
                         _ => textColor.withValues(alpha: 0.6),
                       },
-                    ),
-                  ],
+                  ),
                 ],
-              ),
+              ],
+            ),
               if (pending) ...[
                 const SizedBox(height: 2),
                 Text(
@@ -1167,8 +1167,8 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Text(
                 statusLabel,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
               ),
             ),
@@ -1194,7 +1194,7 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.group_outlined),
             ),
           if (key != null && !_isGroup && !_isContact)
-            IconButton(
+          IconButton(
               tooltip: 'Add as contact',
               onPressed: _addAsContact,
               icon: const Icon(Icons.person_add_alt_1),
@@ -1315,32 +1315,32 @@ class _ChatScreenState extends State<ChatScreen> {
                               onPressed: _sending ? null : _showAttachSheet,
                               icon: const Icon(Icons.add_circle_outline),
                             ),
-                            Expanded(
-                              child: TextField(
-                                controller: _inputController,
-                                onSubmitted: (_) => _send(),
-                                textInputAction: TextInputAction.send,
+                        Expanded(
+                          child: TextField(
+                            controller: _inputController,
+                            onSubmitted: (_) => _send(),
+                            textInputAction: TextInputAction.send,
                                 decoration: InputDecoration(
                                   hintText: _editing != null
                                       ? 'Edit message…'
                                       : 'Message…',
                                   border: const OutlineInputBorder(
-                                    borderRadius:
-                                        BorderRadius.all(Radius.circular(24)),
-                                  ),
+                                borderRadius:
+                                    BorderRadius.all(Radius.circular(24)),
+                              ),
                                   contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 12,
-                                  ),
-                                ),
+                                horizontal: 16,
+                                vertical: 12,
                               ),
                             ),
-                            const SizedBox(width: 8),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
                             if (_composerHasText || _editing != null)
-                              IconButton.filled(
+                        IconButton.filled(
                                 tooltip:
                                     _editing != null ? 'Save edit' : 'Send',
-                                onPressed: _sending ? null : _send,
+                          onPressed: _sending ? null : _send,
                                 icon: Icon(_editing != null
                                     ? Icons.check
                                     : Icons.send),

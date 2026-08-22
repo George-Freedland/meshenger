@@ -22,10 +22,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   _Stage _stage = _Stage.loading;
   List<StoredIdentity> _identities = const <StoredIdentity>[];
+  Set<String> _hidden = const <String>{};
   StoredIdentity? _selected;
   String? _error;
   bool _busy = false;
   bool _obscurePassword = true;
+  bool _managing = false;
   int _avatarId = 0;
 
   String _password = '';
@@ -43,13 +45,99 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
+  List<StoredIdentity> get _visibleIdentities =>
+      _identities.where((i) => !_hidden.contains(i.publicKey)).toList();
+
+  List<StoredIdentity> get _hiddenIdentities =>
+      _identities.where((i) => _hidden.contains(i.publicKey)).toList();
+
   Future<void> _loadIdentities() async {
     final identities = await IdentityService.instance.listIdentities();
+    final hidden = await IdentityService.instance.hiddenIdentities();
     if (!mounted) return;
     setState(() {
       _identities = identities;
+      _hidden = hidden;
       _stage = identities.isEmpty ? _Stage.create : _Stage.picker;
+      if (_visibleIdentities.isEmpty && _hiddenIdentities.isEmpty) {
+        _stage = _Stage.create;
+      }
     });
+  }
+
+  Future<void> _hideIdentity(StoredIdentity identity) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Hide ${_labelFor(identity)}?'),
+        content: const Text(
+          'The tile disappears from this screen, but nothing is deleted — '
+          'all chats and keys stay encrypted on this device. Restore it '
+          'here anytime.\n\n'
+          'To permanently erase a profile and all of its data, unlock it '
+          'and use Settings → Delete profile.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Hide'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await IdentityService.instance.setIdentityHidden(identity.publicKey, true);
+    await _loadIdentities();
+  }
+
+  Future<void> _showHiddenProfiles() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final hidden = _hiddenIdentities;
+          return AlertDialog(
+            title: const Text('Hidden profiles'),
+            content: SizedBox(
+              width: 360,
+              child: hidden.isEmpty
+                  ? const Text('No hidden profiles.')
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final identity in hidden)
+                          ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: presetAvatar(identity.avatarId, size: 40),
+                            title: Text(_labelFor(identity)),
+                            trailing: TextButton(
+                              onPressed: () async {
+                                await IdentityService.instance
+                                    .setIdentityHidden(
+                                        identity.publicKey, false);
+                                await _loadIdentities();
+                                setDialogState(() {});
+                              },
+                              child: const Text('Restore'),
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   void _goTo(_Stage stage, {StoredIdentity? selected}) {
@@ -192,7 +280,69 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
+  Widget _buildProfileTile(ThemeData theme, StoredIdentity identity) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: _managing
+          ? () => _hideIdentity(identity)
+          : () => _goTo(_Stage.unlock, selected: identity),
+      onLongPress: () => _hideIdentity(identity),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Opacity(
+                  opacity: _managing ? 0.7 : 1,
+                  child: presetAvatar(identity.avatarId, size: 88),
+                ),
+                if (_managing)
+                  Positioned(
+                    top: -4,
+                    left: -4,
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.errorContainer,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: theme.colorScheme.surface,
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        Icons.remove,
+                        size: 18,
+                        color: theme.colorScheme.onErrorContainer,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: 104,
+              child: Text(
+                _labelFor(identity),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPicker(ThemeData theme) {
+    final visible = _visibleIdentities;
+    final hiddenCount = _hiddenIdentities.length;
     return Column(
       key: const ValueKey('picker'),
       mainAxisSize: MainAxisSize.min,
@@ -204,73 +354,75 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           runSpacing: 24,
           alignment: WrapAlignment.center,
           children: [
-            for (final identity in _identities)
+            for (final identity in visible) _buildProfileTile(theme, identity),
+            if (!_managing)
               InkWell(
                 borderRadius: BorderRadius.circular(16),
-                onTap: () => _goTo(_Stage.unlock, selected: identity),
+                onTap: () {
+                  _nicknameController.clear();
+                  _avatarId = (_identities.length) % kAvatarPresets.length;
+                  _goTo(_Stage.create);
+                },
                 child: Padding(
                   padding: const EdgeInsets.all(8),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      presetAvatar(identity.avatarId, size: 88),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: 104,
-                        child: Text(
-                          _labelFor(identity),
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodyMedium,
+                      Container(
+                        width: 88,
+                        height: 88,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: theme.colorScheme.onSurface
+                                .withValues(alpha: 0.35),
+                            width: 2,
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.add,
+                          size: 40,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.6),
                         ),
                       ),
+                      const SizedBox(height: 10),
+                      Text('New identity', style: theme.textTheme.bodyMedium),
                     ],
                   ),
                 ),
               ),
-            InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () {
-                _nicknameController.clear();
-                _avatarId = (_identities.length) % kAvatarPresets.length;
-                _goTo(_Stage.create);
-              },
-              child: Padding(
-                padding: const EdgeInsets.all(8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 88,
-                      height: 88,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color:
-                              theme.colorScheme.onSurface.withValues(alpha: 0.35),
-                          width: 2,
-                        ),
-                      ),
-                      child: Icon(
-                        Icons.add,
-                        size: 40,
-                        color:
-                            theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text('New identity', style: theme.textTheme.bodyMedium),
-                  ],
-                ),
-              ),
-            ),
           ],
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (visible.isNotEmpty)
+              TextButton.icon(
+                onPressed: () => setState(() => _managing = !_managing),
+                icon: Icon(_managing ? Icons.check : Icons.edit_outlined,
+                    size: 18),
+                label: Text(_managing ? 'Done' : 'Manage profiles'),
+              ),
+            if (hiddenCount > 0)
+              TextButton.icon(
+                onPressed: _showHiddenProfiles,
+                icon: const Icon(Icons.visibility_off_outlined, size: 18),
+                label: Text(
+                  '$hiddenCount hidden profile${hiddenCount == 1 ? '' : 's'}',
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
         Text(
-          'Each identity keeps its own chats, contacts, and settings, '
-          'fully separate on this device.',
+          _managing
+              ? 'Tap a profile to hide it from this screen. Hiding deletes '
+                  'nothing; permanent deletion lives in Settings once you '
+                  'are logged in.'
+              : 'Each identity keeps its own chats, contacts, and settings, '
+                  'fully separate on this device.',
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurface.withValues(alpha: 0.6),

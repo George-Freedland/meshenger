@@ -51,13 +51,18 @@ class PickedMedia {
 }
 
 /// Picks (and downsizes) an image from the gallery or, on phones, the
-/// camera. Returns null when cancelled.
-Future<PickedMedia?> pickImage({required bool fromCamera}) async {
+/// camera. Returns null when cancelled. Network posts pass tighter
+/// [maxWidth]/[imageQuality] so broadcast payloads stay small.
+Future<PickedMedia?> pickImage({
+  required bool fromCamera,
+  double maxWidth = 1600,
+  int imageQuality = 80,
+}) async {
   final picker = ImagePicker();
   final file = await picker.pickImage(
     source: fromCamera ? ImageSource.camera : ImageSource.gallery,
-    maxWidth: 1600,
-    imageQuality: 80,
+    maxWidth: maxWidth,
+    imageQuality: imageQuality,
   );
   if (file == null) return null;
   final bytes = await file.readAsBytes();

@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/models/contact.dart';
@@ -13,11 +12,11 @@ import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
-import '../../core/services/peer_directory.dart';
 import '../../core/services/transport_log.dart';
 import '../../core/services/transport_settings.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/unread_badge.dart';
+import '../shared/contact_actions.dart';
 import '../shared/transport_status_banner.dart';
 
 class ChatListScreen extends StatefulWidget {
@@ -128,32 +127,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
   String _short(String address) {
     if (address.length <= 16) return address;
     return '${address.substring(0, 8)}…${address.substring(address.length - 6)}';
-  }
-
-  /// QR payloads are `meshenger:<address>[:<x25519 key>]`. This returns
-  /// just the address; [_extractScannedKey] pulls the optional key.
-  String _normalizeScannedAddress(String raw) {
-    var v = raw.trim();
-    if (v.startsWith('meshenger:')) {
-      v = v.substring('meshenger:'.length);
-    }
-    final sep = v.indexOf(':');
-    if (sep > 0) v = v.substring(0, sep);
-    return v.trim();
-  }
-
-  /// The encryption key embedded in a scanned QR, when present. Seeding it
-  /// lets the mesh carry encrypted messages to this contact immediately —
-  /// no need to wait for gossip to propagate their key across the mesh.
-  String? _extractScannedKey(String raw) {
-    var v = raw.trim();
-    if (v.startsWith('meshenger:')) {
-      v = v.substring('meshenger:'.length);
-    }
-    final sep = v.indexOf(':');
-    if (sep <= 0 || sep >= v.length - 1) return null;
-    final key = v.substring(sep + 1).trim();
-    return key.isEmpty ? null : key;
   }
 
   Future<void> _showMyQrModal() async {
@@ -271,339 +244,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
         );
       },
     );
-  }
-
-  Future<void> _showAddContactModal() async {
-    final manualController = TextEditingController();
-    final nicknameController = TextEditingController();
-    String? error;
-    bool showScanner = false;
-
-    Future<void> addContact(String rawAddress, String nickname) async {
-      final address = _normalizeScannedAddress(rawAddress);
-      if (address.isEmpty) {
-        error = 'Please enter an address';
-        return;
-      }
-      // Save contact with optional nickname
-      await ContactsService.instance.upsertContact(
-        Contact(
-          address: address,
-          nickname: nickname.trim().isEmpty ? null : nickname.trim(),
-        ),
-      );
-      // A QR-carried encryption key enables end-to-end encrypted sending
-      // right away, even to someone far beyond gossip range.
-      final scannedKey = _extractScannedKey(rawAddress);
-      if (scannedKey != null) {
-        await PeerDirectory.instance.seedKey(address, scannedKey);
-      }
-      await _refresh();
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Contact added')),
-        );
-      }
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            return Dialog(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 560),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Text(
-                          'Add contact',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: manualController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Public address',
-                                  hintText: 'meshenger:… or base64 public key',
-                                ),
-                                minLines: 1,
-                                maxLines: 3,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            IconButton(
-                              tooltip: 'Scan QR with camera',
-                              icon: const Icon(Icons.qr_code_scanner),
-                              onPressed: () {
-                                setModalState(() {
-                                  showScanner = !showScanner;
-                                });
-                              },
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        if (showScanner) ...[
-                          // Fixed-size scanner avoids intrinsic sizing issues in dialogs (web).
-                          SizedBox(
-                            height: 260,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: MobileScanner(
-                                onDetect: (capture) async {
-                                  final barcodes = capture.barcodes;
-                                  if (barcodes.isEmpty) return;
-                                  final raw = barcodes.first.rawValue;
-                                  if (raw == null || raw.isEmpty) return;
-                                  final normalized = _normalizeScannedAddress(raw);
-                                  // Populate the address field but don't auto-add yet.
-                                  setModalState(() {
-                                    manualController.text = normalized;
-                                    showScanner = false;
-                                  });
-                                },
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        TextField(
-                          controller: nicknameController,
-                          decoration: const InputDecoration(
-                            labelText: 'Nickname (optional)',
-                          ),
-                        ),
-                        if (error != null) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            error!,
-                            style: TextStyle(color: Theme.of(context).colorScheme.error),
-                          ),
-                        ],
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context),
-                              child: const Text('Cancel'),
-                            ),
-                            const SizedBox(width: 8),
-                            FilledButton(
-                              onPressed: () async {
-                                try {
-                                  error = null;
-                                  await addContact(
-                                    manualController.text,
-                                    nicknameController.text,
-                                  );
-                                } catch (e) {
-                                  setModalState(() => error = 'Failed to add: $e');
-                                }
-                              },
-                              child: const Text('Add'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _editNickname(Contact contact) async {
-    final controller = TextEditingController(text: contact.nickname ?? '');
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit nickname'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(labelText: 'Nickname'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () async {
-              final nick = controller.text.trim();
-              await ContactsService.instance.upsertContact(
-                contact.copyWith(nickname: nick.isEmpty ? null : nick),
-              );
-              if (context.mounted) Navigator.pop(context);
-              await _refresh();
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showContactsModal() async {
-    var contacts = _contacts;
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            Future<void> reload() async {
-              contacts = await ContactsService.instance.listContacts();
-              setModalState(() {});
-            }
-
-            return Dialog(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: 640,
-                  maxHeight: MediaQuery.sizeOf(context).height * 0.85,
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Contacts',
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                          ),
-                          IconButton(
-                            tooltip: 'Add contact',
-                            icon: const Icon(Icons.person_add_alt_1),
-                            onPressed: () async {
-                              Navigator.pop(context);
-                              await _showAddContactModal();
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Expanded(
-                        // Listen to peer changes directly so the online dots
-                        // update live while the dialog is open.
-                        child: StreamBuilder<Set<String>>(
-                          stream: MessengerService.instance.onPeersChanged,
-                          initialData: MessengerService.instance.onlinePeers,
-                          builder: (context, snapshot) {
-                            final onlinePeers =
-                                snapshot.data ?? const <String>{};
-                            if (contacts.isEmpty) {
-                              return const Center(
-                                child: Text(
-                                  'No contacts yet. Add one using the + button.',
-                                ),
-                              );
-                            }
-                            return ListView.separated(
-                                itemBuilder: (context, i) {
-                                  final c = contacts[i];
-                                  final online =
-                                      onlinePeers.contains(c.address);
-                                  final title =
-                                      (c.nickname != null &&
-                                              c.nickname!.trim().isNotEmpty)
-                                          ? c.nickname!
-                                          : _short(c.address);
-                                  return ListTile(
-                                    leading: Icon(
-                                      Icons.circle,
-                                      size: 12,
-                                      color: online
-                                          ? Colors.greenAccent
-                                          : Colors.grey,
-                                    ),
-                                    title: Text(title),
-                                    subtitle: Text(
-                                      online
-                                          ? '${_short(c.address)} · online'
-                                          : '${_short(c.address)} · offline',
-                                    ),
-                                    trailing: Wrap(
-                                      spacing: 8,
-                                      children: [
-                                        IconButton(
-                                          tooltip: 'Message',
-                                          icon: const Icon(
-                                            Icons.chat_bubble_outline,
-                                          ),
-                                          onPressed: () async {
-                                            await ChatStorage.instance
-                                                .ensureChatExists(c.address);
-                                            if (context.mounted) {
-                                              Navigator.pop(context);
-                                              context.push(
-                                                '/chat?peer=${Uri.encodeComponent(c.address)}',
-                                              );
-                                            }
-                                          },
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Edit',
-                                          icon: const Icon(Icons.edit_outlined),
-                                          onPressed: () async {
-                                            await _editNickname(c);
-                                            await reload();
-                                          },
-                                        ),
-                                        IconButton(
-                                          tooltip:
-                                              'Delete (keeps message history)',
-                                          icon: const Icon(Icons.delete_outline),
-                                          onPressed: () async {
-                                            await ContactsService.instance
-                                                .deleteContact(c.address);
-                                            await reload();
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                                separatorBuilder: (_, __) =>
-                                    const Divider(height: 1),
-                                itemCount: contacts.length,
-                              );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('Close'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-    await _refresh();
   }
 
   Future<void> _showTransportLogModal() async {
@@ -736,7 +376,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     .toList();
 
             void addRecipient(String address) {
-              final normalized = _normalizeScannedAddress(address);
+              final normalized = normalizeScannedAddress(address);
               if (normalized.isEmpty) return;
               if (!_isValidAddress(normalized)) {
                 setModalState(() =>
@@ -754,7 +394,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
               // Whatever is still typed counts as a recipient attempt.
               final typed = recipientController.text.trim();
               if (typed.isNotEmpty) {
-                final normalized = _normalizeScannedAddress(typed);
+                final normalized = normalizeScannedAddress(typed);
                 if (!_isValidAddress(normalized)) {
                   setModalState(() => error =
                       'Not a valid public address (base64 Ed25519 key)');
@@ -980,7 +620,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
           IconButton(
             tooltip: 'Contacts',
             icon: const Icon(Icons.people_outline),
-            onPressed: _showContactsModal,
+            onPressed: () => context.push('/app/contacts'),
           ),
           IconButton(
             tooltip: 'Connection log',

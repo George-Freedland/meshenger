@@ -10,17 +10,17 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/ui/media_widgets.dart';
 
-/// FaceTime-style app: video call signaling over the mesh. Ringing,
+/// Video Chat: video call signaling over the mesh. Ringing,
 /// accept/decline, recents, and voicemail all work; the in-call channel is
 /// half-duplex voice (mesh radio bandwidth doesn't carry live video yet).
-class FaceTimeScreen extends StatefulWidget {
-  const FaceTimeScreen({super.key});
+class VideoChatScreen extends StatefulWidget {
+  const VideoChatScreen({super.key});
 
   @override
-  State<FaceTimeScreen> createState() => _FaceTimeScreenState();
+  State<VideoChatScreen> createState() => _VideoChatScreenState();
 }
 
-class _FaceTimeScreenState extends State<FaceTimeScreen> {
+class _VideoChatScreenState extends State<VideoChatScreen> {
   List<Contact> _contacts = const <Contact>[];
   List<CallLogEntry> _recents = const <CallLogEntry>[];
   Set<String> _online = const <String>{};
@@ -92,7 +92,7 @@ class _FaceTimeScreenState extends State<FaceTimeScreen> {
           onPressed: () =>
               context.canPop() ? context.pop() : context.go('/home'),
         ),
-        title: const Text('FaceTime'),
+        title: const Text('Video Chat'),
       ),
       body: ListView(
         padding: const EdgeInsets.all(12),
@@ -146,7 +146,7 @@ class _FaceTimeScreenState extends State<FaceTimeScreen> {
             Padding(
               padding: const EdgeInsets.all(24),
               child: Text(
-                'No contacts yet. Add them in Messages or from the Mesh Map.',
+                'No contacts yet. Add them in Contacts or from the Mesh Map.',
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: 0.6),

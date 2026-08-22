@@ -4,34 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/services/chat_storage.dart';
+import '../../core/services/home_layout.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/network_service.dart';
 import '../../core/ui/avatars.dart';
-import '../../core/ui/unread_badge.dart';
+import 'app_registry.dart';
+import 'springboard.dart';
 
-class _AppEntry {
-  final String label;
-  final IconData icon;
-  final Color color;
-  final String route;
-
-  const _AppEntry(this.label, this.icon, this.color, this.route);
-}
-
-const List<_AppEntry> _apps = [
-  _AppEntry('Messages', Icons.chat_bubble, Color(0xFF26A69A), '/chats'),
-  _AppEntry('Phone', Icons.phone, Color(0xFF66BB6A), '/app/phone'),
-  _AppEntry('FaceTime', Icons.videocam, Color(0xFF29B6F6), '/app/facetime'),
-  _AppEntry('Camera', Icons.photo_camera, Color(0xFF78909C), '/app/camera'),
-  _AppEntry('Storage', Icons.folder, Color(0xFFFFA726), '/app/storage'),
-  _AppEntry('Voice Memos', Icons.mic, Color(0xFFEF5350), '/app/memos'),
-  _AppEntry('Mesh Map', Icons.hub, Color(0xFF7C4DFF), '/app/meshmap'),
-  _AppEntry('Stories', Icons.auto_awesome, Color(0xFFEC407A), '/app/stories'),
-  _AppEntry('App Store', Icons.apps, Color(0xFF5C6BC0), '/app/store'),
-  _AppEntry('Settings', Icons.settings, Color(0xFF8D6E63), '/app/settings'),
-];
-
-/// iPhone-style launcher shown after unlock.
+/// iPhone-style launcher shown after unlock: hold an icon to enter jiggle
+/// mode, drag to rearrange, drop one icon onto another to group them.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -40,25 +22,42 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _unread = 0;
-  StreamSubscription<String>? _sub;
+  final HomeLayoutController _layout = HomeLayoutController();
+  final ValueNotifier<bool> _editing = ValueNotifier<bool>(false);
+  final ValueNotifier<Map<String, int>> _badges =
+      ValueNotifier<Map<String, int>>(const {});
+
+  final List<StreamSubscription<dynamic>> _subs = [];
 
   @override
   void initState() {
     super.initState();
-    _refreshUnread();
-    _sub = MessengerService.instance.onChanged.listen((_) => _refreshUnread());
+    _layout.load(defaultAppOrder);
+    _refreshBadges();
+    _subs.add(
+        MessengerService.instance.onChanged.listen((_) => _refreshBadges()));
+    _subs.add(
+        NetworkService.instance.onChanged.listen((_) => _refreshBadges()));
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
+    for (final sub in _subs) {
+      sub.cancel();
+    }
+    _editing.dispose();
+    _badges.dispose();
+    _layout.dispose();
     super.dispose();
   }
 
-  Future<void> _refreshUnread() async {
-    final total = await ChatStorage.instance.totalUnread();
-    if (mounted) setState(() => _unread = total);
+  Future<void> _refreshBadges() async {
+    final unread = await ChatStorage.instance.totalUnread();
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final unseenPosts = await NetworkService.instance.unseenCount(me);
+    if (mounted) {
+      _badges.value = {'messages': unread, 'network': unseenPosts};
+    }
   }
 
   Future<void> _logout(BuildContext context) async {
@@ -86,6 +85,22 @@ class _HomeScreenState extends State<HomeScreen> {
     await MessengerService.instance.stop();
     IdentityService.instance.lock();
     if (context.mounted) context.go('/');
+  }
+
+  void _openApp(AppDefinition app) => context.push(app.route);
+
+  void _openFolder(HomeFolderItem folder) {
+    showFolderOverlay(
+      context,
+      controller: _layout,
+      folderId: folder.id,
+      editing: _editing,
+      onEnterEdit: () => _editing.value = true,
+      badges: _badges,
+      onOpenApp: _openApp,
+      onFolderCreated: (created) =>
+          promptNameForNewFolder(context, _layout, created),
+    );
   }
 
   @override
@@ -121,65 +136,73 @@ class _HomeScreenState extends State<HomeScreen> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Log out',
-                      icon: const Icon(Icons.logout),
-                      onPressed: () => _logout(context),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: _editing,
+                      builder: (context, editing, _) => editing
+                          ? FilledButton.tonal(
+                              onPressed: () => _editing.value = false,
+                              child: const Text('Done'),
+                            )
+                          : IconButton(
+                              tooltip: 'Log out',
+                              icon: const Icon(Icons.logout),
+                              onPressed: () => _logout(context),
+                            ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 24),
                 Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final columns =
-                          (constraints.maxWidth / 110).floor().clamp(3, 6);
-                      return GridView.count(
-                        crossAxisCount: columns,
-                        mainAxisSpacing: 18,
-                        crossAxisSpacing: 12,
-                        children: [
-                          for (final app in _apps)
-                            InkWell(
-                              borderRadius: BorderRadius.circular(18),
-                              onTap: () => context.push(app.route),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  UnreadBadge(
-                                    count: app.route == '/chats' ? _unread : 0,
-                                    child: Container(
-                                      width: 58,
-                                      height: 58,
-                                      decoration: BoxDecoration(
-                                        color: app.color,
-                                        borderRadius: BorderRadius.circular(15),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color: app.color
-                                                .withValues(alpha: 0.35),
-                                            blurRadius: 12,
-                                            offset: const Offset(0, 4),
-                                          ),
-                                        ],
-                                      ),
-                                      child: Icon(app.icon,
-                                          color: Colors.white, size: 30),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    app.label,
-                                    style: theme.textTheme.labelMedium,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    // Tapping empty wallpaper leaves jiggle mode, like iOS.
+                    onTap: () {
+                      if (_editing.value) _editing.value = false;
+                    },
+                    child: ListenableBuilder(
+                      listenable: _layout,
+                      builder: (context, _) {
+                        if (!_layout.isLoaded) {
+                          return const Center(
+                              child: CircularProgressIndicator());
+                        }
+                        return SingleChildScrollView(
+                          child: Springboard(
+                            controller: _layout,
+                            editing: _editing,
+                            onEnterEdit: () => _editing.value = true,
+                            badges: _badges,
+                            onOpenApp: _openApp,
+                            onOpenFolder: _openFolder,
+                            onFolderCreated: (created) =>
+                                promptNameForNewFolder(
+                                    context, _layout, created),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+                ValueListenableBuilder<bool>(
+                  valueListenable: _editing,
+                  builder: (context, editing, _) => AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: editing
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Center(
+                              child: Text(
+                                'Drag icons to rearrange · drop one onto '
+                                'another to make a group',
+                                textAlign: TextAlign.center,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurface
+                                      .withValues(alpha: 0.5),
+                                ),
                               ),
                             ),
-                        ],
-                      );
-                    },
+                          )
+                        : const SizedBox.shrink(),
                   ),
                 ),
               ],

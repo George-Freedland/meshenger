@@ -232,6 +232,84 @@ void main() {
     });
   });
 
+  group('network posts', () {
+    test('signed post round-trips with media and survives relay hops',
+        () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final packet = await EnvelopeCodec.buildNetworkPost(
+        id: 'post-1',
+        text: 'accident on 5th & main',
+        tsMs: now,
+        expMs: now + 3600000,
+        mediaB64: base64Encode(utf8.encode('fake-photo')),
+        mediaMime: 'image/jpeg',
+        nickname: 'Alice',
+      );
+
+      expect(packet['t'], 'post');
+      expect(packet['max'], EnvelopeCodec.postMaxHops);
+
+      // Relays bump hops without breaking the author signature.
+      final relayed = Map<String, Object?>.from(packet);
+      relayed['hops'] = 12;
+
+      final verified = await EnvelopeCodec.verifyNetworkPost(relayed);
+      expect(verified, isNotNull);
+      expect(verified!.author, aliceAddress);
+      expect(verified.nickname, 'Alice');
+      expect(verified.text, 'accident on 5th & main');
+      expect(verified.kind, 'image');
+      expect(utf8.decode(base64Decode(verified.mediaB64!)), 'fake-photo');
+      expect(verified.mediaMime, 'image/jpeg');
+      expect(verified.deleted, isFalse);
+      expect(verified.hops, 12);
+    });
+
+    test('deletion tombstone verifies and flags deleted', () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final tombstone = await EnvelopeCodec.buildNetworkPost(
+        id: 'post-1',
+        text: '',
+        tsMs: now,
+        expMs: now + 3600000,
+        deleted: true,
+      );
+
+      final verified = await EnvelopeCodec.verifyNetworkPost(tombstone);
+      expect(verified, isNotNull);
+      expect(verified!.deleted, isTrue);
+      expect(verified.author, aliceAddress);
+    });
+
+    test('tampered text or forged author is rejected', () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final packet = await EnvelopeCodec.buildNetworkPost(
+        id: 'post-2',
+        text: 'original words',
+        tsMs: now,
+        expMs: now + 3600000,
+      );
+
+      final reworded = Map<String, Object?>.from(packet);
+      reworded['text'] = 'planted words';
+      expect(await EnvelopeCodec.verifyNetworkPost(reworded), isNull);
+
+      final impersonated = Map<String, Object?>.from(packet);
+      impersonated['author'] =
+          base64Encode((await carol.extractPublicKey()).bytes);
+      expect(await EnvelopeCodec.verifyNetworkPost(impersonated), isNull,
+          reason: 'posts must be unforgeable — Carol cannot claim this one');
+
+      final fakeDelete = Map<String, Object?>.from(packet);
+      fakeDelete['del'] = true;
+      expect(await EnvelopeCodec.verifyNetworkPost(fakeDelete), isNull,
+          reason: 'only the author can tombstone their own post');
+    });
+  });
+
   group('BLE announcements', () {
     test('round trip verifies; tampering is rejected', () async {
       await unlockAs(alice);

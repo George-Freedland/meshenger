@@ -25,6 +25,13 @@ class RelayCore {
   /// Envelopes carry only the most recent relayers.
   static const int viaWindow = 16;
 
+  /// Network posts (public mesh-feed broadcasts) flood like gossip but
+  /// carry content — bounded tighter (matches the app's cap).
+  static const int postMaxHops = 64;
+
+  /// How many active posts a gateway carries for the neighborhood feed.
+  static const int postCacheMax = 48;
+
   static const Duration defaultEnvelopeLifetime = Duration(hours: 48);
   static const Duration gossipInterval = Duration(seconds: 25);
 
@@ -51,6 +58,14 @@ class RelayCore {
   final Map<String, int> _offerFailureMs = <String, int>{};
   final Map<String, int> _gossipFreshness = <String, int>{};
   final Map<String, String> _nicknames = <String, String>{};
+
+  /// Active Network posts carried for the neighborhood (id → packet).
+  /// Tombstones replace their post and keep flooding so deletions win.
+  final Map<String, Map<String, Object?>> _postCache =
+      <String, Map<String, Object?>>{};
+
+  /// Which peers already accepted each carried post.
+  final Map<String, Set<String>> _postOfferedTo = <String, Set<String>>{};
 
   /// Learned gradients: destination → next-hop neighbor → (hops, learned
   /// ms). Gossip forwarder stamps and envelope via-trails feed it; ranked
@@ -88,10 +103,12 @@ class RelayCore {
     _tick = Timer.periodic(gossipInterval, (_) async {
       await _broadcastOwnGossip();
       _pruneSpool();
+      _prunePostCache();
       final now = DateTime.now().millisecondsSinceEpoch;
       _offerFailureMs.removeWhere(
           (_, ts) => now - ts > offerRetryBackoff.inMilliseconds * 8);
       await _offerSpoolEverywhere();
+      await _offerPostsEverywhere();
     });
     await _broadcastOwnGossip();
   }
@@ -135,6 +152,8 @@ class RelayCore {
         await _relayEnvelope(packet, origin);
       case 'gossip':
         await _handleGossip(packet, origin);
+      case 'post':
+        await _relayPost(packet, origin);
     }
   }
 
@@ -318,6 +337,89 @@ class RelayCore {
     return accepted;
   }
 
+  /// Network posts: public feed broadcasts. The relay verifies nothing
+  /// (apps check the signature); it floods, caches active posts, and
+  /// hands them to whoever walks into range — that is what makes a Pi
+  /// gateway a neighborhood bulletin board.
+  Future<void> _relayPost(
+    Map<String, Object?> packet,
+    RelayTransport origin,
+  ) async {
+    final id = packet['id'];
+    if (id is! String) return;
+    final deleted = packet['del'] == true;
+    final dedupKey = deleted ? 'postdel:$id' : 'post:$id';
+    if (_seen.contains(dedupKey)) return;
+    _markSeen(dedupKey);
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final exp = (packet['exp'] as num?)?.toInt();
+    if (exp == null || exp < now) return;
+
+    final hops = ((packet['hops'] as num?)?.toInt() ?? 0) + 1;
+    final maxHops = (packet['max'] as num?)?.toInt() ?? postMaxHops;
+    if (hops > maxHops) return;
+
+    final forwarded = Map<String, Object?>.from(packet);
+    forwarded['hops'] = hops;
+
+    // Cache (tombstones replace their post so deletions propagate too).
+    _postCache[id] = forwarded;
+    _postOfferedTo.remove(id);
+    while (_postCache.length > postCacheMax) {
+      final oldest = _postCache.keys.first;
+      _postCache.remove(oldest);
+      _postOfferedTo.remove(oldest);
+    }
+
+    final author = packet['author'] as String?;
+    log('${deleted ? 'Post tombstone' : 'Network post'} ${_shortId(id)} '
+        'from ${author != null ? _label(author) : 'unknown'} '
+        '(hop $hops/$maxHops, over ${origin.name}, carrying '
+        '${_postCache.length})');
+
+    await _offerPostsEverywhere();
+  }
+
+  void _prunePostCache() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _postCache.removeWhere((id, packet) {
+      final exp = (packet['exp'] as num?)?.toInt();
+      final expired = exp != null && exp < now;
+      if (expired) _postOfferedTo.remove(id);
+      return expired;
+    });
+  }
+
+  Future<void> _offerPostsEverywhere() async {
+    for (final transport in transports) {
+      await _offerPostsTo(transport, transport.onlinePeers);
+    }
+  }
+
+  Future<void> _offerPostsTo(
+    RelayTransport transport,
+    Set<String> peers,
+  ) async {
+    if (_postCache.isEmpty || peers.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final entry in _postCache.entries.toList()) {
+      final packet = entry.value;
+      final exp = (packet['exp'] as num?)?.toInt();
+      if (exp != null && exp < now) continue;
+      final author = packet['author'] as String?;
+      final offered =
+          _postOfferedTo.putIfAbsent(entry.key, () => <String>{});
+      for (final peer in peers) {
+        if (peer == author || offered.contains(peer)) continue;
+        if (await transport.sendPacket(peer, packet)) {
+          offered.add(peer);
+          _forwarded++;
+        }
+      }
+    }
+  }
+
   Future<void> _handleGossip(
     Map<String, Object?> packet,
     RelayTransport origin,
@@ -410,6 +512,7 @@ class RelayCore {
   ) async {
     if (peers.isEmpty) return;
     await _offerSpoolTo(transport, peers);
+    await _offerPostsTo(transport, peers);
     await _broadcastOwnGossip();
   }
 
@@ -459,5 +562,6 @@ class RelayCore {
 
   String get stats =>
       'peers $totalPeers · spool ${_spool.length} · '
+      'posts ${_postCache.length} · '
       'delivered $_delivered · forwarded $_forwarded';
 }

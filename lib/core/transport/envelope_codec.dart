@@ -43,6 +43,16 @@ class EnvelopeCodec {
   /// small on thousand-hop paths (a full path would add ~45 B per hop).
   static const int viaWindow = 16;
 
+  /// Network posts (mesh-local broadcasts) flood like gossip but carry
+  /// content, so their radius is bounded tighter than envelopes. 64 hops
+  /// still blankets a city-scale mesh.
+  static const int postMaxHops = 64;
+
+  /// Cap for post images: every node in the radius stores + re-floods the
+  /// bytes, so posts stay lean (chat attachments go up to 8 MB because
+  /// they travel point-to-point instead).
+  static const int maxPostMediaBytes = 512 * 1024;
+
   /// How long relays keep an undeliverable envelope (store-and-forward).
   static const Duration defaultRelayLifetime = Duration(hours: 48);
 
@@ -250,6 +260,130 @@ class EnvelopeCodec {
   }
 
   // -----------------------------------------------------------------------
+  // Network posts: signed public broadcasts for everyone in the mesh
+  // (the Network app's feed). Unlike envelopes they are intentionally
+  // *not* encrypted — they are town-square content — but they are signed,
+  // so authorship cannot be forged, and they expire.
+  // -----------------------------------------------------------------------
+
+  static String _postSigningPayload({
+    required String author,
+    required String id,
+    required int tsMs,
+    required int expMs,
+    required bool deleted,
+    required String kind,
+    required String nick,
+    required String text,
+    required String mediaB64,
+  }) =>
+      'netpost|$author|$id|$tsMs|$expMs|${deleted ? 1 : 0}|$kind|$nick|$text|$mediaB64';
+
+  /// Builds my signed Network post (or its deletion tombstone).
+  static Future<Map<String, Object?>> buildNetworkPost({
+    required String id,
+    required String text,
+    required int tsMs,
+    required int expMs,
+    String? mediaB64,
+    String? mediaMime,
+    String? nickname,
+    bool deleted = false,
+  }) async {
+    final identity = IdentityService.instance;
+    final address = await identity.getPublicAddressBase64();
+    if (address == null || !identity.isUnlocked) {
+      throw StateError('Identity must be unlocked');
+    }
+    final kind = mediaB64 != null ? 'image' : 'text';
+    final nick = nickname ?? '';
+    final signature = await identity.sign(utf8.encode(_postSigningPayload(
+      author: address,
+      id: id,
+      tsMs: tsMs,
+      expMs: expMs,
+      deleted: deleted,
+      kind: kind,
+      nick: nick,
+      text: text,
+      mediaB64: mediaB64 ?? '',
+    )));
+
+    return <String, Object?>{
+      't': 'post',
+      'id': id,
+      'author': address,
+      'nick': nick,
+      'text': text,
+      'kind': kind,
+      if (mediaB64 != null) 'media': mediaB64,
+      if (mediaMime != null) 'mmime': mediaMime,
+      'ts': tsMs,
+      'exp': expMs,
+      if (deleted) 'del': true,
+      'sig': base64Encode(signature.bytes),
+      'hops': 0,
+      'max': postMaxHops,
+    };
+  }
+
+  /// Verifies a Network post's signature. Returns null when invalid.
+  static Future<VerifiedNetworkPost?> verifyNetworkPost(
+    Map<Object?, Object?> decoded,
+  ) async {
+    try {
+      if (decoded['t'] != 'post') return null;
+      final id = decoded['id'] as String?;
+      final author = decoded['author'] as String?;
+      final nick = decoded['nick'] as String? ?? '';
+      final text = decoded['text'] as String? ?? '';
+      final kind = decoded['kind'] as String? ?? 'text';
+      final mediaB64 = decoded['media'] as String?;
+      final ts = (decoded['ts'] as num?)?.toInt();
+      final exp = (decoded['exp'] as num?)?.toInt();
+      final deleted = decoded['del'] == true;
+      final sig = decoded['sig'] as String?;
+      if (id == null || author == null || ts == null || exp == null ||
+          sig == null) {
+        return null;
+      }
+
+      final valid = await IdentityService.verify(
+        message: utf8.encode(_postSigningPayload(
+          author: author,
+          id: id,
+          tsMs: ts,
+          expMs: exp,
+          deleted: deleted,
+          kind: kind,
+          nick: nick,
+          text: text,
+          mediaB64: mediaB64 ?? '',
+        )),
+        signatureBytes: base64Decode(sig),
+        publicKeyBase64: author,
+      );
+      if (!valid) return null;
+
+      return VerifiedNetworkPost(
+        id: id,
+        author: author,
+        nickname: nick.isEmpty ? null : nick,
+        text: text,
+        kind: kind,
+        mediaB64: mediaB64,
+        mediaMime: decoded['mmime'] as String?,
+        tsMs: ts,
+        expMs: exp,
+        deleted: deleted,
+        hops: (decoded['hops'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Bluetooth announcements (no host/port, signed over a fixed context)
   // -----------------------------------------------------------------------
 
@@ -295,6 +429,36 @@ class EnvelopeCodec {
       return null;
     }
   }
+}
+
+/// A verified Network post: signed public content from someone in the
+/// mesh (possibly many hops away).
+class VerifiedNetworkPost {
+  final String id;
+  final String author;
+  final String? nickname;
+  final String text;
+  final String kind; // 'text' | 'image'
+  final String? mediaB64;
+  final String? mediaMime;
+  final int tsMs;
+  final int expMs;
+  final bool deleted;
+  final int hops;
+
+  const VerifiedNetworkPost({
+    required this.id,
+    required this.author,
+    required this.nickname,
+    required this.text,
+    required this.kind,
+    required this.mediaB64,
+    required this.mediaMime,
+    required this.tsMs,
+    required this.expMs,
+    required this.deleted,
+    required this.hops,
+  });
 }
 
 /// A verified gossip record: a node somewhere in the mesh (not necessarily

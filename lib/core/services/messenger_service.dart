@@ -22,11 +22,12 @@ import 'identity_service.dart';
 import 'media_store.dart';
 import 'alert_sound_service.dart';
 import 'in_app_notice_service.dart';
+import 'mesh_activity.dart';
+import 'network_service.dart';
 import 'notification_service.dart';
 import 'peer_directory.dart';
 import 'route_table.dart';
 import 'settings_service.dart';
-import 'stories_service.dart';
 import 'transport_log.dart';
 import 'transport_settings.dart';
 
@@ -45,10 +46,15 @@ class MessengerService {
 
   static const _controlOutboxKey = 'control_outbox_v1';
   static const _spoolKey = 'relay_spool_v1';
+  static const _postSpoolKey = 'network_post_spool_v1';
 
   /// Spool limits: how much we are willing to carry for other people.
   static const int _spoolMaxEntries = 64;
   static const int _spoolMaxChars = 3 * 1024 * 1024;
+
+  /// Network posts we carry and re-flood (our own + everyone else's).
+  static const int _postSpoolMaxEntries = 32;
+  static const int _postSpoolMaxChars = 2500000;
 
   /// How many online peers get a copy when the recipient is unreachable.
   /// Best-known next hops (route table) fill the first slots; random
@@ -113,6 +119,17 @@ class MessengerService {
   /// Throttle for relay-handoff retries of pending messages.
   final Map<String, int> _lastRelayAttemptMs = <String, int>{};
 
+  /// Which peers already accepted a given Network post (memory-only).
+  final Map<String, Set<String>> _postOfferedTo = <String, Set<String>>{};
+
+  /// Post ids known to be deleted — a tombstone beat (or replaced) the
+  /// content, so late-arriving copies must not resurrect it.
+  final Set<String> _deletedPostIds = <String>{};
+
+  /// Presence tracking for the Network feed's joined/left pulse.
+  Set<String> _presenceSnapshot = <String>{};
+  final Map<String, int> _peerSinceMs = <String, int>{};
+
   Stream<String> get onChanged => _changed.stream;
   Stream<Set<String>> get onPeersChanged => _peers.stream;
   Stream<TransportMode> get onTransportChanged => _transportChanged.stream;
@@ -132,6 +149,8 @@ class MessengerService {
     _mode = await TransportSettings.instance.getMode();
     PeerDirectory.instance.resetCache();
     RouteTable.instance.reset();
+    MeshActivityLog.instance.resetCache();
+    await _seedDeletedPostIds();
     unawaited(NotificationService.instance.init());
     await _startTransport();
     _sweepTimer ??=
@@ -174,6 +193,8 @@ class MessengerService {
     _offerFailureMs.clear();
     _ackDeadlineMs.clear();
     _lastRelayAttemptMs.clear();
+    _postOfferedTo.clear();
+    _deletedPostIds.clear();
     await _stopTransport();
   }
 
@@ -214,6 +235,10 @@ class MessengerService {
     _packetSub = null;
     await _peersSub?.cancel();
     _peersSub = null;
+    // Radio going down is not "everyone left the mesh" — reset the
+    // presence baseline without logging departures.
+    _presenceSnapshot = <String>{};
+    _peerSinceMs.clear();
     await _transport?.stop();
     _transport = null;
     _peers.add(const <String>{});
@@ -228,7 +253,8 @@ class MessengerService {
     for (final chatKey in changed) {
       _changed.add(chatKey);
     }
-    await StoriesService.instance.sweepExpired();
+    await NetworkService.instance.sweepExpired();
+    await _prunePostSpool();
   }
 
   void _armDeliveryDeadline(String messageId, MessageStatus status) {
@@ -298,10 +324,42 @@ class MessengerService {
       }
     }
 
+    await _recordPresenceChanges(peersNow);
     await _broadcastGossip(peersNow);
     await _deliverSpoolTo(peersNow);
     await _flushPendingFor(peersNow);
     await _flushControlOutbox(peersNow);
+    await _offerPostsTo(peersNow);
+  }
+
+  /// Diffs the direct-range peer set and logs joins/leaves for the
+  /// Network feed ("suzuki joined your mesh"), with flap suppression.
+  Future<void> _recordPresenceChanges(Set<String> peersNow) async {
+    final prev = _presenceSnapshot;
+    final joined = peersNow.difference(prev);
+    final left = prev.difference(peersNow);
+    if (joined.isEmpty && left.isEmpty) return;
+    _presenceSnapshot = {...peersNow};
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final address in joined) {
+      _peerSinceMs[address] = now;
+      final peer = await PeerDirectory.instance.get(address);
+      unawaited(
+        MeshActivityLog.instance.recordJoin(address, nickname: peer?.nickname),
+      );
+    }
+    for (final address in left) {
+      final since = _peerSinceMs.remove(address);
+      if (since == null ||
+          now - since < MeshActivityLog.minStayForLeave.inMilliseconds) {
+        continue; // sub-minute blip: link noise, not a departure
+      }
+      final peer = await PeerDirectory.instance.get(address);
+      unawaited(
+        MeshActivityLog.instance.recordLeave(address, nickname: peer?.nickname),
+      );
+    }
   }
 
   Future<void> _meshTick() async {
@@ -322,6 +380,7 @@ class MessengerService {
     await _deliverSpoolTo(peersNow);
     await _flushPendingFor(peersNow);
     await _flushControlOutbox(peersNow);
+    await _offerPostsTo(peersNow);
   }
 
   Future<void> _broadcastGossip(Set<String> peersNow) async {
@@ -350,6 +409,8 @@ class MessengerService {
         await _handleGossip(packet);
       case 'msg':
         await _handleEnvelope(packet);
+      case 'post':
+        await _handleNetworkPost(packet);
     }
   }
 
@@ -968,9 +1029,12 @@ class MessengerService {
     }
   }
 
+  /// Legacy directed stories (act: 'story') from older builds land on the
+  /// Network feed too, so old and new versions keep interoperating.
   Future<void> _handleRemoteStory(IncomingMessage incoming) async {
     final ttl = incoming.ttlSeconds ?? 86400;
     final storyId = incoming.targetId ?? incoming.id;
+    if (_deletedPostIds.contains(storyId)) return;
 
     String? mediaId;
     if (incoming.kind == 'image' && incoming.mediaB64 != null) {
@@ -982,14 +1046,14 @@ class MessengerService {
             name: incoming.mediaName ?? 'story.jpg',
             mime: incoming.mediaMime ?? 'image/jpeg',
             source: MediaSource.received,
-            temp: true, // story media never shows in the Storage library
+            temp: true, // feed media never shows in the Storage library
           );
           mediaId = item.id;
         }
       } catch (_) {}
     }
 
-    await StoriesService.instance.upsert(Story(
+    await NetworkService.instance.upsert(NetworkPost(
       // The story's stable id travels in targetId; the envelope id varies
       // per delivery attempt.
       id: storyId,
@@ -1305,12 +1369,97 @@ class MessengerService {
   }
 
   // ---------------------------------------------------------------------
-  // Stories
+  // Network (mesh-local public feed)
+  //
+  // Posts are signed broadcasts that flood the surrounding mesh, hop by
+  // hop, with no addressing: everyone in radio reach — direct or through
+  // relays — sees them until they expire. Every node (and every Pi
+  // gateway) carries active posts and hands them to whoever walks into
+  // range, which is what makes the feed follow you between meshes.
   // ---------------------------------------------------------------------
 
-  /// Posts a status update (optionally with an image), visible to all
-  /// current contacts for [ttlSeconds].
-  Future<void> postStory(
+  Future<void> _handleNetworkPost(Map<String, Object?> packet) async {
+    final id = packet['id'];
+    if (id is! String) return;
+    final deleted = packet['del'] == true;
+    final dedupKey = deleted ? 'postdel:$id' : 'post:$id';
+    if (_seen.contains(dedupKey)) return;
+
+    final verified = await EnvelopeCodec.verifyNetworkPost(packet);
+    if (verified == null) return;
+    _markSeen(dedupKey);
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (verified.expMs <= now) return;
+
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final hops = verified.hops + 1;
+    final maxHops = (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.postMaxHops;
+
+    if (deleted) {
+      _deletedPostIds.add(id);
+      if (verified.author != me) {
+        await NetworkService.instance.remove(id);
+      }
+      TransportLog.instance.log(
+          'Network: post ${id.length <= 8 ? id : id.substring(0, 8)} deleted '
+          'by its author');
+      if (hops <= maxHops) {
+        final forwarded = Map<String, Object?>.from(packet);
+        forwarded['hops'] = hops;
+        _postOfferedTo.remove(id); // tombstone supersedes the content copy
+        await _addToPostSpool(forwarded);
+        await _offerPostsTo(onlinePeers);
+      }
+      return;
+    }
+
+    if (verified.author == me) return; // own post echoed back
+    if (_deletedPostIds.contains(id)) return; // tombstone won the race
+
+    String? mediaId;
+    if (verified.kind == 'image' && verified.mediaB64 != null) {
+      try {
+        final bytes = base64Decode(verified.mediaB64!);
+        if (bytes.length <= EnvelopeCodec.maxPostMediaBytes) {
+          final item = await MediaStore.instance.saveBytes(
+            Uint8List.fromList(bytes),
+            name: 'post.jpg',
+            mime: verified.mediaMime ?? 'image/jpeg',
+            source: MediaSource.received,
+            temp: true, // feed media never shows in the Storage library
+          );
+          mediaId = item.id;
+        }
+      } catch (_) {}
+    }
+
+    await NetworkService.instance.upsert(NetworkPost(
+      id: id,
+      author: verified.author,
+      authorNick: verified.nickname,
+      text: verified.text,
+      tsMs: verified.tsMs,
+      expiresMs: verified.expMs,
+      hops: verified.hops,
+      mediaId: mediaId,
+      mediaMime: verified.mediaMime,
+    ));
+    TransportLog.instance.log(
+        'Network: post from ${_shortAddr(verified.author)} '
+        '(${verified.hops} hop${verified.hops == 1 ? '' : 's'} away)');
+
+    // Keep it flooding: spool a copy and hand it to everyone around.
+    if (hops <= maxHops) {
+      final forwarded = Map<String, Object?>.from(packet);
+      forwarded['hops'] = hops;
+      await _addToPostSpool(forwarded);
+      await _offerPostsTo(onlinePeers);
+    }
+  }
+
+  /// Publishes to everyone in the mesh (contacts or not) for [ttlSeconds].
+  Future<void> postToNetwork(
     String text, {
     int ttlSeconds = 86400,
     Uint8List? imageBytes,
@@ -1322,50 +1471,186 @@ class MessengerService {
     String? mediaId;
     String? mediaB64;
     if (imageBytes != null) {
-      if (imageBytes.length > MediaStore.maxTransferBytes) {
-        throw StateError('Image is too large for mesh transfer');
+      if (imageBytes.length > EnvelopeCodec.maxPostMediaBytes) {
+        throw StateError(
+            'Image is too large for a Network post (max 512 KB — every '
+            'node in the mesh carries it)');
       }
       final item = await MediaStore.instance.saveBytes(
         imageBytes,
-        name: 'story.jpg',
+        name: 'post.jpg',
         mime: imageMime ?? 'image/jpeg',
         source: MediaSource.sent,
-        temp: true, // lives with the story, not the Storage library
+        temp: true, // lives with the post, not the Storage library
       );
       mediaId = item.id;
       mediaB64 = base64Encode(imageBytes);
     }
 
     final now = DateTime.now().millisecondsSinceEpoch;
-    final story = Story(
-      id: _uuid.v4(),
+    final id = _uuid.v4();
+    final nickname = IdentityService.instance.active?.nickname;
+
+    await NetworkService.instance.upsert(NetworkPost(
+      id: id,
       author: me,
+      authorNick: nickname,
       text: text,
       tsMs: now,
       expiresMs: now + ttlSeconds * 1000,
       mediaId: mediaId,
       mediaMime: imageMime,
-    );
-    await StoriesService.instance.upsert(story);
+    ));
 
-    final contacts = await ContactsService.instance.listContacts();
-    await _enqueueControl(
-      act: 'story',
-      chatKey: '',
-      target: story.id,
+    final packet = await EnvelopeCodec.buildNetworkPost(
+      id: id,
       text: text,
-      ttl: ttlSeconds,
-      recipients: contacts.map((c) => c.address).toList(),
+      tsMs: now,
+      expMs: now + ttlSeconds * 1000,
       mediaB64: mediaB64,
       mediaMime: imageMime,
-      kind: mediaB64 != null ? 'image' : null,
+      nickname: nickname,
+    );
+    _markSeen('post:$id'); // never re-process our own echo
+    await _addToPostSpool(packet);
+    await _offerPostsTo(onlinePeers);
+    TransportLog.instance
+        .log('Network: posted to the mesh (${onlinePeers.length} in range)');
+  }
+
+  /// Deletes my post everywhere: locally at once, and a signed tombstone
+  /// floods the mesh so every carrier drops it too.
+  Future<void> deleteNetworkPost(String id) async {
+    final posts = await NetworkService.instance.listActive();
+    int expMs = DateTime.now()
+        .add(const Duration(hours: 48))
+        .millisecondsSinceEpoch;
+    for (final post in posts) {
+      if (post.id == id) {
+        // The tombstone must outlive every copy of the content.
+        expMs = max(expMs, post.expiresMs);
+        break;
+      }
+    }
+    await NetworkService.instance.remove(id);
+    _deletedPostIds.add(id);
+
+    final packet = await EnvelopeCodec.buildNetworkPost(
+      id: id,
+      text: '',
+      tsMs: DateTime.now().millisecondsSinceEpoch,
+      expMs: expMs,
+      nickname: IdentityService.instance.active?.nickname,
+      deleted: true,
+    );
+    _markSeen('postdel:$id');
+    _postOfferedTo.remove(id); // the tombstone replaces the content copy
+    await _addToPostSpool(packet);
+    await _offerPostsTo(onlinePeers);
+  }
+
+  // ---- Post spool: active posts this node carries and re-floods -------
+
+  Future<List<Map<String, Object?>>> _readPostSpool() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(IdentityScope.key(_postSpoolKey));
+    if (raw == null || raw.isEmpty) return <Map<String, Object?>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return <Map<String, Object?>>[];
+      return decoded
+          .whereType<Map>()
+          .map((m) => m.cast<String, Object?>())
+          .toList();
+    } catch (_) {
+      return <Map<String, Object?>>[];
+    }
+  }
+
+  Future<void> _writePostSpool(List<Map<String, Object?>> spool) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      IdentityScope.key(_postSpoolKey),
+      jsonEncode(spool),
     );
   }
 
-  Future<void> deleteStory(String id) async {
-    await StoriesService.instance.remove(id);
-    await _pruneControlOps(target: id);
+  Future<void> _addToPostSpool(Map<String, Object?> packet) async {
+    final spool = await _readPostSpool();
+    final id = packet['id'];
+    spool.removeWhere((p) => p['id'] == id);
+    spool.add(packet);
+
+    // Enforce entry + size caps, oldest posts first.
+    spool.sort((a, b) =>
+        ((a['ts'] as num?) ?? 0).compareTo((b['ts'] as num?) ?? 0));
+    while (spool.length > _postSpoolMaxEntries) {
+      final dropped = spool.removeAt(0);
+      _postOfferedTo.remove(dropped['id']);
+    }
+    var totalChars = spool.fold<int>(
+        0, (sum, p) => sum + ((p['media'] as String?)?.length ?? 0) + 512);
+    while (totalChars > _postSpoolMaxChars && spool.isNotEmpty) {
+      final dropped = spool.removeAt(0);
+      _postOfferedTo.remove(dropped['id']);
+      totalChars -= ((dropped['media'] as String?)?.length ?? 0) + 512;
+    }
+    await _writePostSpool(spool);
   }
+
+  Future<void> _prunePostSpool() async {
+    final spool = await _readPostSpool();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final before = spool.length;
+    spool.removeWhere((p) {
+      final exp = (p['exp'] as num?)?.toInt();
+      final expired = exp != null && exp < now;
+      if (expired) _postOfferedTo.remove(p['id']);
+      return expired;
+    });
+    if (spool.length != before) await _writePostSpool(spool);
+  }
+
+  /// Remembers which posts were already deleted, so restarts don't let
+  /// late copies resurrect them.
+  Future<void> _seedDeletedPostIds() async {
+    if (!IdentityScope.hasActive) return;
+    for (final packet in await _readPostSpool()) {
+      if (packet['del'] == true && packet['id'] is String) {
+        _deletedPostIds.add(packet['id'] as String);
+      }
+    }
+  }
+
+  /// Hands every active carried post to peers that don't have it yet —
+  /// this is how the feed reaches someone who just walked into the mesh.
+  Future<void> _offerPostsTo(Set<String> peersNow) async {
+    final transport = _transport;
+    if (transport == null || peersNow.isEmpty) return;
+    final spool = await _readPostSpool();
+    if (spool.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    for (final packet in spool) {
+      final id = packet['id'];
+      if (id is! String) continue;
+      final exp = (packet['exp'] as num?)?.toInt();
+      if (exp != null && exp < now) continue;
+      final author = packet['author'] as String?;
+      final offered =
+          _postOfferedTo.putIfAbsent(id, () => <String>{});
+      for (final peer in peersNow) {
+        if (peer == author || offered.contains(peer)) continue;
+        if (await transport.sendPacket(peer, packet)) {
+          offered.add(peer);
+        }
+        // Failures retry naturally on the next tick/appearance.
+      }
+    }
+  }
+
+  String _shortAddr(String address) =>
+      address.length <= 12 ? address : '${address.substring(0, 12)}…';
 
   // ---------------------------------------------------------------------
   // Control outbox (edits/deletes/stories with store-and-forward retry)
@@ -1413,12 +1698,6 @@ class MessengerService {
     });
     await _writeControlOps(ops);
     await _flushControlOutbox(onlinePeers);
-  }
-
-  Future<void> _pruneControlOps({required String target}) async {
-    final ops = await _readControlOps();
-    ops.removeWhere((op) => op['target'] == target);
-    await _writeControlOps(ops);
   }
 
   Future<void> _flushControlOutbox(Set<String> onlineNow) async {

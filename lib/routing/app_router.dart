@@ -3,13 +3,14 @@ import 'package:go_router/go_router.dart';
 
 import '../features/apps/appstore_screen.dart';
 import '../features/apps/camera_screen.dart';
-import '../features/apps/facetime_screen.dart';
+import '../features/apps/contacts_screen.dart';
 import '../features/apps/meshmap_screen.dart';
 import '../features/apps/memos_screen.dart';
+import '../features/apps/network_screen.dart';
 import '../features/apps/phone_screen.dart';
 import '../features/apps/settings_screen.dart';
 import '../features/apps/storage_screen.dart';
-import '../features/apps/stories_screen.dart';
+import '../features/apps/video_chat_screen.dart';
 import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/home/home_screen.dart';
@@ -52,8 +53,12 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const PhoneScreen(),
     ),
     GoRoute(
-      path: '/app/facetime',
-      builder: (context, state) => const FaceTimeScreen(),
+      path: '/app/videochat',
+      builder: (context, state) => const VideoChatScreen(),
+    ),
+    GoRoute(
+      path: '/app/contacts',
+      builder: (context, state) => const ContactsScreen(),
     ),
     GoRoute(
       path: '/app/camera',
@@ -72,8 +77,8 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const MeshMapScreen(),
     ),
     GoRoute(
-      path: '/app/stories',
-      builder: (context, state) => const StoriesScreen(),
+      path: '/app/network',
+      builder: (context, state) => const NetworkScreen(),
     ),
     GoRoute(
       path: '/app/store',

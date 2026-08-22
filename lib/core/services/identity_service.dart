@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity_scope.dart';
@@ -66,6 +68,7 @@ class IdentityService {
   );
 
   static const _identitiesKey = 'identities_v2';
+  static const _hiddenKey = 'identities_hidden_v1';
 
   // Pre-multi-profile storage (single identity + unscoped data).
   static const _legacyPublicKeyKey = 'identity_public_key';
@@ -107,6 +110,109 @@ class IdentityService {
       key: _identitiesKey,
       value: jsonEncode(identities.map((i) => i.toJson()).toList()),
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Hiding (soft remove) and permanent deletion
+  // ---------------------------------------------------------------------
+
+  /// Addresses hidden from the profile picker. The identity and all its
+  /// data stay on the device; the tile just stops showing until restored.
+  Future<Set<String>> hiddenIdentities() async {
+    final raw = await _storage.read(key: _hiddenKey);
+    if (raw == null || raw.isEmpty) return <String>{};
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) return <String>{};
+    return decoded.whereType<String>().toSet();
+  }
+
+  /// Hides or restores a profile tile on the login dashboard. Purely
+  /// cosmetic — nothing is deleted, and restoring brings it right back.
+  Future<void> setIdentityHidden(String publicKey, bool hidden) async {
+    final set = await hiddenIdentities();
+    if (hidden) {
+      set.add(publicKey);
+    } else {
+      set.remove(publicKey);
+    }
+    await _storage.write(key: _hiddenKey, value: jsonEncode(set.toList()));
+  }
+
+  /// Checks [password] against the stored identity without touching the
+  /// current unlock state (used to confirm destructive actions).
+  Future<bool> verifyPassword({
+    required String publicKey,
+    required String password,
+  }) async {
+    final identities = await listIdentities();
+    StoredIdentity? entry;
+    for (final identity in identities) {
+      if (identity.publicKey == publicKey) {
+        entry = identity;
+        break;
+      }
+    }
+    if (entry == null) return false;
+
+    try {
+      final salt = base64Decode(entry.salt);
+      final secretKey = await _deriveKeyFromPassword(password, salt);
+      final Map<String, dynamic> payload =
+          jsonDecode(entry.encryptedPrivateKey) as Map<String, dynamic>;
+      await AesGcm.with256bits().decrypt(
+        SecretBox(
+          base64Decode(payload['cipherText'] as String),
+          nonce: base64Decode(payload['nonce'] as String),
+          mac: Mac(base64Decode(payload['mac'] as String)),
+        ),
+        secretKey: SecretKey(await secretKey.extractBytes()),
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Permanently deletes an identity and absolutely all of its data:
+  /// keys, chats, contacts, media files, settings, stories, spool —
+  /// everything scoped to it. Irreversible.
+  ///
+  /// The caller is responsible for stopping the transport first and for
+  /// calling [lock] + navigating away when the active profile deletes
+  /// itself.
+  Future<void> deleteIdentityPermanently(String publicKey) async {
+    final fp = IdentityScope.fingerprintOf(publicKey);
+
+    // 1. Every SharedPreferences key namespaced to this identity
+    //    (chats, contacts, settings, stories, peer directory, spool…).
+    final prefs = await SharedPreferences.getInstance();
+    final prefix = 'u:$fp:';
+    for (final key in prefs.getKeys().toList()) {
+      if (key.startsWith(prefix)) {
+        await prefs.remove(key);
+      }
+    }
+
+    // 2. All media files (photos, voice notes, received attachments).
+    try {
+      final base = await getApplicationSupportDirectory();
+      final dir = Directory('${base.path}/media/$fp');
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
+    } catch (_) {
+      // Metadata is already gone; stray files hold only orphaned blobs.
+    }
+
+    // 3. The identity itself (encrypted private key) and its hidden flag.
+    final identities = await listIdentities();
+    identities.removeWhere((i) => i.publicKey == publicKey);
+    await _writeIdentities(identities);
+    await setIdentityHidden(publicKey, false);
+
+    if (_active?.publicKey == publicKey) {
+      lock();
+    }
   }
 
   /// Migrates the old single-identity storage into the registry, and claims
