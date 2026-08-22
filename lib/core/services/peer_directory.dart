@@ -185,6 +185,14 @@ class PeerDirectory {
     );
   }
 
+  /// Forgets every learned node (live sightings, gossip, and QR-seeded
+  /// keys). Contacts and chats are untouched — this only wipes the mesh
+  /// map and the encryption keys discovered through it.
+  Future<void> clear() async {
+    await _write(<String, KnownPeer>{});
+    _changed.add(null);
+  }
+
   /// Clears the in-memory cache (on identity switch).
   void resetCache() {
     _cache = null;

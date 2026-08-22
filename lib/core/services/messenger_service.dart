@@ -154,6 +154,14 @@ class MessengerService {
     await _startTransport();
   }
 
+  /// Forgets every device this identity has seen on the mesh map. Contacts
+  /// and chats stay. Devices still in radio range reappear on the next scan.
+  Future<void> clearMeshSightings() async {
+    await PeerDirectory.instance.clear();
+    RouteTable.instance.reset();
+    TransportLog.instance.log('Mesh: sightings cleared — map reset to just you');
+  }
+
   Future<void> stop() async {
     _sweepTimer?.cancel();
     _sweepTimer = null;

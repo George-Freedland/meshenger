@@ -203,7 +203,7 @@ flutter run -d linux
 
 The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It is **Bluetooth‑first**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It simultaneously speaks the LAN protocol and **bridges the two links** — a phone's Bluetooth message can cross a house over Ethernet/Wi‑Fi between two Pis and come out as Bluetooth on the far side. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, **pushes spooled envelopes to phones that subscribe to its outbox** (that's how it reaches backgrounded iPhones), and shows up on everyone's Mesh Map under the name you give it.
 
-**Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. Any Linux box with BlueZ works the same (old laptops make great gateways).
+**Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. A **Pi 3 Model B** also works for testing (onboard Bluetooth 4.1 + Wi‑Fi, 64‑bit OS); it is just slower. Any Linux box with BlueZ works the same (old laptops make great gateways).
 
 **1. Install the Dart SDK (ARM64):**
 
