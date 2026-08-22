@@ -12,7 +12,10 @@ import 'package:record/record.dart';
 String formatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 }
 
 String formatDuration(Duration d) {
@@ -85,6 +88,36 @@ Future<PickedMedia?> pickAnyFile() async {
     bytes: bytes,
     name: file.name,
     mime: mimeFromName(file.name),
+  );
+}
+
+/// A file selected for P2P transfer: path + metadata only. The content is
+/// never loaded into memory — transfers stream it from disk chunk by
+/// chunk, which is what makes multi-GB sends possible.
+class PickedFileHandle {
+  final String path;
+  final String name;
+  final String mime;
+  final int size;
+
+  const PickedFileHandle({
+    required this.path,
+    required this.name,
+    required this.mime,
+    required this.size,
+  });
+}
+
+/// Picks a file of any size for P2P transfer without reading it.
+Future<PickedFileHandle?> pickFileForTransfer() async {
+  final file = await openFile();
+  if (file == null) return null;
+  final size = await File(file.path).length();
+  return PickedFileHandle(
+    path: file.path,
+    name: file.name,
+    mime: mimeFromName(file.name),
+    size: size,
   );
 }
 

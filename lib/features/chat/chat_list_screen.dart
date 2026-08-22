@@ -725,10 +725,49 @@ class _ChatListScreenState extends State<ChatListScreen> {
                         onPressed: () async {
                           if (isGroup) {
                             await ChatStorage.instance.hideChat(chatKey);
-                          } else {
-                            await ChatStorage.instance.deleteChat(chatKey);
+                            await _refresh();
+                            return;
                           }
-                          await _refresh();
+                          final choice = await showDialog<String>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('Delete this chat?'),
+                              content: const Text(
+                                'Delete for everyone also removes the '
+                                'conversation on their device (applied '
+                                'when they are next reachable).',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: const Text('Cancel'),
+                                ),
+                                OutlinedButton(
+                                  onPressed: () => Navigator.pop(ctx, 'me'),
+                                  child: const Text('Delete for me'),
+                                ),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        Theme.of(ctx).colorScheme.error,
+                                    foregroundColor:
+                                        Theme.of(ctx).colorScheme.onError,
+                                  ),
+                                  onPressed: () =>
+                                      Navigator.pop(ctx, 'everyone'),
+                                  child: const Text('Delete for everyone'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (choice == 'everyone') {
+                            await MessengerService.instance
+                                .deleteChatForEveryone(chatKey);
+                          } else if (choice == 'me') {
+                            await MessengerService.instance
+                                .deleteChatLocally(chatKey);
+                          }
+                          if (choice != null) await _refresh();
                         },
                       ),
                     );

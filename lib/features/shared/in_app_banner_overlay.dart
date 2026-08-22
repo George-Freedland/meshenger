@@ -153,8 +153,10 @@ class _BannerCard extends StatelessWidget {
                   ],
                 ),
               ),
+              // No tooltip here: this banner lives above the Navigator, so
+              // there is no Overlay ancestor for a Tooltip to mount into
+              // (a tooltip here crashes with "No Overlay widget found").
               IconButton(
-                tooltip: 'Dismiss',
                 icon: const Icon(Icons.close, size: 18),
                 onPressed: onClose,
               ),

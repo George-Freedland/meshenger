@@ -17,6 +17,7 @@ import '../transport/mesh_transport.dart';
 import '../transport/message_body.dart';
 import 'chat_storage.dart';
 import 'contacts_service.dart';
+import 'file_transfer_service.dart';
 import 'identity_scope.dart';
 import 'identity_service.dart';
 import 'media_store.dart';
@@ -134,6 +135,10 @@ class MessengerService {
   Stream<Set<String>> get onPeersChanged => _peers.stream;
   Stream<TransportMode> get onTransportChanged => _transportChanged.stream;
 
+  /// Lets screens broadcast that they changed chat state directly (e.g.
+  /// marking a chat read on open), so lists showing badges refresh live.
+  void pingChanged(String chatKey) => _changed.add(chatKey);
+
   /// Incoming `call-*` signals, consumed by the CallService.
   Stream<IncomingMessage> get onCallSignal => _callSignals.stream;
 
@@ -152,6 +157,30 @@ class MessengerService {
     MeshActivityLog.instance.resetCache();
     await _seedDeletedPostIds();
     unawaited(NotificationService.instance.init());
+    FileTransferService.instance.attach(
+      sendControl: (act, peer, tid, meta, {bool unique = false}) =>
+          _enqueueControl(
+        act: act,
+        chatKey: peer,
+        target: tid,
+        text: meta,
+        unique: unique,
+      ),
+      sendPacket: (peer, packet) async =>
+          await _transport?.sendPacket(peer, packet) ?? false,
+      onlinePeers: () => onlinePeers,
+      chunkSizeForNewOffers: () => _mode == TransportMode.bluetooth
+          ? FileTransfer.defaultBleChunk
+          : FileTransfer.defaultLanChunk,
+      onCompleted: (transfer) {
+        _changed.add(transfer.peer);
+        unawaited(_notifyIncoming(
+          chatKey: transfer.peer,
+          fromAddress: transfer.peer,
+          body: 'File "${transfer.name}" received — saved to Storage',
+        ));
+      },
+    );
     await _startTransport();
     _sweepTimer ??=
         Timer.periodic(const Duration(seconds: 15), (_) => _sweepExpired());
@@ -195,6 +224,7 @@ class MessengerService {
     _lastRelayAttemptMs.clear();
     _postOfferedTo.clear();
     _deletedPostIds.clear();
+    await FileTransferService.instance.detach();
     await _stopTransport();
   }
 
@@ -330,6 +360,7 @@ class MessengerService {
     await _flushPendingFor(peersNow);
     await _flushControlOutbox(peersNow);
     await _offerPostsTo(peersNow);
+    await FileTransferService.instance.onPeersChanged(peersNow);
   }
 
   /// Diffs the direct-range peer set and logs joins/leaves for the
@@ -411,6 +442,34 @@ class MessengerService {
         await _handleEnvelope(packet);
       case 'post':
         await _handleNetworkPost(packet);
+      case 'ftc':
+      case 'fta':
+        await _handleTransferPacket(packet);
+    }
+  }
+
+  /// Bulk file-transfer traffic: chunks (`ftc`) and progress (`fta`).
+  /// Addressed to me → hand to the transfer engine. Addressed to someone
+  /// directly reachable → pass it through live (this is how a phone or Pi
+  /// in the middle bridges a transfer). Never spooled: multi-GB payloads
+  /// must not pile up on middle nodes — the sender's flow-control window
+  /// and the receiver's rewind signals handle loss instead.
+  Future<void> _handleTransferPacket(Map<String, Object?> packet) async {
+    final to = packet['to'] as String?;
+    if (to == null) return;
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+
+    if (to != me) {
+      if (onlinePeers.contains(to)) {
+        unawaited(_transport?.sendPacket(to, packet));
+      }
+      return;
+    }
+    if (packet['t'] == 'ftc') {
+      await FileTransferService.instance.handleChunk(packet);
+    } else {
+      await FileTransferService.instance.handleProgress(packet);
     }
   }
 
@@ -813,8 +872,33 @@ class MessengerService {
       case 'delete':
         await _handleRemoteDelete(incoming);
         return;
+      case 'wipechat':
+        await _handleRemoteWipeChat(incoming);
+        return;
       case 'story':
         await _handleRemoteStory(incoming);
+        return;
+      case 'ftoffer':
+        await _handleTransferOffer(incoming);
+        return;
+      case 'ftaccept':
+        await FileTransferService.instance.handleAccept(
+          incoming.fromAddress,
+          incoming.targetId ?? '',
+          _ftHave(incoming.text),
+        );
+        return;
+      case 'ftdecline':
+        await FileTransferService.instance
+            .handleDecline(incoming.fromAddress, incoming.targetId ?? '');
+        return;
+      case 'ftcancel':
+        await FileTransferService.instance
+            .handleCancel(incoming.fromAddress, incoming.targetId ?? '');
+        return;
+      case 'ftdone':
+        await FileTransferService.instance
+            .handleDone(incoming.fromAddress, incoming.targetId ?? '');
         return;
     }
 
@@ -1027,6 +1111,115 @@ class MessengerService {
       if (mediaId != null) await MediaStore.instance.delete(mediaId);
       _changed.add(chatKey);
     }
+  }
+
+  static int _ftHave(String metaJson) {
+    try {
+      final decoded = jsonDecode(metaJson);
+      if (decoded is Map) return (decoded['have'] as num?)?.toInt() ?? 0;
+    } catch (_) {}
+    return 0;
+  }
+
+  /// A peer wants to send us a large file: register the transfer and drop
+  /// an accept/decline bubble into the chat.
+  Future<void> _handleTransferOffer(IncomingMessage incoming) async {
+    final transfer = await FileTransferService.instance
+        .handleOffer(incoming.fromAddress, incoming.text);
+    if (transfer == null) return; // malformed or duplicate
+
+    final chatKey = incoming.fromAddress;
+    await ChatStorage.instance.ensureChatExists(chatKey);
+    await ChatStorage.instance.appendMessage(
+      chatKey,
+      ChatMessage(
+        id: 'ft:${transfer.tid}',
+        text: '',
+        isMe: false,
+        timestamp: incoming.timestamp,
+        status: MessageStatus.sent,
+        senderAddress: chatKey,
+        kind: 'transfer',
+        mediaId: transfer.tid,
+        mediaName: transfer.name,
+        mediaMime: transfer.mime,
+      ),
+    );
+    await ChatStorage.instance.markUnread(chatKey);
+    _changed.add(chatKey);
+    unawaited(_notifyIncoming(
+      chatKey: chatKey,
+      fromAddress: chatKey,
+      body: 'Wants to send you "${transfer.name}"',
+    ));
+  }
+
+  /// Offers a large file to a 1:1 peer over the P2P transfer engine and
+  /// drops the live progress bubble into the chat.
+  Future<void> sendFileTransfer(
+    String chatKey, {
+    required String path,
+    required String name,
+    required String mime,
+  }) async {
+    if (ChatStorage.isGroupChat(chatKey)) {
+      throw StateError('File transfer is 1:1 (pick a member directly)');
+    }
+    final transfer = await FileTransferService.instance.offer(
+      peer: chatKey,
+      path: path,
+      name: name,
+      mime: mime,
+    );
+    await ChatStorage.instance.ensureChatExists(chatKey);
+    await ChatStorage.instance.appendMessage(
+      chatKey,
+      ChatMessage(
+        id: 'ft:${transfer.tid}',
+        text: '',
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: MessageStatus.sent,
+        kind: 'transfer',
+        mediaId: transfer.tid,
+        mediaName: name,
+        mediaMime: mime,
+      ),
+    );
+    _changed.add(chatKey);
+  }
+
+  /// The peer deleted our whole conversation for everyone. Scope is
+  /// inherent: a sender can only ever wipe the 1:1 thread with themself.
+  Future<void> _handleRemoteWipeChat(IncomingMessage incoming) async {
+    final chatKey = incoming.fromAddress;
+    await deleteChatLocally(chatKey);
+    TransportLog.instance
+        .log('Chat with ${_shortAddr(chatKey)} deleted by the other side');
+  }
+
+  /// Removes a 1:1 chat and everything attached to it on this device.
+  Future<void> deleteChatLocally(String chatKey) async {
+    for (final mediaId in await ChatStorage.instance.mediaIdsIn(chatKey)) {
+      await MediaStore.instance.delete(mediaId);
+    }
+    await ChatStorage.instance.deleteChat(chatKey);
+    _changed.add(chatKey);
+  }
+
+  /// Telegram-style full-conversation delete: wipes the chat here and
+  /// sends a signed, store-and-forward `wipechat` so the peer's copy is
+  /// deleted too (arrives whenever they are next reachable).
+  Future<void> deleteChatForEveryone(String chatKey) async {
+    if (ChatStorage.isGroupChat(chatKey)) {
+      throw StateError('Group chats are hidden or left, not wiped');
+    }
+    await _enqueueControl(
+      act: 'wipechat',
+      chatKey: chatKey,
+      target: chatKey,
+    );
+    await deleteChatLocally(chatKey);
   }
 
   /// Legacy directed stories (act: 'story') from older builds land on the
@@ -1656,6 +1849,10 @@ class MessengerService {
   // Control outbox (edits/deletes/stories with store-and-forward retry)
   // ---------------------------------------------------------------------
 
+  /// [unique] gives the op a fresh message id per enqueue. Without it,
+  /// re-sending the same act+target is deduplicated by receivers (right
+  /// for edits/deletes, wrong for repeatable signals like transfer
+  /// accepts, which must get through every time they are re-issued).
   Future<void> _enqueueControl({
     required String act,
     required String chatKey,
@@ -1666,6 +1863,7 @@ class MessengerService {
     String? mediaB64,
     String? mediaMime,
     String? kind,
+    bool unique = false,
   }) async {
     final me = await IdentityService.instance.getPublicAddressBase64();
     List<String> to;
@@ -1695,6 +1893,7 @@ class MessengerService {
       if (mediaB64 != null) 'media': mediaB64,
       if (mediaMime != null) 'mmime': mediaMime,
       if (kind != null) 'kind': kind,
+      if (unique) 'salt': _uuid.v4(),
     });
     await _writeControlOps(ops);
     await _flushControlOutbox(onlinePeers);
@@ -1715,10 +1914,13 @@ class MessengerService {
         if (gid != null) {
           info = await ChatStorage.instance.getGroupInfo(gid);
         }
+        final salt = op['salt'] as String?;
         final handedOff = await _deliverBody(
           recipient,
           MessageBody(
-            messageId: '${op['act']}:${op['target']}:$recipient',
+            messageId: salt == null
+                ? '${op['act']}:${op['target']}:$recipient'
+                : '${op['act']}:${op['target']}:$salt:$recipient',
             text: (op['text'] as String?) ?? '',
             timestamp: DateTime.now(),
             groupId: gid,

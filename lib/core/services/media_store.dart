@@ -165,6 +165,40 @@ class MediaStore {
     return item;
   }
 
+  /// Registers an existing file by *moving* it into the library — no
+  /// bytes pass through memory, so multi-GB files (completed P2P
+  /// transfers) are adopted instantly.
+  Future<MediaItem> adoptFile(
+    String sourcePath, {
+    required String name,
+    required String mime,
+    required MediaSource source,
+  }) async {
+    final sourceFile = File(sourcePath);
+    final item = MediaItem(
+      id: _uuid.v4(),
+      name: name,
+      mime: mime,
+      sizeBytes: await sourceFile.length(),
+      createdMs: DateTime.now().millisecondsSinceEpoch,
+      source: source,
+    );
+    final dest = await fileFor(item);
+    try {
+      await sourceFile.rename(dest.path);
+    } on FileSystemException {
+      // Cross-device move: fall back to copy + delete.
+      await sourceFile.copy(dest.path);
+      await sourceFile.delete();
+    }
+
+    final items = await _readAll();
+    items.add(item);
+    await _writeAll(items);
+    _changed.add(null);
+    return item;
+  }
+
   Future<void> delete(String id) async {
     final items = await _readAll();
     final idx = items.indexWhere((i) => i.id == id);

@@ -11,6 +11,7 @@ import '../../core/models/message.dart';
 import '../../core/services/call_service.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
+import '../../core/services/file_transfer_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
@@ -115,7 +116,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     if (key == null || key.isEmpty) return;
     await ChatStorage.instance.ensureChatExists(key);
-    await ChatStorage.instance.markRead(key);
+    // Opening the chat reads it; ping listeners (the chat list badge)
+    // only when something was actually cleared, so this cannot loop.
+    if (await ChatStorage.instance.markRead(key)) {
+      MessengerService.instance.pingChanged(key);
+    }
 
     _myAddress = await IdentityService.instance.getPublicAddressBase64();
     final contacts = await ContactsService.instance.listContacts();
@@ -226,15 +231,74 @@ class _ChatScreenState extends State<ChatScreen> {
             ListTile(
               leading: const Icon(Icons.insert_drive_file_outlined),
               title: const Text('File'),
+              subtitle: const Text('Up to 8 MB, travels through the mesh'),
               onTap: () {
                 Navigator.pop(ctx);
                 _sendFile();
               },
             ),
+            if (!_isGroup)
+              ListTile(
+                leading: const Icon(Icons.swap_vert_circle_outlined),
+                title: const Text('File transfer (any size)'),
+                subtitle: const Text(
+                    'Peer-to-peer, resumable — for multi-GB video and more'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _startFileTransfer();
+                },
+              ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _startFileTransfer() async {
+    final key = _chatKey;
+    if (key == null) return;
+    final picked = await pickFileForTransfer();
+    if (picked == null || !mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Send file peer-to-peer?'),
+        content: Text(
+          '"${picked.name}" (${formatBytes(picked.size)})\n\n'
+          'Streams directly to this contact in encrypted chunks once they '
+          'accept. Survives drops — it resumes where it left off. Large '
+          'files are fast on Wi-Fi/LAN and slow over Bluetooth.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.send, size: 18),
+            label: const Text('Offer file'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await MessengerService.instance.sendFileTransfer(
+        key,
+        path: picked.path,
+        name: picked.name,
+        mime: picked.mime,
+      );
+      await _loadMessages();
+    } on StateError catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
   }
 
   Future<void> _sendImage({required bool fromCamera}) async {
@@ -496,11 +560,47 @@ class _ChatScreenState extends State<ChatScreen> {
     if (key == null || key.isEmpty) return;
     if (_isGroup) {
       await ChatStorage.instance.hideChat(key);
+      MessengerService.instance.pingChanged(key);
+      if (mounted) _goBack();
+      return;
+    }
+
+    // 1:1: Telegram-style choice — local delete or wipe both sides.
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete this chat?'),
+        content: const Text(
+          'Delete for everyone removes the conversation and its media on '
+          'your device AND on theirs (the wipe travels through the mesh '
+          'and applies when they are next reachable).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(ctx, 'me'),
+            child: const Text('Delete for me'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(ctx, 'everyone'),
+            child: const Text('Delete for everyone'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    if (choice == 'everyone') {
+      await MessengerService.instance.deleteChatForEveryone(key);
     } else {
-      for (final mediaId in await ChatStorage.instance.mediaIdsIn(key)) {
-        await MediaStore.instance.delete(mediaId);
-      }
-      await ChatStorage.instance.deleteChat(key);
+      await MessengerService.instance.deleteChatLocally(key);
     }
     if (mounted) _goBack();
   }
@@ -812,6 +912,16 @@ class _ChatScreenState extends State<ChatScreen> {
     final theme = Theme.of(context);
     final mediaId = message.mediaId;
     final path = mediaId == null ? null : _mediaPaths[mediaId];
+
+    // P2P file transfer: a live card driven by the transfer engine.
+    if (message.kind == 'transfer' && mediaId != null) {
+      return TransferBubble(
+        tid: mediaId,
+        isMe: message.isMe,
+        fallbackName: message.mediaName ?? 'File',
+        color: textColor,
+      );
+    }
 
     // View-once handling for received images.
     if (message.kind == 'image' && message.mediaTemp && !message.isMe) {
@@ -1375,5 +1485,172 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
+  }
+}
+
+/// Live card for a P2P file transfer: progress, accept/decline for
+/// incoming offers, cancel while running, resume state after drops.
+class TransferBubble extends StatefulWidget {
+  final String tid;
+  final bool isMe;
+  final String fallbackName;
+  final Color color;
+
+  const TransferBubble({
+    super.key,
+    required this.tid,
+    required this.isMe,
+    required this.fallbackName,
+    required this.color,
+  });
+
+  @override
+  State<TransferBubble> createState() => _TransferBubbleState();
+}
+
+class _TransferBubbleState extends State<TransferBubble> {
+  FileTransfer? _transfer;
+  StreamSubscription<String>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+    _sub = FileTransferService.instance.onChanged.listen((tid) {
+      if (tid == widget.tid) _reload();
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    final transfer = await FileTransferService.instance.get(widget.tid);
+    if (mounted) setState(() => _transfer = transfer);
+  }
+
+  String _statusLine(FileTransfer t) {
+    final done = formatBytes(t.transferredBytes);
+    final total = formatBytes(t.size);
+    return switch (t.status) {
+      FtStatus.offered => t.outgoing
+          ? 'Waiting for them to accept ($total)'
+          : 'Incoming file — $total',
+      FtStatus.accepted => 'Starting… ($total)',
+      FtStatus.active => '$done of $total',
+      FtStatus.paused =>
+        'Paused at $done of $total — resumes when you meet again',
+      FtStatus.done => t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
+      FtStatus.declined => 'Declined',
+      FtStatus.canceled => 'Canceled',
+      FtStatus.failed => 'Failed',
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = widget.color;
+    final t = _transfer;
+
+    if (t == null) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.swap_vert_circle_outlined, color: color),
+          const SizedBox(width: 8),
+          Text(widget.fallbackName,
+              style: theme.textTheme.bodyMedium?.copyWith(color: color)),
+        ],
+      );
+    }
+
+    final running = t.status == FtStatus.active ||
+        t.status == FtStatus.accepted ||
+        t.status == FtStatus.paused;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                t.status == FtStatus.done
+                    ? Icons.check_circle_outline
+                    : Icons.swap_vert_circle_outlined,
+                color: t.status == FtStatus.done
+                    ? Colors.greenAccent
+                    : color,
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  t.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: color, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (running || t.status == FtStatus.done) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: t.progress,
+                minHeight: 6,
+                backgroundColor: color.withValues(alpha: 0.15),
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          Text(
+            _statusLine(t),
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: color.withValues(alpha: 0.75)),
+          ),
+          if (!t.outgoing && t.status == FtStatus.offered) ...[
+            const SizedBox(height: 8),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => FileTransferService.instance.accept(t.tid),
+                  icon: const Icon(Icons.download, size: 16),
+                  label: const Text('Accept'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: () =>
+                      FileTransferService.instance.decline(t.tid),
+                  child: const Text('Decline'),
+                ),
+              ],
+            ),
+          ] else if (running || (t.outgoing && t.status == FtStatus.offered))
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  foregroundColor: color.withValues(alpha: 0.7),
+                ),
+                onPressed: () => FileTransferService.instance.cancel(t.tid),
+                icon: const Icon(Icons.close, size: 14),
+                label: const Text('Cancel transfer'),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }

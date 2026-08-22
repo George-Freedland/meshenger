@@ -128,9 +128,14 @@ class ChatStorage {
     await _writeUnreadCounts(counts);
   }
 
-  Future<void> markRead(String chatKey) async {
+  /// Clears the unread count for a chat. Returns true when there was
+  /// anything to clear — callers use that to ping change listeners (the
+  /// chat list badge must drop the moment the chat is opened).
+  Future<bool> markRead(String chatKey) async {
     final counts = await unreadCounts();
-    if (counts.remove(chatKey) != null) await _writeUnreadCounts(counts);
+    if (counts.remove(chatKey) == null) return false;
+    await _writeUnreadCounts(counts);
+    return true;
   }
 
   Future<void> _writeUnreadCounts(Map<String, int> counts) async {
