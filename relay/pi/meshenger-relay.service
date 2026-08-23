@@ -1,0 +1,15 @@
+[Unit]
+Description=Meshenger mesh gateway (Bluetooth + LAN relay)
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/REPLACE_ME/meshenger
+ExecStart=/home/REPLACE_ME/meshenger/meshenger-relay --name "Pi Gateway"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -209,6 +209,27 @@ The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GU
 
 **Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. A **Pi 3 Model B** also works for testing (onboard Bluetooth 4.1 + Wi‑Fi, 64‑bit OS); it is just slower. Any Linux box with BlueZ works the same (old laptops make great gateways).
 
+**Fastest path — cross‑compile on your computer, zero internet needed on the Pi.** The Dart SDK cross‑compiles the relay into a single self‑contained Pi binary from any machine:
+
+```bash
+cd relay
+dart pub get
+dart compile exe bin/relay.dart --target-os linux --target-arch arm64 -o build/meshenger-relay
+```
+
+Put `build/meshenger-relay` on a USB stick, then on the Pi:
+
+```bash
+lsblk                                                    # find the stick, e.g. sda1
+sudo mkdir -p /mnt/usb && sudo mount /dev/sda1 /mnt/usb
+cp /mnt/usb/meshenger-relay ~/ && chmod +x ~/meshenger-relay
+sudo ~/meshenger-relay --name "Garden Gateway"
+```
+
+That is the entire install — BlueZ ships preinstalled on Raspberry Pi OS, and the binary bundles the Dart runtime. `relay/pi/` contains a ready‑made USB quick‑start (`README-PI.txt`) and a boot service file (`meshenger-relay.service`).
+
+**Alternative — run from source on the Pi** (only if you want to hack on the relay directly; needs internet on the Pi once):
+
 **1. Install the Dart SDK (ARM64):**
 
 ```bash
