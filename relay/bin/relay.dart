@@ -76,8 +76,8 @@ Future<void> _run(List<String> args) async {
         transports.add(ble);
       } catch (e) {
         log('Bluetooth unavailable: $e');
-        log('Continuing without Bluetooth. '
-            '(Run as root or add your user to the "bluetooth" group.)');
+        log('Continuing without Bluetooth. (If this is a permission error, '
+            'run as root or add your user to the "bluetooth" group.)');
       }
     } else {
       log('Bluetooth link needs BlueZ (Linux); running without it here.');

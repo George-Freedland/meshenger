@@ -265,6 +265,8 @@ Open the Mesh Map on your phone — the gateway appears by name within ~30 secon
 
 > **Why sudo?** Registering a GATT service with BlueZ needs D‑Bus permission. Either run the daemon as root (simplest for a dedicated gateway box) or add your user to the `bluetooth` group: `sudo usermod -aG bluetooth $USER` then re‑login. If Bluetooth fails to power on, try `sudo rfkill unblock bluetooth`.
 
+> **"Failed to register advertisement"?** bluetoothd sometimes refuses LE advertising — transiently right after boot (radio left rfkill after the daemon started), or persistently on some kernel/controller combinations (seen with the Pi 3's BT 4.1 chip on new kernels). The relay self‑heals in stages: it retries, power‑cycles the adapter, falls back to a nameless advertisement (the name still reaches peers through gossip), then **bypasses bluetoothd entirely and programs the controller's legacy advertising registers over raw HCI** (`hcitool cmd`), re‑asserting the broadcast every 20 s since legacy advertising pauses during connections. Worst case it stays up in listen/connect mode retrying every 60 s. Also: if the console shows `Undervoltage detected!`, fix the Pi's power supply — a browned‑out radio misbehaves in exactly these ways.
+
 **Flags:**
 
 | Flag | Meaning |

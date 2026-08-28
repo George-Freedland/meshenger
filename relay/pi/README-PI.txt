@@ -73,6 +73,38 @@ Uses the SDK + source + offline packages; still no internet needed:
      cd ~/meshenger-src && dart pub get --offline
      sudo -E "$(command -v dart)" run bin/relay.dart --name "Pi Gateway"
 
+IF YOU SEE "Undervoltage detected!"
+-----------------------------------
+Your power supply is too weak — this throttles the Pi, corrupts SD cards
+over time, and destabilizes the Bluetooth/Wi-Fi radio. Use a proper
+5V / 2.5A wall supply (official Pi PSU or a good 12W phone charger) with a
+short, thick micro-USB cable. Do NOT power the Pi from a computer, TV, or
+console USB port. Fix this before debugging anything else.
+
+IF YOU SEE "Failed to register advertisement"
+---------------------------------------------
+BlueZ (the Linux Bluetooth daemon) refused to start the broadcast. The
+relay heals itself in stages: it retries, power-cycles the adapter, drops
+the broadcast name, and finally programs the radio DIRECTLY (raw HCI),
+bypassing the daemon's broken advertising path — you'll see
+"advertising via raw-HCI fallback" when that engages. It also keeps
+retrying every 60 s forever, so a transient failure fixes itself.
+
+If it stays failing across restarts:
+
+     sudo systemctl restart bluetooth
+     sleep 3
+     cd ~/meshenger && sudo ./meshenger-relay --name "Pi Gateway"
+
+Still failing? Collect these and compare/report:
+
+     sudo bluetoothctl advertise on      # does the OS stack itself work?
+     bluetoothctl show                   # look at the Advertising Features
+     sudo journalctl -u bluetooth -n 30  # daemon-side error details
+     dmesg | grep -iE 'blue|hci'         # controller/firmware errors
+
+A weak power supply (see above) is a common root cause on Pi 3 boards.
+
 TIPS
 ----
 - The gateway's identity (its mesh address + keys) lives in
