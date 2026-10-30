@@ -73,7 +73,21 @@ class NetworkService {
   static const _seenKey = 'network_seen_ms_v1';
 
   final StreamController<void> _changed = StreamController<void>.broadcast();
+  final StreamController<void> _postsChanged =
+      StreamController<void>.broadcast();
+
+  /// Fires on any change, including the feed being marked seen (badges).
   Stream<void> get onChanged => _changed.stream;
+
+  /// Fires only when the set of posts changes. The feed screen listens to
+  /// this one: it calls [markSeen] on every reload, so listening to
+  /// [onChanged] would make it reload itself forever.
+  Stream<void> get onPostsChanged => _postsChanged.stream;
+
+  void _notifyPostsChanged() {
+    _postsChanged.add(null);
+    _changed.add(null);
+  }
 
   Future<List<NetworkPost>> listActive() async {
     final posts = await _readAll();
@@ -86,7 +100,7 @@ class NetworkService {
     posts.removeWhere((p) => p.id == post.id);
     posts.add(post);
     await _writeAll(posts);
-    _changed.add(null);
+    _notifyPostsChanged();
   }
 
   Future<void> remove(String id) async {
@@ -99,7 +113,7 @@ class NetworkService {
       final mediaId = post.mediaId;
       if (mediaId != null) await MediaStore.instance.delete(mediaId);
     }
-    _changed.add(null);
+    _notifyPostsChanged();
   }
 
   /// Purges expired posts (and their media). Returns true when anything
@@ -114,7 +128,7 @@ class NetworkService {
       if (mediaId != null) await MediaStore.instance.delete(mediaId);
     }
     await _writeAll(active);
-    _changed.add(null);
+    _notifyPostsChanged();
     return true;
   }
 

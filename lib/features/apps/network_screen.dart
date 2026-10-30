@@ -13,6 +13,7 @@ import '../../core/services/mesh_activity.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/network_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../../core/services/transport_log.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/media_widgets.dart';
 import '../shared/transport_status_banner.dart';
@@ -53,7 +54,8 @@ class _NetworkScreenState extends State<NetworkScreen> {
   void initState() {
     super.initState();
     _reload();
-    _subs.add(NetworkService.instance.onChanged.listen((_) => _reload()));
+    _subs.add(
+        NetworkService.instance.onPostsChanged.listen((_) => _reload()));
     _subs.add(MeshActivityLog.instance.onChanged.listen((_) => _reload()));
     _subs.add(
         MessengerService.instance.onPeersChanged.listen((_) => _reload()));
@@ -72,7 +74,36 @@ class _NetworkScreenState extends State<NetworkScreen> {
     super.dispose();
   }
 
+  bool _reloading = false;
+  bool _reloadQueued = false;
+
+  /// Coalesces bursts of change events into at most one pending reload.
   Future<void> _reload() async {
+    if (_reloading) {
+      _reloadQueued = true;
+      return;
+    }
+    _reloading = true;
+    try {
+      do {
+        _reloadQueued = false;
+        final watch = Stopwatch()..start();
+        try {
+          await _reloadOnce();
+        } catch (e, st) {
+          TransportLog.instance.log('Network feed: reload failed: $e');
+          debugPrintStack(stackTrace: st, label: 'Network feed reload');
+        }
+        TransportLog.instance.log(
+            'Network feed: reloaded ${_posts.length} post(s) in '
+            '${watch.elapsedMilliseconds} ms');
+      } while (_reloadQueued && mounted);
+    } finally {
+      _reloading = false;
+    }
+  }
+
+  Future<void> _reloadOnce() async {
     final posts = await NetworkService.instance.listActive();
     final allEvents = await MeshActivityLog.instance.list();
     final contacts = await ContactsService.instance.listContacts();
@@ -487,7 +518,7 @@ class _NetworkScreenState extends State<NetworkScreen> {
                     radius: 16,
                     backgroundColor: colorB,
                     child: Text(
-                      name.substring(0, 1).toUpperCase(),
+                      name.isEmpty ? '?' : name.substring(0, 1).toUpperCase(),
                       style: const TextStyle(
                           color: Colors.white, fontWeight: FontWeight.bold),
                     ),
