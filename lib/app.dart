@@ -57,6 +57,7 @@ class MeshengerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'Meshenger',
+      debugShowCheckedModeBanner: false,
       routerConfig: appRouter,
       builder: (context, child) => CallOverlay(
         child: InAppBannerOverlay(child: child ?? const SizedBox.shrink()),
