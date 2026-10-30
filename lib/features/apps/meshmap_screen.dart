@@ -10,6 +10,7 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../shared/rescan_button.dart';
 import '../shared/transport_status_banner.dart';
 
 /// Live map of the mesh as seen from this device: nodes in direct radio
@@ -62,7 +63,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     final known = await PeerDirectory.instance.listRecent();
     if (!mounted) return;
     setState(() {
-      _direct = MessengerService.instance.onlinePeers;
+      _direct = MessengerService.instance.visiblePeers;
       _rssi = MessengerService.instance.peerSignal;
       _known = known;
       _contacts = contacts;
@@ -240,6 +241,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
         ),
         title: const Text('Mesh Map'),
         actions: [
+          const RescanButton(),
           IconButton(
             tooltip: 'Clear mesh data',
             onPressed: _clearing ? null : _confirmClearMesh,

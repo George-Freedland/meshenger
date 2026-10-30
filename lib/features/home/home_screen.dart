@@ -9,6 +9,8 @@ import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/network_service.dart';
 import '../../core/ui/avatars.dart';
+import '../shared/profile_sheet.dart';
+import '../shared/rescan_button.dart';
 import 'app_registry.dart';
 import 'springboard.dart';
 
@@ -38,6 +40,10 @@ class _HomeScreenState extends State<HomeScreen> {
         MessengerService.instance.onChanged.listen((_) => _refreshBadges()));
     _subs.add(
         NetworkService.instance.onChanged.listen((_) => _refreshBadges()));
+    // Invisible mode restarts the transport; refresh the indicator.
+    _subs.add(MessengerService.instance.onTransportChanged.listen((_) {
+      if (mounted) setState(() {});
+    }));
   }
 
   @override
@@ -126,14 +132,46 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Row(
                   children: [
-                    presetAvatar(identity?.avatarId ?? 0, size: 40),
-                    const SizedBox(width: 12),
                     Expanded(
-                      child: Text(
-                        'Hi, $name',
-                        style: theme.textTheme.titleLarge,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(28),
+                          onTap: () async {
+                            await showProfileSheet(context);
+                            if (mounted) setState(() {});
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(0, 2, 12, 2),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                presetAvatar(identity?.avatarId ?? 0, size: 40),
+                                const SizedBox(width: 12),
+                                Flexible(
+                                  child: Text(
+                                    'Hi, $name',
+                                    style: theme.textTheme.titleLarge,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (MessengerService.instance.isInvisible) ...[
+                                  const SizedBox(width: 8),
+                                  Tooltip(
+                                    message: 'You are invisible on the mesh',
+                                    child: Icon(
+                                      Icons.visibility_off_outlined,
+                                      size: 18,
+                                      color: theme.colorScheme.onSurface
+                                          .withValues(alpha: 0.6),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                     ValueListenableBuilder<bool>(
@@ -143,10 +181,16 @@ class _HomeScreenState extends State<HomeScreen> {
                               onPressed: () => _editing.value = false,
                               child: const Text('Done'),
                             )
-                          : IconButton(
-                              tooltip: 'Log out',
-                              icon: const Icon(Icons.logout),
-                              onPressed: () => _logout(context),
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const RescanButton(),
+                                IconButton(
+                                  tooltip: 'Log out',
+                                  icon: const Icon(Icons.logout),
+                                  onPressed: () => _logout(context),
+                                ),
+                              ],
                             ),
                     ),
                   ],

@@ -91,7 +91,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
         if (mounted) setState(() => _onlinePeers = peers);
       });
-      _onlinePeers = MessengerService.instance.onlinePeers;
+      _onlinePeers = MessengerService.instance.visiblePeers;
     }
   }
 

@@ -308,6 +308,92 @@ void main() {
       expect(await EnvelopeCodec.verifyNetworkPost(fakeDelete), isNull,
           reason: 'only the author can tombstone their own post');
     });
+
+    test('global posts keep the v1 format older apps can read', () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final packet = await EnvelopeCodec.buildNetworkPost(
+        id: 'post-3',
+        text: 'hello square',
+        tsMs: now,
+        expMs: now + 3600000,
+      );
+      expect(packet.containsKey('v'), isFalse);
+      expect(packet.containsKey('scope'), isFalse);
+      final verified = await EnvelopeCodec.verifyNetworkPost(packet);
+      expect(verified!.scope, EnvelopeCodec.scopeGlobal);
+      expect(verified.path, isNull);
+    });
+
+    test('site page round-trips path, title, and HTML', () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      const html = '<h1>Blog | day 1</h1><p>a "quote" & more</p>';
+      final packet = await EnvelopeCodec.buildNetworkPost(
+        id: 'page-1',
+        text: html,
+        tsMs: now,
+        expMs: now + 3600000,
+        nickname: 'Alice',
+        scope: EnvelopeCodec.scopeSite,
+        pagePath: 'blog/day-1',
+        pageTitle: 'Day 1 | notes',
+      );
+      expect(packet['v'], 2);
+      expect(packet['kind'], 'page');
+
+      final relayed = Map<String, Object?>.from(packet)..['hops'] = 3;
+      final verified = await EnvelopeCodec.verifyNetworkPost(relayed);
+      expect(verified, isNotNull);
+      expect(verified!.scope, EnvelopeCodec.scopeSite);
+      expect(verified.kind, 'page');
+      expect(verified.path, 'blog/day-1');
+      expect(verified.title, 'Day 1 | notes');
+      expect(verified.text, html);
+      expect(verified.hops, 3);
+    });
+
+    test('v2 fields are covered by the signature', () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final page = await EnvelopeCodec.buildNetworkPost(
+        id: 'page-2',
+        text: '<p>home</p>',
+        tsMs: now,
+        expMs: now + 3600000,
+        scope: EnvelopeCodec.scopeSite,
+        pagePath: '',
+        pageTitle: 'Home',
+      );
+      expect(await EnvelopeCodec.verifyNetworkPost(page), isNotNull);
+
+      for (final (field, value) in <(String, Object)>[
+        ('path', 'blog'),
+        ('title', 'Hijacked'),
+        ('text', '<p>planted</p>'),
+        ('scope', EnvelopeCodec.scopeGlobal),
+      ]) {
+        final tampered = Map<String, Object?>.from(page)..[field] = value;
+        expect(await EnvelopeCodec.verifyNetworkPost(tampered), isNull,
+            reason: 'changing $field must break the signature');
+      }
+
+      final downgraded = Map<String, Object?>.from(page)..remove('v');
+      expect(await EnvelopeCodec.verifyNetworkPost(downgraded), isNull,
+          reason: 'a page cannot pass as a v1 post');
+
+      final sitePost = await EnvelopeCodec.buildNetworkPost(
+        id: 'post-4',
+        text: 'on my site',
+        tsMs: now,
+        expMs: now + 3600000,
+        scope: EnvelopeCodec.scopeSite,
+      );
+      final moved = Map<String, Object?>.from(sitePost)
+        ..['scope'] = EnvelopeCodec.scopeGlobal;
+      expect(await EnvelopeCodec.verifyNetworkPost(moved), isNull,
+          reason: 'a site post cannot be moved onto global');
+    });
   });
 
   group('BLE announcements', () {

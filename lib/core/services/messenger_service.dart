@@ -51,9 +51,10 @@ class MessengerService {
   static const int _spoolMaxEntries = 64;
   static const int _spoolMaxChars = 3 * 1024 * 1024;
 
-  /// Network posts we carry and re-flood (our own + everyone else's).
-  static const int _postSpoolMaxEntries = 32;
-  static const int _postSpoolMaxChars = 2500000;
+  /// Network posts and pages we carry and re-flood (our own + everyone
+  /// else's).
+  static const int _postSpoolMaxEntries = 48;
+  static const int _postSpoolMaxChars = 3000000;
 
   /// How many online peers get a copy when the recipient is unreachable.
   /// Best-known next hops (route table) fill the first slots; random
@@ -80,6 +81,7 @@ class MessengerService {
   final Random _random = Random();
 
   MeshTransport? _transport;
+  bool _invisible = false;
   Timer? _sweepTimer;
   Timer? _meshTimer;
 
@@ -139,7 +141,21 @@ class MessengerService {
   /// Incoming `call-*` signals, consumed by the CallService.
   Stream<IncomingMessage> get onCallSignal => _callSignals.stream;
 
+  /// Every peer reachable directly right now — what routing uses.
   Set<String> get onlinePeers => _transport?.onlinePeers ?? const <String>{};
+
+  /// [onlinePeers] minus invisible ones: what screens show as "in range".
+  /// [onPeersChanged] emits this set too.
+  Set<String> get visiblePeers => _visible(onlinePeers);
+
+  Set<String> _visible(Set<String> peers) {
+    final hidden = _transport?.hiddenPeers ?? const <String>{};
+    return hidden.isEmpty ? peers : peers.difference(hidden);
+  }
+
+  /// Whether this device is in invisible mode (not advertising, not
+  /// announcing itself to the mesh).
+  bool get isInvisible => _invisible;
 
   /// Signal strength per online peer (dBm), when the transport measures it.
   Map<String, int> get peerSignal => _transport?.peerRssi ?? const {};
@@ -147,6 +163,7 @@ class MessengerService {
   bool get isTransportRunning => _transport?.isRunning ?? false;
 
   Future<void> start() async {
+    _invisible = await SettingsService.instance.getInvisible();
     PeerDirectory.instance.resetCache();
     RouteTable.instance.reset();
     MeshActivityLog.instance.resetCache();
@@ -188,6 +205,29 @@ class MessengerService {
     await _startTransport();
   }
 
+  /// Turns invisible mode on or off; the radio restarts in the new mode.
+  Future<void> setInvisible(bool value) async {
+    if (value == _invisible) return;
+    _invisible = value;
+    await SettingsService.instance.setInvisible(value);
+    TransportLog.instance
+        .log(value ? 'Mesh: invisible mode on' : 'Mesh: invisible mode off');
+    await restartTransport();
+  }
+
+  /// Manual "look around again": clears discovery backoffs, scans afresh,
+  /// and refreshes presence, spool, and pending deliveries with whoever
+  /// answers. Restarts the radio when it isn't running.
+  Future<void> rescan() async {
+    final transport = _transport;
+    if (transport == null || !transport.isRunning) {
+      await restartTransport();
+      return;
+    }
+    await transport.rescan();
+    await _meshTick();
+  }
+
   /// Forgets every device this identity has seen on the mesh map. Contacts
   /// and chats stay. Devices still in radio range reappear on the next scan.
   Future<void> clearMeshSightings() async {
@@ -216,7 +256,7 @@ class MessengerService {
     if (isTransportRunning) return;
     transportError = null;
 
-    final transport = createBleTransport();
+    final transport = createBleTransport()..invisible = _invisible;
     _transport = transport;
 
     try {
@@ -232,12 +272,12 @@ class MessengerService {
 
     _packetSub = transport.onPacket.listen(_handlePacket);
     _peersSub = transport.onPeersChanged.listen((peers) {
-      _peers.add(peers);
+      _peers.add(_visible(peers));
       _onPeersAppeared(peers);
     });
 
     _transportChanged.add(null);
-    _peers.add(transport.onlinePeers);
+    _peers.add(_visible(transport.onlinePeers));
     unawaited(_onPeersAppeared(transport.onlinePeers));
   }
 
@@ -327,15 +367,17 @@ class MessengerService {
     final transport = _transport;
     if (transport == null) return;
 
-    // Record directly-seen peers in the directory.
-    for (final peer in peersNow) {
+    // Record directly-seen peers in the directory (invisible ones stay off
+    // the map and out of the presence feed).
+    final visible = _visible(peersNow);
+    for (final peer in visible) {
       final x = transport.x25519For(peer);
       if (x != null) {
         await PeerDirectory.instance.recordDirect(peer, x);
       }
     }
 
-    await _recordPresenceChanges(peersNow);
+    await _recordPresenceChanges(visible);
     await _broadcastGossip(peersNow);
     await _deliverSpoolTo(peersNow);
     await _flushPendingFor(peersNow);
@@ -397,7 +439,7 @@ class MessengerService {
 
   Future<void> _broadcastGossip(Set<String> peersNow) async {
     final transport = _transport;
-    if (transport == null || peersNow.isEmpty) return;
+    if (transport == null || peersNow.isEmpty || _invisible) return;
     try {
       final gossip = await EnvelopeCodec.buildGossip(
         nickname: IdentityService.instance.active?.nickname,
@@ -1590,6 +1632,10 @@ class MessengerService {
 
     if (verified.author == me) return; // own post echoed back
     if (_deletedPostIds.contains(id)) return; // tombstone won the race
+    if (verified.kind == 'page' &&
+        utf8.encode(verified.text).length > EnvelopeCodec.maxPageBytes) {
+      return;
+    }
 
     String? mediaId;
     if (verified.kind == 'image' && verified.mediaB64 != null) {
@@ -1618,9 +1664,14 @@ class MessengerService {
       hops: verified.hops,
       mediaId: mediaId,
       mediaMime: verified.mediaMime,
+      scope: verified.scope,
+      kind: verified.kind,
+      path: verified.path,
+      title: verified.title,
     ));
     TransportLog.instance.log(
-        'Network: post from ${_shortAddr(verified.author)} '
+        'Network: ${verified.kind == 'page' ? 'page /${verified.path}' : 'post'} '
+        'from ${_shortAddr(verified.author)} '
         '(${verified.hops} hop${verified.hops == 1 ? '' : 's'} away)');
 
     // Keep it flooding: spool a copy and hand it to everyone around.
@@ -1632,15 +1683,20 @@ class MessengerService {
     }
   }
 
-  /// Publishes to everyone in the mesh (contacts or not) for [ttlSeconds].
+  /// Publishes to everyone in the mesh (contacts or not) for [ttlSeconds]:
+  /// on the global square, or on my site ([scope] =
+  /// [EnvelopeCodec.scopeSite]). A private site post stays on this device.
   Future<void> postToNetwork(
     String text, {
     int ttlSeconds = 86400,
     Uint8List? imageBytes,
     String? imageMime,
+    String scope = EnvelopeCodec.scopeGlobal,
+    bool isPrivate = false,
   }) async {
     final me = await IdentityService.instance.getPublicAddressBase64();
     if (me == null) throw StateError('Identity is locked');
+    final private = isPrivate && scope == EnvelopeCodec.scopeSite;
 
     String? mediaId;
     String? mediaB64;
@@ -1665,7 +1721,7 @@ class MessengerService {
     final id = _uuid.v4();
     final nickname = IdentityService.instance.active?.nickname;
 
-    await NetworkService.instance.upsert(NetworkPost(
+    final post = NetworkPost(
       id: id,
       author: me,
       authorNick: nickname,
@@ -1674,41 +1730,131 @@ class MessengerService {
       expiresMs: now + ttlSeconds * 1000,
       mediaId: mediaId,
       mediaMime: imageMime,
-    ));
-
-    final packet = await EnvelopeCodec.buildNetworkPost(
-      id: id,
-      text: text,
-      tsMs: now,
-      expMs: now + ttlSeconds * 1000,
-      mediaB64: mediaB64,
-      mediaMime: imageMime,
-      nickname: nickname,
+      scope: scope,
+      isPrivate: private,
     );
-    _markSeen('post:$id'); // never re-process our own echo
-    await _addToPostSpool(packet);
-    await _offerPostsTo(onlinePeers);
-    TransportLog.instance
-        .log('Network: posted to the mesh (${onlinePeers.length} in range)');
+    await NetworkService.instance.upsert(post);
+    if (private) return;
+    await _publishMyPost(post, mediaB64: mediaB64);
   }
 
-  /// Deletes my post everywhere: locally at once, and a signed tombstone
-  /// floods the mesh so every carrier drops it too.
-  Future<void> deleteNetworkPost(String id) async {
-    final posts = await NetworkService.instance.listActive();
-    int expMs = DateTime.now()
-        .add(const Duration(hours: 48))
-        .millisecondsSinceEpoch;
-    for (final post in posts) {
-      if (post.id == id) {
-        // The tombstone must outlive every copy of the content.
-        expMs = max(expMs, post.expiresMs);
-        break;
+  /// Publishes (or replaces) a page of my site at [path] ('' = home page).
+  /// [html] is the page source; a private page stays on this device.
+  /// Returns the new version's id.
+  Future<String> publishSitePage({
+    required String path,
+    required String title,
+    required String html,
+    required int ttlSeconds,
+    bool isPrivate = false,
+    String? replacingId,
+  }) async {
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) throw StateError('Identity is locked');
+    if (!EnvelopeCodec.pagePathPattern.hasMatch(path)) {
+      throw StateError('Page addresses use lowercase letters, numbers, - '
+          'and _, with / between parts (like blog/day-1)');
+    }
+    if (utf8.encode(html).length > EnvelopeCodec.maxPageBytes) {
+      throw StateError('Page is too large (max 96 KB, images included — '
+          'every device in the mesh carries it)');
+    }
+
+    final previous = replacingId != null
+        ? await NetworkService.instance.byId(replacingId)
+        : await NetworkService.instance.page(me, path);
+    if (previous != null) {
+      await NetworkService.instance.remove(previous.id);
+      if (!previous.isPrivate) {
+        await _withdrawFromMesh(previous.id, previous.expiresMs);
       }
     }
-    await NetworkService.instance.remove(id);
-    _deletedPostIds.add(id);
 
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final page = NetworkPost(
+      id: _uuid.v4(),
+      author: me,
+      authorNick: IdentityService.instance.active?.nickname,
+      text: html,
+      tsMs: now,
+      expiresMs: now + ttlSeconds * 1000,
+      scope: EnvelopeCodec.scopeSite,
+      kind: 'page',
+      path: path,
+      title: title.trim().isEmpty ? null : title.trim(),
+      isPrivate: isPrivate,
+    );
+    await NetworkService.instance.upsert(page);
+    if (!isPrivate) await _publishMyPost(page);
+    return page.id;
+  }
+
+  /// Makes one of my site posts or pages private (withdrawn from the mesh,
+  /// kept here) or public again (re-published under a fresh id, since
+  /// carriers already dropped the withdrawn one).
+  Future<void> setNetworkPostPrivate(String id, bool makePrivate) async {
+    final post = await NetworkService.instance.byId(id);
+    if (post == null || post.isPrivate == makePrivate) return;
+    if (makePrivate) {
+      await _withdrawFromMesh(id, post.expiresMs);
+      await NetworkService.instance.upsert(post.copyWith(isPrivate: true));
+      return;
+    }
+    final fresh = post.copyWith(
+      id: _uuid.v4(),
+      tsMs: DateTime.now().millisecondsSinceEpoch,
+      isPrivate: false,
+    );
+    await NetworkService.instance.rekey(id, fresh);
+    final mediaId = fresh.mediaId;
+    final media =
+        mediaId == null ? null : await MediaStore.instance.readBytes(mediaId);
+    await _publishMyPost(fresh,
+        mediaB64: media == null ? null : base64Encode(media));
+  }
+
+  Future<void> _publishMyPost(NetworkPost post, {String? mediaB64}) async {
+    final packet = await EnvelopeCodec.buildNetworkPost(
+      id: post.id,
+      text: post.text,
+      tsMs: post.tsMs,
+      expMs: post.expiresMs,
+      mediaB64: mediaB64,
+      mediaMime: post.mediaMime,
+      nickname: post.authorNick,
+      scope: post.scope,
+      pagePath: post.isPage ? post.path ?? '' : null,
+      pageTitle: post.title,
+    );
+    _markSeen('post:${post.id}'); // never re-process our own echo
+    await _addToPostSpool(packet);
+    await _offerPostsTo(onlinePeers);
+    TransportLog.instance.log('Network: published '
+        '${post.isPage ? 'page /${post.path}' : 'a post'} to the mesh '
+        '(${onlinePeers.length} in range)');
+  }
+
+  /// Deletes my post or page everywhere: locally at once, and (unless it
+  /// was private) a signed tombstone floods the mesh so every carrier
+  /// drops it too.
+  Future<void> deleteNetworkPost(String id) async {
+    final post = await NetworkService.instance.byId(id);
+    await NetworkService.instance.remove(id);
+    if (post?.isPrivate == true) return;
+    await _withdrawFromMesh(
+      id,
+      post?.expiresMs ?? DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// Floods a signed tombstone for post [id] so every carrier drops it.
+  Future<void> _withdrawFromMesh(String id, int contentExpMs) async {
+    _deletedPostIds.add(id);
+    // The tombstone must outlive every copy of the content.
+    final expMs = max(
+      DateTime.now().add(const Duration(hours: 48)).millisecondsSinceEpoch,
+      contentExpMs,
+    );
     final packet = await EnvelopeCodec.buildNetworkPost(
       id: id,
       text: '',
@@ -1755,19 +1901,29 @@ class MessengerService {
     spool.removeWhere((p) => p['id'] == id);
     spool.add(packet);
 
-    // Enforce entry + size caps, oldest posts first.
-    spool.sort((a, b) =>
-        ((a['ts'] as num?) ?? 0).compareTo((b['ts'] as num?) ?? 0));
+    // Enforce entry + size caps, oldest first — but other people's posts go
+    // before mine: my posts and pages are this device's site, and it keeps
+    // serving them to whoever walks into range.
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    int sizeOf(Map<String, Object?> p) =>
+        ((p['media'] as String?)?.length ?? 0) +
+        ((p['text'] as String?)?.length ?? 0) +
+        512;
+    spool.sort((a, b) {
+      final mineA = a['author'] == me;
+      final mineB = b['author'] == me;
+      if (mineA != mineB) return mineA ? 1 : -1;
+      return ((a['ts'] as num?) ?? 0).compareTo((b['ts'] as num?) ?? 0);
+    });
     while (spool.length > _postSpoolMaxEntries) {
       final dropped = spool.removeAt(0);
       _postOfferedTo.remove(dropped['id']);
     }
-    var totalChars = spool.fold<int>(
-        0, (sum, p) => sum + ((p['media'] as String?)?.length ?? 0) + 512);
+    var totalChars = spool.fold<int>(0, (sum, p) => sum + sizeOf(p));
     while (totalChars > _postSpoolMaxChars && spool.isNotEmpty) {
       final dropped = spool.removeAt(0);
       _postOfferedTo.remove(dropped['id']);
-      totalChars -= ((dropped['media'] as String?)?.length ?? 0) + 512;
+      totalChars -= sizeOf(dropped);
     }
     await _writePostSpool(spool);
   }

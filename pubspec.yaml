@@ -46,6 +46,7 @@ dependencies:
   # App-support directory for the media library
   path_provider: any
   flutter_local_notifications: ^22.3.0
+  flutter_widget_from_html_core: ^0.17.4
 
 dev_dependencies:
   flutter_test:

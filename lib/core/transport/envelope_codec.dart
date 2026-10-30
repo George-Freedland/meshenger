@@ -51,6 +51,20 @@ class EnvelopeCodec {
   /// they travel point-to-point instead).
   static const int maxPostMediaBytes = 512 * 1024;
 
+  /// Cap for a site page's HTML (UTF-8 bytes, inline images included), for
+  /// the same reason: every device in the radius carries every page.
+  static const int maxPageBytes = 96 * 1024;
+
+  /// Network post audiences: the shared public square, or the author's own
+  /// site (their public key's page in the Network browser).
+  static const String scopeGlobal = 'global';
+  static const String scopeSite = 'site';
+
+  /// Valid site page path: '' (home) or lowercase segments like `blog` or
+  /// `blog/day-1`.
+  static final RegExp pagePathPattern =
+      RegExp(r'^$|^[a-z0-9][a-z0-9_-]*(/[a-z0-9][a-z0-9_-]*)*$');
+
   /// How long relays keep an undeliverable envelope (store-and-forward).
   static const Duration defaultRelayLifetime = Duration(hours: 48);
 
@@ -277,7 +291,43 @@ class EnvelopeCodec {
   }) =>
       'netpost|$author|$id|$tsMs|$expMs|${deleted ? 1 : 0}|$kind|$nick|$text|$mediaB64';
 
+  /// Signing payload for v2 posts (site posts and pages). A JSON list
+  /// keeps field boundaries unambiguous now that titles and HTML may
+  /// contain any character.
+  static String _postSigningPayloadV2({
+    required String author,
+    required String id,
+    required int tsMs,
+    required int expMs,
+    required bool deleted,
+    required String kind,
+    required String nick,
+    required String scope,
+    required String path,
+    required String title,
+    required String text,
+    required String mediaB64,
+  }) =>
+      'netpost2|${jsonEncode(<Object>[
+            author,
+            id,
+            tsMs,
+            expMs,
+            deleted,
+            kind,
+            nick,
+            scope,
+            path,
+            title,
+            text,
+            mediaB64,
+          ])}';
+
   /// Builds my signed Network post (or its deletion tombstone).
+  ///
+  /// Global text/image posts keep the original (v1) format so older apps
+  /// still show them; site posts and pages ([pagePath] set, with the HTML
+  /// in [text]) use v2.
   static Future<Map<String, Object?>> buildNetworkPost({
     required String id,
     required String text,
@@ -287,33 +337,59 @@ class EnvelopeCodec {
     String? mediaMime,
     String? nickname,
     bool deleted = false,
+    String scope = scopeGlobal,
+    String? pagePath,
+    String? pageTitle,
   }) async {
     final identity = IdentityService.instance;
     final address = await identity.getPublicAddressBase64();
     if (address == null || !identity.isUnlocked) {
       throw StateError('Identity must be unlocked');
     }
-    final kind = mediaB64 != null ? 'image' : 'text';
+    final isPage = pagePath != null;
+    final kind = isPage ? 'page' : (mediaB64 != null ? 'image' : 'text');
+    final v2 = isPage || scope != scopeGlobal;
     final nick = nickname ?? '';
-    final signature = await identity.sign(utf8.encode(_postSigningPayload(
-      author: address,
-      id: id,
-      tsMs: tsMs,
-      expMs: expMs,
-      deleted: deleted,
-      kind: kind,
-      nick: nick,
-      text: text,
-      mediaB64: mediaB64 ?? '',
-    )));
+    final title = pageTitle ?? '';
+    final payload = v2
+        ? _postSigningPayloadV2(
+            author: address,
+            id: id,
+            tsMs: tsMs,
+            expMs: expMs,
+            deleted: deleted,
+            kind: kind,
+            nick: nick,
+            scope: scope,
+            path: pagePath ?? '',
+            title: title,
+            text: text,
+            mediaB64: mediaB64 ?? '',
+          )
+        : _postSigningPayload(
+            author: address,
+            id: id,
+            tsMs: tsMs,
+            expMs: expMs,
+            deleted: deleted,
+            kind: kind,
+            nick: nick,
+            text: text,
+            mediaB64: mediaB64 ?? '',
+          );
+    final signature = await identity.sign(utf8.encode(payload));
 
     return <String, Object?>{
       't': 'post',
+      if (v2) 'v': 2,
       'id': id,
       'author': address,
       'nick': nick,
       'text': text,
       'kind': kind,
+      if (v2) 'scope': scope,
+      if (isPage) 'path': pagePath,
+      if (isPage && title.isNotEmpty) 'title': title,
       if (mediaB64 != null) 'media': mediaB64,
       if (mediaMime != null) 'mmime': mediaMime,
       'ts': tsMs,
@@ -346,18 +422,44 @@ class EnvelopeCodec {
         return null;
       }
 
+      final v2 = decoded['v'] == 2;
+      final scope = v2 ? decoded['scope'] as String? : scopeGlobal;
+      if (scope != scopeGlobal && scope != scopeSite) return null;
+      if (kind != 'text' && kind != 'image' && kind != 'page') return null;
+      final isPage = kind == 'page';
+      if (isPage && !v2) return null;
+      final path = isPage ? (decoded['path'] as String? ?? '') : '';
+      if (!pagePathPattern.hasMatch(path)) return null;
+      final title = decoded['title'] as String? ?? '';
+
+      final payload = v2
+          ? _postSigningPayloadV2(
+              author: author,
+              id: id,
+              tsMs: ts,
+              expMs: exp,
+              deleted: deleted,
+              kind: kind,
+              nick: nick,
+              scope: scope!,
+              path: path,
+              title: title,
+              text: text,
+              mediaB64: mediaB64 ?? '',
+            )
+          : _postSigningPayload(
+              author: author,
+              id: id,
+              tsMs: ts,
+              expMs: exp,
+              deleted: deleted,
+              kind: kind,
+              nick: nick,
+              text: text,
+              mediaB64: mediaB64 ?? '',
+            );
       final valid = await IdentityService.verify(
-        message: utf8.encode(_postSigningPayload(
-          author: author,
-          id: id,
-          tsMs: ts,
-          expMs: exp,
-          deleted: deleted,
-          kind: kind,
-          nick: nick,
-          text: text,
-          mediaB64: mediaB64 ?? '',
-        )),
+        message: utf8.encode(payload),
         signatureBytes: base64Decode(sig),
         publicKeyBase64: author,
       );
@@ -375,6 +477,9 @@ class EnvelopeCodec {
         expMs: exp,
         deleted: deleted,
         hops: (decoded['hops'] as num?)?.toInt() ?? 0,
+        scope: scope!,
+        path: isPage ? path : null,
+        title: title.isEmpty ? null : title,
       );
     } catch (_) {
       return null;
@@ -444,6 +549,13 @@ class VerifiedNetworkPost {
   final bool deleted;
   final int hops;
 
+  /// [EnvelopeCodec.scopeGlobal] or [EnvelopeCodec.scopeSite].
+  final String scope;
+
+  /// Site pages only ('' = the author's home page).
+  final String? path;
+  final String? title;
+
   const VerifiedNetworkPost({
     required this.id,
     required this.author,
@@ -456,6 +568,9 @@ class VerifiedNetworkPost {
     required this.expMs,
     required this.deleted,
     required this.hops,
+    this.scope = EnvelopeCodec.scopeGlobal,
+    this.path,
+    this.title,
   });
 }
 

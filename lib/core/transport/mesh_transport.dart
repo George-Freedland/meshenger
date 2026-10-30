@@ -20,8 +20,18 @@ abstract class MeshTransport {
   /// the transport is fully operational.
   String? get startupWarning;
 
+  /// When true the device stays out of sight: it does not advertise, and
+  /// the hellos it writes ask peers to keep it off their maps. It can still
+  /// discover others, send, and receive over the channels it opens. Set
+  /// before [start].
+  abstract bool invisible;
+
   /// Addresses (base64 Ed25519 public keys) currently reachable directly.
   Set<String> get onlinePeers;
+
+  /// The subset of [onlinePeers] that asked to stay hidden (invisible
+  /// mode): reachable for delivery, but not to be shown.
+  Set<String> get hiddenPeers;
 
   /// Signal strength (RSSI, dBm) per reachable address, when the transport
   /// can measure it (Bluetooth). Empty for transports without signal info.
@@ -43,6 +53,9 @@ abstract class MeshTransport {
   Future<void> start();
 
   Future<void> stop();
+
+  /// Forgets discovery backoffs and scans the surroundings again right away.
+  Future<void> rescan();
 
   /// Delivers [packet] to a directly-reachable peer. Returns true when the
   /// peer's device acknowledged accepting the packet (transport-level ack;

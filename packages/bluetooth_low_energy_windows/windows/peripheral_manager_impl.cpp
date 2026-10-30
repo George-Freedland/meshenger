@@ -60,6 +60,7 @@ namespace bluetooth_low_energy_windows
 		{
 			const auto &service_provider = m_service_providers[hash_code_args].value();
 			const auto &service_args = m_services_args[hash_code_args].value();
+			m_service_provider_advertisement_status_changed_revokers.erase(hash_code_args);
 			service_provider.StopAdvertising();
 			RemoveServiceArgs(service_args);
 			m_service_providers.erase(hash_code_args);
@@ -291,6 +292,7 @@ namespace bluetooth_low_energy_windows
 			{
 				const auto &service_provider = m_service_providers[hash_code_args].value();
 				const auto &service_args = m_services_args[hash_code_args].value();
+				m_service_provider_advertisement_status_changed_revokers.erase(hash_code_args);
 				service_provider.StopAdvertising();
 				RemoveServiceArgs(service_args);
 				m_service_providers.erase(hash_code_args);
@@ -422,12 +424,63 @@ namespace bluetooth_low_energy_windows
 			const auto characteristic_args = std::any_cast<MutableGATTCharacteristicArgs>(custom_characteristic_args_value);
 			co_await CreateCharacteristicAsync(service, characteristic_args);
 		}
+		// Windows stops or aborts advertising on its own (e.g. when a central
+		// connects to an adapter that can't advertise while connected) and
+		// never resumes, leaving the device undiscoverable. Restart it.
+		m_service_provider_advertisement_status_changed_revokers[hash_code_args] = service_provider.AdvertisementStatusChanged(
+			winrt::auto_revoke,
+			[this, hash_code_args](winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProvider provider, winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatusChangedEventArgs event_args)
+			{
+				const auto status = event_args.Status();
+				if (status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Stopped ||
+					status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Aborted)
+				{
+					RestartAdvertisingAsync(hash_code_args, std::chrono::seconds(2));
+				}
+			});
+		service_provider.StartAdvertising(AdvertisingParameters());
+		m_services_args[hash_code_args] = service_args;
+		m_service_providers[hash_code_args] = service_provider;
+	}
+
+	winrt::fire_and_forget PeripheralManagerImpl::RestartAdvertisingAsync(int64_t hash_code_args, winrt::Windows::Foundation::TimeSpan delay)
+	{
+		co_await winrt::resume_after(delay);
+		co_await m_ui_context;
+		auto retry = false;
+		try
+		{
+			const auto provider_iterator = m_service_providers.find(hash_code_args);
+			if (provider_iterator == m_service_providers.end() || !provider_iterator->second.has_value())
+			{
+				// The service was removed meanwhile.
+				co_return;
+			}
+			const auto &service_provider = provider_iterator->second.value();
+			const auto status = service_provider.AdvertisementStatus();
+			if (status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Started ||
+				status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData)
+			{
+				co_return;
+			}
+			service_provider.StartAdvertising(AdvertisingParameters());
+		}
+		catch (const winrt::hresult_error &)
+		{
+			retry = true;
+		}
+		if (retry)
+		{
+			RestartAdvertisingAsync(hash_code_args, std::chrono::seconds(10));
+		}
+	}
+
+	winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisingParameters PeripheralManagerImpl::AdvertisingParameters()
+	{
 		const auto parameters = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisingParameters();
 		parameters.IsDiscoverable(true);
 		parameters.IsConnectable(true);
-		service_provider.StartAdvertising(parameters);
-		m_services_args[hash_code_args] = service_args;
-		m_service_providers[hash_code_args] = service_provider;
+		return parameters;
 	}
 
 	winrt::Windows::Foundation::IAsyncAction PeripheralManagerImpl::CreateCharacteristicAsync(const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalService &service, const MutableGATTCharacteristicArgs characteristic_args)

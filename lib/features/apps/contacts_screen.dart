@@ -35,7 +35,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
       if (mounted) setState(() => _online = peers);
     });
-    _online = MessengerService.instance.onlinePeers;
+    _online = MessengerService.instance.visiblePeers;
     _search.addListener(() => setState(() {}));
   }
 

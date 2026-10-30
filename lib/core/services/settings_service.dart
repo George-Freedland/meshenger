@@ -57,6 +57,21 @@ class SettingsService {
     _changed.add(null);
   }
 
+  static const _invisibleKey = 'invisible_v1';
+
+  /// When true this device stops advertising and asks peers it connects to
+  /// to keep it off their maps (see MeshTransport.invisible). Default off.
+  Future<bool> getInvisible() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(IdentityScope.key(_invisibleKey)) ?? false;
+  }
+
+  Future<void> setInvisible(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(IdentityScope.key(_invisibleKey), value);
+    _changed.add(null);
+  }
+
   static const _soundEnabledKey = 'alert_sound_enabled_v1';
   static const _soundToneKey = 'alert_sound_tone_v1';
 

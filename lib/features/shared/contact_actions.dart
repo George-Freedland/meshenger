@@ -4,6 +4,21 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../core/models/contact.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../../core/transport/envelope_codec.dart';
+
+/// The QR payload for [address] (see [normalizeScannedAddress]). It also
+/// carries this identity's X25519 encryption key, so whoever scans it can
+/// send end-to-end encrypted messages immediately, through any number of
+/// relays, without waiting for gossip to deliver the key.
+Future<String> myContactQrPayload(String address) async {
+  try {
+    final x25519 = await EnvelopeCodec.myX25519Base64();
+    return 'meshenger:$address:$x25519';
+  } catch (_) {
+    // Identity locked mid-flight; an address-only QR still works.
+    return 'meshenger:$address';
+  }
+}
 
 /// QR payloads are `meshenger:<address>[:<x25519 key>]`. This returns
 /// just the address; [extractScannedKey] pulls the optional key.

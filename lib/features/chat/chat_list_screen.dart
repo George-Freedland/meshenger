@@ -13,7 +13,6 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/transport_log.dart';
-import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/unread_badge.dart';
 import '../shared/contact_actions.dart';
 import '../shared/transport_status_banner.dart';
@@ -48,7 +47,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
       if (mounted) setState(() => _onlinePeers = peers);
     });
-    _onlinePeers = MessengerService.instance.onlinePeers;
+    _onlinePeers = MessengerService.instance.visiblePeers;
   }
 
   @override
@@ -132,16 +131,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       return;
     }
 
-    // The QR also carries the X25519 encryption key: whoever scans it can
-    // send end-to-end encrypted messages immediately, through any number
-    // of relays, without waiting for gossip to deliver the key.
-    String payload = 'meshenger:$addressBase64';
-    try {
-      final x25519 = await EnvelopeCodec.myX25519Base64();
-      payload = 'meshenger:$addressBase64:$x25519';
-    } catch (_) {
-      // Identity locked mid-flight; address-only QR still works.
-    }
+    final payload = await myContactQrPayload(addressBase64);
     if (!mounted) return;
     await showDialog<void>(
       context: context,

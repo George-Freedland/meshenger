@@ -49,6 +49,7 @@ namespace bluetooth_low_energy_windows
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSubscribedClient>> m_clients;
 		std::map<int64_t, std::optional<MutableGATTServiceArgs>> m_services_args;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProvider>> m_service_providers;
+		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProvider::AdvertisementStatusChanged_revoker>> m_service_provider_advertisement_status_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalCharacteristic>> m_characteristics;
 		std::map<int64_t, std::optional<winrt::Windows::Foundation::Deferral>> m_deferrals;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattReadRequest>> m_read_requests;
@@ -65,6 +66,8 @@ namespace bluetooth_low_energy_windows
 		winrt::fire_and_forget InitializeAsync(std::function<void(std::optional<FlutterError> reply)> result);
 		winrt::fire_and_forget AddServiceAsync(const MutableGATTServiceArgs &service_args, std::function<void(std::optional<FlutterError> reply)> result);
 		winrt::fire_and_forget NotifyValueAsync(int64_t address_args, int64_t hash_code_args, const std::vector<uint8_t> &value_args, std::function<void(std::optional<FlutterError> reply)> result);
+		winrt::fire_and_forget RestartAdvertisingAsync(int64_t hash_code_args, winrt::Windows::Foundation::TimeSpan delay);
+		static winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisingParameters AdvertisingParameters();
 
 		winrt::Windows::Foundation::IAsyncAction CreateServiceAsync(const MutableGATTServiceArgs service_args);
 		winrt::Windows::Foundation::IAsyncAction CreateCharacteristicAsync(const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalService &service, const MutableGATTCharacteristicArgs characteristic_args);

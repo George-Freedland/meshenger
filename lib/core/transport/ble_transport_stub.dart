@@ -8,7 +8,13 @@ class _StubBleTransport implements MeshTransport {
   final _peers = StreamController<Set<String>>.broadcast();
 
   @override
+  bool invisible = false;
+
+  @override
   bool get isRunning => false;
+
+  @override
+  Set<String> get hiddenPeers => const <String>{};
 
   @override
   String? get startupWarning => null;
@@ -35,6 +41,9 @@ class _StubBleTransport implements MeshTransport {
 
   @override
   Future<void> stop() async {}
+
+  @override
+  Future<void> rescan() async {}
 
   @override
   Future<bool> sendPacket(

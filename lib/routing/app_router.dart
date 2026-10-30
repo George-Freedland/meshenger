@@ -78,7 +78,8 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: '/app/network',
-      builder: (context, state) => const NetworkScreen(),
+      builder: (context, state) =>
+          NetworkScreen(initialUrl: state.uri.queryParameters['url']),
     ),
     GoRoute(
       path: '/app/store',

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:bluetooth_low_energy/bluetooth_low_energy.dart';
@@ -59,13 +60,47 @@ class _IoBleTransport implements MeshTransport {
   static const Duration gattTimeout = Duration(seconds: 15);
   static const int _finalChunkFlag = 0x01;
 
+  /// Local name advertised by stacks whose GATT server reliably accepts
+  /// incoming connections (Apple). Peers dial those right away, and give
+  /// unnamed advertisers (Windows, Android) a few seconds to dial them
+  /// first: when both sides of a pair dial at once, Windows wedges the
+  /// link it is serving.
+  static const String reliablePeripheralName = 'MSH';
+
+  /// Wait after a failed connect/identify attempt, doubled per consecutive
+  /// failure up to [resolveBackoffMax].
+  static const Duration resolveBackoffBase = Duration(seconds: 10);
+  static const Duration resolveBackoffMax = Duration(minutes: 2);
+
   CentralManager? _central;
   PeripheralManager? _peripheral;
+
+  @override
+  bool invisible = false;
 
   bool _running = false;
   String? _myAddress;
   Uint8List? _announcementBytes;
+
+  /// What we write into a peer's inbox to identify ourselves: the signed
+  /// announcement, flagged when this device wants to stay hidden.
+  Uint8List? _helloBytes;
   String? _startupWarning;
+
+  final Random _random = Random();
+
+  final Map<String, int> _resolveNotBeforeMs = <String, int>{};
+  final Map<String, int> _resolveFailures = <String, int>{};
+  final Map<String, Timer> _pendingResolves = <String, Timer>{};
+
+  /// When each Meshenger advertiser was last heard (device uuid → ms).
+  final Map<String, int> _lastAdvertMs = <String, int>{};
+  final Set<String> _reliableAdvertisers = <String>{};
+
+  /// An unidentified central is reading our announce: hold off dialing
+  /// unknown devices until it finishes its hello, so the pair doesn't end
+  /// up with two links at once.
+  int _inboundHandshakeUntilMs = 0;
 
   @override
   String? get startupWarning => _startupWarning;
@@ -133,6 +168,19 @@ class _IoBleTransport implements MeshTransport {
   }
 
   @override
+  Set<String> get hiddenPeers {
+    final now = DateTime.now();
+    return <String>{
+      for (final entry in _inboundPeers.entries)
+        if (entry.value.hidden &&
+            _notifySubscribed.contains(entry.key) &&
+            now.difference(entry.value.lastSeen) < inboundTimeout &&
+            !_peersByAddress.containsKey(entry.value.address))
+          entry.value.address,
+    };
+  }
+
+  @override
   String? x25519For(String peerAddress) {
     final scanned = _peersByAddress[peerAddress]?.x25519Base64;
     if (scanned != null) return scanned;
@@ -159,7 +207,9 @@ class _IoBleTransport implements MeshTransport {
       throw StateError('Identity must be unlocked before starting transport');
     }
     _myAddress = address;
-    _announcementBytes = await EnvelopeCodec.buildBleAnnouncementBytes();
+    final announcement = await EnvelopeCodec.buildBleAnnouncementBytes();
+    _announcementBytes = announcement;
+    _helloBytes = invisible ? _flagHidden(announcement) : announcement;
 
     final central = _central ??= CentralManager();
 
@@ -188,7 +238,7 @@ class _IoBleTransport implements MeshTransport {
 
     // --- Peripheral role: advertise + accept inbound packets ---
     var advertising = false;
-    if (peripheral != null) {
+    if (peripheral != null && !invisible) {
       try {
         await _waitPoweredOn(peripheral);
         _subscriptions.add(
@@ -244,8 +294,12 @@ class _IoBleTransport implements MeshTransport {
         // with ServiceUuids on top of that throws winrt "The parameter is
         // incorrect." (see plugin example).
         if (!Platform.isWindows) {
+          final apple = Platform.isMacOS || Platform.isIOS;
           await peripheral.startAdvertising(
-            Advertisement(serviceUUIDs: [serviceUuid]),
+            Advertisement(
+              name: apple ? reliablePeripheralName : null,
+              serviceUUIDs: [serviceUuid],
+            ),
           );
         }
         advertising = true;
@@ -253,7 +307,12 @@ class _IoBleTransport implements MeshTransport {
         log.log('BLE: peripheral role unavailable ($e)');
       }
     }
-    if (advertising) {
+    if (invisible) {
+      _outboxChar = null;
+      _startupWarning = null;
+      log.log('BLE: invisible — not advertising; this device can still '
+          'discover, send, and receive over channels it opens');
+    } else if (advertising) {
       _startupWarning = null;
       log.log('BLE: advertising Meshenger service (announce+inbox+outbox)');
     } else {
@@ -281,8 +340,12 @@ class _IoBleTransport implements MeshTransport {
 
     // macOS/iOS coalesce repeated advertisements from the same device, so
     // periodically restart discovery to re-observe devices that are still
-    // present, keeping lastSeen fresh.
-    _rescanTimer = Timer.periodic(rescanInterval, (_) => _restartDiscovery());
+    // present, keeping lastSeen fresh. Windows reports every advertisement
+    // anyway, and stopping/starting its watcher this often can leave it
+    // stopped.
+    if (!Platform.isWindows) {
+      _rescanTimer = Timer.periodic(rescanInterval, (_) => _restartDiscovery());
+    }
     _reapTimer = Timer.periodic(peerTimeout, (_) => _reapStalePeers());
     _helloTimer = Timer.periodic(helloInterval, (_) => _sendHellos());
 
@@ -298,6 +361,10 @@ class _IoBleTransport implements MeshTransport {
     _reapTimer = null;
     _helloTimer?.cancel();
     _helloTimer = null;
+    for (final timer in _pendingResolves.values) {
+      timer.cancel();
+    }
+    _pendingResolves.clear();
 
     for (final sub in _subscriptions) {
       await sub.cancel();
@@ -308,9 +375,7 @@ class _IoBleTransport implements MeshTransport {
     final central = _central;
     if (central != null) {
       for (final sub in _outSubs.values.toList()) {
-        try {
-          await central.disconnect(sub.peripheral);
-        } catch (_) {}
+        await _safeDisconnect(central, sub.peripheral);
       }
     }
     _outSubs.clear();
@@ -332,6 +397,11 @@ class _IoBleTransport implements MeshTransport {
     _rssiByDeviceUuid.clear();
     _resolving.clear();
     _lastResolveAttemptMs.clear();
+    _resolveNotBeforeMs.clear();
+    _resolveFailures.clear();
+    _lastAdvertMs.clear();
+    _reliableAdvertisers.clear();
+    _inboundHandshakeUntilMs = 0;
     _inboxBuffers.clear();
     _notifyBuffers.clear();
     _inboundPeers.clear();
@@ -428,13 +498,17 @@ class _IoBleTransport implements MeshTransport {
     // this is a Meshenger device (and the callback may omit the UUID list).
     final advertisesMeshenger = !Platform.isWindows ||
         event.advertisement.serviceUUIDs.contains(serviceUuid);
+    final name = event.advertisement.name;
 
-    if (advertisesMeshenger && _loggedDevices.add(deviceUuid)) {
-      final name = event.advertisement.name;
-      TransportLog.instance.log(
-        'BLE: discovered Meshenger device $deviceUuid'
-        '${name != null && name.isNotEmpty ? ' "$name"' : ''}',
-      );
+    if (advertisesMeshenger) {
+      _lastAdvertMs[deviceUuid] = DateTime.now().millisecondsSinceEpoch;
+      if (name == reliablePeripheralName) _reliableAdvertisers.add(deviceUuid);
+      if (_loggedDevices.add(deviceUuid)) {
+        TransportLog.instance.log(
+          'BLE: discovered Meshenger device $deviceUuid'
+          '${name != null && name.isNotEmpty ? ' "$name"' : ''}',
+        );
+      }
     }
 
     final knownAddress = _addressByDeviceUuid[deviceUuid];
@@ -444,10 +518,12 @@ class _IoBleTransport implements MeshTransport {
         _peersByAddress[knownAddress] =
             peer.copyWith(peripheral: event.peripheral, lastSeen: DateTime.now());
         _emitPeersIfChanged();
-        // Known peer without a push channel: retry subscribing now and then
-        // (it may have gained an outbox, or a previous attempt failed).
+        // Known peer without a push channel either way: retry subscribing
+        // now and then (it may have gained an outbox, or a previous attempt
+        // failed). If it holds a channel to us, one link is enough.
         if (!_outSubs.containsKey(deviceUuid) &&
-            _outSubs.length < maxSubscriptions) {
+            _outSubs.length < maxSubscriptions &&
+            !_hasInboundChannel(knownAddress)) {
           _scheduleResolve(event.peripheral);
         }
         return;
@@ -461,21 +537,131 @@ class _IoBleTransport implements MeshTransport {
     _scheduleResolve(event.peripheral);
   }
 
-  /// Queues a resolve (connect + announce + subscribe) for a device, with a
-  /// throttle so re-discoveries don't hammer the same device.
+  /// Queues a resolve (connect + announce + subscribe) for a device: first
+  /// dials are jittered, failures back off exponentially, and identified
+  /// devices are re-dialed at most every 30 seconds.
   void _scheduleResolve(Peripheral device) {
     final deviceUuid = device.uuid.toString();
-    if (_resolving.contains(deviceUuid)) return;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final last = _lastResolveAttemptMs[deviceUuid] ?? 0;
-    if (now - last < 30000 && _addressByDeviceUuid.containsKey(deviceUuid)) {
+    if (_resolving.contains(deviceUuid) ||
+        _pendingResolves.containsKey(deviceUuid)) {
       return;
     }
-    _lastResolveAttemptMs[deviceUuid] = now;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now < (_resolveNotBeforeMs[deviceUuid] ?? 0)) return;
+    final known = _addressByDeviceUuid.containsKey(deviceUuid);
+    final last = _lastResolveAttemptMs[deviceUuid];
+    if (known && last != null && now - last < 30000) return;
+    if (!known && now < _inboundHandshakeUntilMs) return;
+
+    if (last != null) {
+      _startResolve(device);
+      return;
+    }
+    _pendingResolves[deviceUuid] = Timer(_firstDialDelay(deviceUuid), () {
+      _pendingResolves.remove(deviceUuid);
+      if (!_running) return;
+      final unknown = !_addressByDeviceUuid.containsKey(deviceUuid);
+      // Someone is mid-handshake with us; the next sighting retries.
+      if (unknown &&
+          DateTime.now().millisecondsSinceEpoch < _inboundHandshakeUntilMs) {
+        return;
+      }
+      if (unknown && _unidentifiedAdvertisersAreInbound()) {
+        // Whoever we'd be dialing most likely just dialed us and is already
+        // connected; a second link to the same peer only destabilizes it.
+        _resolveNotBeforeMs[deviceUuid] =
+            DateTime.now().millisecondsSinceEpoch + 45000;
+        TransportLog.instance.log('BLE: $deviceUuid is likely a peer already '
+            'connected to us — not opening a second link');
+        return;
+      }
+      _startResolve(device);
+    });
+  }
+
+  void _startResolve(Peripheral device) {
+    final deviceUuid = device.uuid.toString();
+    _lastResolveAttemptMs[deviceUuid] = DateTime.now().millisecondsSinceEpoch;
     _resolving.add(deviceUuid);
     _enqueueGatt(() => _resolvePeer(device)).whenComplete(() {
       _resolving.remove(deviceUuid);
     });
+  }
+
+  Duration _firstDialDelay(String deviceUuid) {
+    final waitForThem =
+        _outboxChar != null && !_reliableAdvertisers.contains(deviceUuid);
+    // Windows needs several seconds to finish dialing a Mac (uncached
+    // service discovery, announce, subscribe, hello).
+    return waitForThem
+        ? Duration(milliseconds: 6000 + _random.nextInt(4000))
+        : Duration(milliseconds: 250 + _random.nextInt(1250));
+  }
+
+  /// True when every Meshenger advertiser we hear but haven't identified
+  /// can be matched to a peer that connected to us and said hello.
+  bool _unidentifiedAdvertisersAreInbound() {
+    final now = DateTime.now();
+    final unidentified = _lastAdvertMs.entries
+        .where((e) =>
+            now.millisecondsSinceEpoch - e.value < peerTimeout.inMilliseconds &&
+            !_addressByDeviceUuid.containsKey(e.key))
+        .length;
+    if (unidentified == 0) return false;
+    final inboundOnly = _inboundPeers.entries
+        .where((e) =>
+            _notifySubscribed.contains(e.key) &&
+            now.difference(e.value.lastSeen) < inboundTimeout &&
+            !_peersByAddress.containsKey(e.value.address))
+        .length;
+    return inboundOnly >= unidentified;
+  }
+
+  bool _hasInboundChannel(String address) {
+    final centralUuid = _inboundByAddress[address];
+    if (centralUuid == null || !_notifySubscribed.contains(centralUuid)) {
+      return false;
+    }
+    final inbound = _inboundPeers[centralUuid];
+    return inbound != null &&
+        DateTime.now().difference(inbound.lastSeen) < inboundTimeout;
+  }
+
+  void _noteResolveResult(String deviceUuid, {required bool identified}) {
+    if (identified) {
+      _resolveFailures.remove(deviceUuid);
+      _resolveNotBeforeMs.remove(deviceUuid);
+      return;
+    }
+    final failures = (_resolveFailures[deviceUuid] ?? 0) + 1;
+    _resolveFailures[deviceUuid] = failures;
+    final backoffMs = min(
+      resolveBackoffBase.inMilliseconds * (1 << min(failures - 1, 5)),
+      resolveBackoffMax.inMilliseconds,
+    );
+    _resolveNotBeforeMs[deviceUuid] = DateTime.now().millisecondsSinceEpoch +
+        backoffMs +
+        _random.nextInt(2000);
+  }
+
+  Future<void> _safeDisconnect(
+      CentralManager central, Peripheral device) async {
+    try {
+      await central.disconnect(device).timeout(const Duration(seconds: 5));
+    } catch (_) {}
+  }
+
+  /// A copy of [announcement] carrying the "keep me off your map" flag.
+  /// The flag sits outside the signed fields, so anyone could set it — it
+  /// only ever hides the sender.
+  static Uint8List _flagHidden(Uint8List announcement) {
+    final decoded = jsonDecode(utf8.decode(announcement)) as Map;
+    return Uint8List.fromList(
+      utf8.encode(jsonEncode(<String, Object?>{
+        ...decoded.cast<String, Object?>(),
+        'inv': true,
+      })),
+    );
   }
 
   /// Connects to a Meshenger device, reads and verifies its signed
@@ -486,8 +672,10 @@ class _IoBleTransport implements MeshTransport {
     final central = _central;
     final log = TransportLog.instance;
     if (central == null || !_running) return;
+    final deviceUuid = device.uuid.toString();
     var step = 'connect';
     var keepOpen = false;
+    var identified = false;
     try {
       await central.connect(device).timeout(gattTimeout);
       step = 'discoverGATT';
@@ -510,8 +698,9 @@ class _IoBleTransport implements MeshTransport {
         return;
       }
       if (peerIdentity.address == _myAddress) return;
+      identified = true;
 
-      _addressByDeviceUuid[device.uuid.toString()] = peerIdentity.address;
+      _addressByDeviceUuid[deviceUuid] = peerIdentity.address;
       _peersByAddress[peerIdentity.address] = _BlePeer(
         peripheral: device,
         x25519Base64: peerIdentity.x25519Base64,
@@ -521,40 +710,53 @@ class _IoBleTransport implements MeshTransport {
           '(device ${device.uuid})');
       _emitPeersIfChanged();
 
+      if (_hasInboundChannel(peerIdentity.address)) {
+        log.log('BLE: ${_shortAddr(peerIdentity.address)} already holds a '
+            'channel to us — not opening a second one');
+        return;
+      }
+
       // Push channel: subscribe to the peer's outbox and identify ourselves
       // so it can push packets to us — even while our app is backgrounded.
       final outboxChar = _findCharacteristic(services, outboxCharUuid);
       final inboxChar = _findCharacteristic(services, inboxCharUuid);
-      final announcement = _announcementBytes;
+      final hello = _helloBytes;
       if (outboxChar != null &&
           inboxChar != null &&
-          announcement != null &&
-          !_outSubs.containsKey(device.uuid.toString()) &&
+          hello != null &&
+          !_outSubs.containsKey(deviceUuid) &&
           _outSubs.length < maxSubscriptions) {
         step = 'subscribe outbox';
-        await central
-            .setCharacteristicNotifyState(device, outboxChar, state: true)
-            .timeout(gattTimeout);
+        var subscribed = false;
+        try {
+          await central
+              .setCharacteristicNotifyState(device, outboxChar, state: true)
+              .timeout(gattTimeout);
+          subscribed = true;
+        } catch (e) {
+          log.log('BLE: subscribing to ${_shortAddr(peerIdentity.address)}\'s '
+              'outbox failed: $e');
+        }
+        // Say hello either way: it is how the peer learns who we are.
         step = 'hello';
-        await _writeChunks(central, device, inboxChar, announcement);
-        _outSubs[device.uuid.toString()] = _OutboxSubscription(
-          peripheral: device,
-          address: peerIdentity.address,
-          inboxChar: inboxChar,
-        );
-        keepOpen = true;
-        log.log('BLE: push channel open with '
-            '${_shortAddr(peerIdentity.address)} (subscribed to outbox)');
+        await _writeChunks(central, device, inboxChar, hello);
+        if (subscribed) {
+          _outSubs[deviceUuid] = _OutboxSubscription(
+            peripheral: device,
+            address: peerIdentity.address,
+            inboxChar: inboxChar,
+          );
+          keepOpen = true;
+          log.log('BLE: push channel open with '
+              '${_shortAddr(peerIdentity.address)} (subscribed to outbox)');
+        }
       }
     } catch (e) {
       // Device went away or isn't a functioning Meshenger node.
       log.log('BLE: resolve ${device.uuid} failed at $step: $e');
     } finally {
-      if (!keepOpen) {
-        try {
-          await central.disconnect(device);
-        } catch (_) {}
-      }
+      _noteResolveResult(deviceUuid, identified: identified);
+      if (!keepOpen) await _safeDisconnect(central, device);
     }
   }
 
@@ -566,11 +768,33 @@ class _IoBleTransport implements MeshTransport {
     if (central == null || !_running) return;
     try {
       await central.stopDiscovery();
+      // The Windows watcher stops asynchronously; starting it again before
+      // it has settled fails.
+      if (Platform.isWindows) {
+        await Future<void>.delayed(const Duration(milliseconds: 750));
+      }
       await _startDiscovery(central);
     } catch (e) {
       // Bluetooth may have turned off; the reap timer will clear peers.
       TransportLog.instance.log('BLE: restart discovery failed: $e');
     }
+  }
+
+  @override
+  Future<void> rescan() async {
+    if (!_running) return;
+    TransportLog.instance.log('BLE: rescanning surroundings');
+    for (final timer in _pendingResolves.values) {
+      timer.cancel();
+    }
+    _pendingResolves.clear();
+    _resolveNotBeforeMs.clear();
+    _resolveFailures.clear();
+    _lastResolveAttemptMs.clear();
+    _loggedDevices.clear();
+    _inboundHandshakeUntilMs = 0;
+    await _restartDiscovery();
+    unawaited(_sendHellos());
   }
 
   void _reapStalePeers() {
@@ -599,6 +823,20 @@ class _IoBleTransport implements MeshTransport {
       if (inbound != null) {
         _inboundByAddress.remove(inbound.address);
       }
+    }
+
+    // Advertisers rotate their addresses; forget the ones gone quiet.
+    final nowMs = now.millisecondsSinceEpoch;
+    final silent = _lastAdvertMs.entries
+        .where(
+            (e) => nowMs - e.value > const Duration(minutes: 10).inMilliseconds)
+        .map((e) => e.key)
+        .toList();
+    for (final deviceUuid in silent) {
+      _lastAdvertMs.remove(deviceUuid);
+      _reliableAdvertisers.remove(deviceUuid);
+      _resolveFailures.remove(deviceUuid);
+      _resolveNotBeforeMs.remove(deviceUuid);
     }
 
     if (stale.isNotEmpty || staleInbound.isNotEmpty) {
@@ -656,11 +894,7 @@ class _IoBleTransport implements MeshTransport {
         .log('BLE: push channel to ${_shortAddr(sub.address)} closed');
     final central = _central;
     if (central != null) {
-      unawaited(() async {
-        try {
-          await central.disconnect(sub.peripheral);
-        } catch (_) {}
-      }());
+      unawaited(_safeDisconnect(central, sub.peripheral));
     }
   }
 
@@ -668,15 +902,14 @@ class _IoBleTransport implements MeshTransport {
   /// the peer's side and doubles as a liveness probe.
   Future<void> _sendHellos() async {
     final central = _central;
-    final announcement = _announcementBytes;
-    if (central == null || announcement == null || !_running) return;
+    final hello = _helloBytes;
+    if (central == null || hello == null || !_running) return;
     for (final entry in _outSubs.entries.toList()) {
       await _enqueueGatt(() async {
         final sub = _outSubs[entry.key];
         if (sub == null) return;
         try {
-          await _writeChunks(central, sub.peripheral, sub.inboxChar,
-              announcement);
+          await _writeChunks(central, sub.peripheral, sub.inboxChar, hello);
           _touchPeer(sub.address);
         } catch (e) {
           TransportLog.instance.log(
@@ -800,9 +1033,7 @@ class _IoBleTransport implements MeshTransport {
     } finally {
       // Never tear down a live push channel.
       if (!_outSubs.containsKey(device.uuid.toString())) {
-        try {
-          await central.disconnect(device);
-        } catch (_) {}
+        await _safeDisconnect(central, device);
       }
     }
   }
@@ -815,10 +1046,12 @@ class _IoBleTransport implements MeshTransport {
     GATTCharacteristic characteristic,
     List<int> payload,
   ) async {
-    final maxWriteLength = await central.getMaximumWriteLength(
-      device,
-      type: GATTCharacteristicWriteType.withResponse,
-    );
+    final maxWriteLength = await central
+        .getMaximumWriteLength(
+          device,
+          type: GATTCharacteristicWriteType.withResponse,
+        )
+        .timeout(gattTimeout);
     // 1 byte reserved for the chunk flag.
     final chunkSize = (maxWriteLength - 1).clamp(19, 511);
 
@@ -961,6 +1194,9 @@ class _IoBleTransport implements MeshTransport {
     if (offset == 0) {
       TransportLog.instance
           .log('BLE: peer ${event.central.uuid} read our announce');
+      if (!_inboundPeers.containsKey(event.central.uuid.toString())) {
+        _inboundHandshakeUntilMs = DateTime.now().millisecondsSinceEpoch + 8000;
+      }
     }
     final value = offset >= bytes.length
         ? Uint8List(0)
@@ -1034,18 +1270,21 @@ class _IoBleTransport implements MeshTransport {
         return;
       }
       final isNew = _inboundPeers[centralUuid]?.address != peerIdentity.address;
+      final hidden = packet['inv'] == true;
       _inboundPeers[centralUuid] = _InboundPeer(
         central: event.central,
         address: peerIdentity.address,
         x25519Base64: peerIdentity.x25519Base64,
         lastSeen: DateTime.now(),
+        hidden: hidden,
       );
       _inboundByAddress[peerIdentity.address] = centralUuid;
+      _inboundHandshakeUntilMs = 0;
       await peripheral.respondWriteRequest(event.request);
       if (isNew) {
-        TransportLog.instance.log(
-            'BLE: hello from ${_shortAddr(peerIdentity.address)} — '
-            'push channel to it is live');
+        TransportLog.instance
+            .log('BLE: hello from ${_shortAddr(peerIdentity.address)}'
+                '${hidden ? ' (invisible)' : ''} — push channel to it is live');
       }
       _emitPeersIfChanged();
       return;
@@ -1106,11 +1345,15 @@ class _InboundPeer {
   final String x25519Base64;
   final DateTime lastSeen;
 
+  /// The peer is in invisible mode: deliver to it, but don't show it.
+  final bool hidden;
+
   const _InboundPeer({
     required this.central,
     required this.address,
     required this.x25519Base64,
     required this.lastSeen,
+    this.hidden = false,
   });
 
   _InboundPeer touch() => _InboundPeer(
@@ -1118,6 +1361,7 @@ class _InboundPeer {
         address: address,
         x25519Base64: x25519Base64,
         lastSeen: DateTime.now(),
+        hidden: hidden,
       );
 }
 

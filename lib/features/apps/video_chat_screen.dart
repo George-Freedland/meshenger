@@ -34,7 +34,7 @@ class _VideoChatScreenState extends State<VideoChatScreen> {
     _subs.add(MessengerService.instance.onPeersChanged.listen((peers) {
       if (mounted) setState(() => _online = peers);
     }));
-    _online = MessengerService.instance.onlinePeers;
+    _online = MessengerService.instance.visiblePeers;
   }
 
   @override

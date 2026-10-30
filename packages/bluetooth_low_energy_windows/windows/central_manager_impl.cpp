@@ -104,6 +104,7 @@ namespace bluetooth_low_energy_windows
 	{
 		try
 		{
+			CloseConnection(address_args);
 			OnDisconnected(address_args);
 			auto &api = m_api.value();
 			const auto peripheral_args = PeripheralArgs(address_args);
@@ -739,6 +740,52 @@ namespace bluetooth_low_energy_windows
 			const auto message = ex.what();
 			const auto error = FlutterError(code, message);
 			result(error);
+		}
+	}
+
+	// Dropping our references alone leaves the link up until Windows releases
+	// the GATT session on its own, which keeps the peer connected and gets in
+	// the way of the next connection to it. Close everything explicitly.
+	void CentralManagerImpl::CloseConnection(int64_t address_args)
+	{
+		const auto services_iterator = m_services.find(address_args);
+		if (services_iterator != m_services.end())
+		{
+			for (auto &service_entry : services_iterator->second)
+			{
+				if (service_entry.second.has_value())
+				{
+					try
+					{
+						service_entry.second->Close();
+					}
+					catch (const winrt::hresult_error &)
+					{
+					}
+				}
+			}
+		}
+		const auto session_iterator = m_sessions.find(address_args);
+		if (session_iterator != m_sessions.end() && session_iterator->second.has_value())
+		{
+			try
+			{
+				session_iterator->second->Close();
+			}
+			catch (const winrt::hresult_error &)
+			{
+			}
+		}
+		const auto device_iterator = m_devices.find(address_args);
+		if (device_iterator != m_devices.end() && device_iterator->second.has_value())
+		{
+			try
+			{
+				device_iterator->second->Close();
+			}
+			catch (const winrt::hresult_error &)
+			{
+			}
 		}
 	}
 
