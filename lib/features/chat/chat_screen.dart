@@ -268,7 +268,7 @@ class _ChatScreenState extends State<ChatScreen> {
           '"${picked.name}" (${formatBytes(picked.size)})\n\n'
           'Streams directly to this contact in encrypted chunks once they '
           'accept. Survives drops — it resumes where it left off. Large '
-          'files are fast on Wi-Fi/LAN and slow over Bluetooth.',
+          'files take a while over Bluetooth.',
         ),
         actions: [
           TextButton(

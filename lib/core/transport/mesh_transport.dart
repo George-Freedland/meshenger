@@ -3,8 +3,8 @@ import 'dart:async';
 /// A local, serverless transport that discovers nearby peers and moves
 /// packets (JSON maps) between directly-reachable devices.
 ///
-/// Implementations: Bluetooth LE (works with no network at all) and LAN
-/// (UDP discovery + TCP delivery on the same Wi-Fi network/hotspot).
+/// Implemented by the Bluetooth LE transport, which works with no network
+/// at all.
 ///
 /// Transports are deliberately dumb pipes: they verify peer announcements
 /// (so `onlinePeers` only contains proven identities) and move opaque

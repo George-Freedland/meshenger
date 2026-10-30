@@ -1,9 +1,8 @@
 /// A link layer the relay can move packets over. Mirrors the app's
 /// MeshTransport: verified peer discovery + opaque JSON packets. All
-/// routing decisions live in RelayCore, which can bridge packets between
-/// transports (Bluetooth in, LAN out and vice versa).
+/// routing decisions live in RelayCore.
 abstract class RelayTransport {
-  /// Short label for logs ("ble", "lan").
+  /// Short label for logs (e.g. "ble").
   String get name;
 
   /// Mesh addresses (base64 Ed25519 keys) directly reachable right now.

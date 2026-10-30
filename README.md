@@ -1,6 +1,6 @@
 ## Meshenger
 
-Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local transports) to relay messages over a mesh, with no central server.
+Offline, end‑to‑end encrypted messenger that uses Bluetooth to relay messages over a mesh, with no central server.
 
 ### About
 
@@ -14,23 +14,21 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 - **Multiple identities (Netflix-style profiles)**: the start screen lists every identity on the device with its avatar — pick one and unlock with its password, or create a new one (preset avatars + nickname). Each identity's chats, contacts, and settings are fully separate, and logging out locks all key material. **Manage profiles** on the login screen hides a tile without touching its data (restore any time); the *permanent* delete lives in Settings, requires that profile's password, and wipes every trace — keys, chats, contacts, media, layout.
 - **App launcher (springboard)**: after unlock you land on an iPhone-style home screen with the built-in apps: Messages, Phone, Video Chat, Contacts, Camera, Storage, Voice Memos, Mesh Map, Network, App Store, and Settings. Long-press and everything jiggles: drag to rearrange (icons flow around the drop slot), drop one icon onto another to create a named group (mini-icon grid on the group tile, groups may nest exactly one level), drag apps out to dissolve. Red unread badges sit on app icons and **roll up onto group icons** for everything inside. Layout is saved per profile.
 - **Contacts app + QR**: a standalone Contacts app manages your address book — add by QR scan or paste, rename, share your own QR, jump straight into a chat. The QR also carries your encryption key, so someone who scans it can message you end‑to‑end encrypted through any number of relays immediately — even from far beyond gossip range (this is how SF→NY first contact bootstraps).
-- **Offline Bluetooth messaging (default)**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
+- **Offline Bluetooth messaging**: devices discover each other over Bluetooth LE — no network of any kind required. Each device advertises a Meshenger GATT service and scans for others; peers prove their identity with a signed announcement, and messages are delivered as end‑to‑end encrypted chunked GATT writes.
 - **Push delivery (outbox channels)**: every node also serves an *outbox* — a notify characteristic that nearby peers subscribe to. Once subscribed, a relay or phone can **initiate delivery** the instant an envelope arrives, over the already‑open connection — no scanning round trip. This is what lets a Raspberry Pi gateway push a message to an iPhone whose app is in the background: iOS keeps the subscription alive and wakes the app to decrypt.
 - **Background notifications**: messages, voicemails, and incoming calls that arrive while the app is backgrounded show a system banner (sender + kind only — content stays end‑to‑end encrypted and never appears in notifications).
-- **Offline LAN messaging**: devices on the same Wi‑Fi network or hotspot discover each other automatically (signed UDP broadcast) and exchange end‑to‑end encrypted messages directly over TCP — no internet or server required.
-- **Transport switch**: the Bluetooth/Wi‑Fi toggle (chats screen and Settings) switches between the two transports. Bluetooth is the default on first launch; the choice is remembered.
 - **Multi‑hop mesh relay**: every device (and standalone gateway) stores and forwards *encrypted envelopes* for others. If Phone B is out of your radio range but a device in the middle can hear you both, your message hops through it — the relay only ever sees ciphertext. Envelopes carry a hop budget (1000 — distance is finite, the cap is a safety valve, not a range limit), a sliding via‑window, and an expiry (48 h); duplicates are dropped by envelope ID. The relay role can be switched off in Settings.
 - **Gradient (probabilistic) routing**: nodes learn which neighbors lead toward which destinations — gossip re‑floods are stamped with the forwarding neighbor, and every envelope's via‑trail teaches the reverse path. Forwarding hands envelopes to the best‑known next hops *first*, with random epidemic spread as the fallback, so messages roll downhill toward their destination instead of blindly flooding — and delivery acks ride the learned gradient straight back to the sender.
 - **Per‑node retry with path diversity**: a next hop that dies mid‑transfer doesn't poison anything — the handoff only counts when the carrier *confirms* it, other paths are tried immediately, and the failed path is retried after a 90 s backoff.
 - **Mesh‑gap detection**: every outgoing message is time‑monitored. Never picked up by any carrier within 3 minutes, or no end‑to‑end ack within 30 minutes → the message is flagged red: *failed — gap in mesh network (not enough nodes)*. Background retries keep running (a late ack still flips it to delivered), and manual resends are unlimited — once someone plants a gateway in the gap, a retry gets through.
-- **Standalone gateway daemon** (`relay/`): a headless pure‑Dart relay for Raspberry Pi and other Linux boxes — advertises and scans over **Bluetooth (BlueZ)** with the same GATT protocol as the app, speaks the LAN protocol simultaneously, and **bridges the two** (Bluetooth in → Wi‑Fi/Ethernet across → Bluetooth out). Integration‑tested store‑and‑forward, dedup, and gossip.
+- **Standalone gateway daemon** (`relay/`): a headless pure‑Dart relay for Raspberry Pi and other Linux boxes — advertises and scans over **Bluetooth (BlueZ)** with the same GATT protocol as the app. Tested store‑and‑forward, dedup, and gossip.
 - **Delivery receipts, end to end**: a message shows *pending* → *sent* (reached the first hop) → *delivered* (the recipient itself decrypted it and sent a signed ack back through the mesh). Group messages track delivery per member.
 - **Gossip discovery**: nodes periodically share signed peer announcements, so you learn about devices *beyond* your radio range — including their encryption keys, which means you can send end‑to‑end encrypted messages to someone you've never been near, through the mesh.
 - **Store‑and‑forward outbox**: messages to an offline peer are stored as *pending* (with a retry action) and delivered automatically as soon as that peer appears on the network — directly or through relays.
 - **Message control**: edit or delete your sent messages (synced to the peer, Telegram-style), auto-delete timers (30 s – 1 week, applied on both ends), date separators, unread indicators. Deleting a whole conversation offers **Delete for me** or **Delete for everyone** — the wipe travels through the mesh and removes the chat and its media on the other device when it is next reachable.
 - **Group chats**: multi-recipient compose creates a group; the creator (admin) can name it and add/remove members; members can leave.
 - **Media messages**: send photos (camera or library) and files in any chat; images can be sent as **view‑once** (Snapchat‑style — the photo burns on both ends after the receiver opens it) or permanent. Large media rides the same encrypted envelopes, chunked over BLE.
-- **File transfer (any size, peer‑to‑peer)**: the attach menu's *File transfer* option moves files the message path never could — multi‑gigabyte video clips between two PCs. The file streams disk‑to‑disk in end‑to‑end encrypted chunks (AES‑256‑GCM per chunk, chunk index as nonce — replayed, reordered, or forged chunks fail authentication), with a live progress card in the chat. Offers/accepts ride the reliable store‑and‑forward path; the bulk chunks go direct or through one live pass‑through node (a phone or Pi in the middle forwards them without ever storing them). Drops are survivable: the receiver's confirmed watermark is persisted, so the transfer **resumes where it left off** — even after an app restart — the next time the two devices meet. Fast on Wi‑Fi/LAN, works (slowly) over pure Bluetooth. Completed files land in the Storage app.
+- **File transfer (any size, peer‑to‑peer)**: the attach menu's *File transfer* option moves files too big for the message path. The file streams disk‑to‑disk in end‑to‑end encrypted chunks (AES‑256‑GCM per chunk, chunk index as nonce — replayed, reordered, or forged chunks fail authentication), with a live progress card in the chat. Offers/accepts ride the reliable store‑and‑forward path; the bulk chunks go direct or through one live pass‑through node (a phone or Pi in the middle forwards them without ever storing them). Drops are survivable: the receiver's confirmed watermark is persisted, so the transfer **resumes where it left off** — even after an app restart — the next time the two devices meet. Bluetooth is slow, so big files take a while. Completed files land in the Storage app.
 - **Voice notes**: hold‑to‑record audio clips in any chat, with inline playback.
 - **Calls (Phone + Video Chat apps)**: real call signaling over the mesh — ring, accept, decline, hang up — with a full‑screen incoming‑call overlay anywhere in the app. Active calls are half‑duplex push‑to‑talk (mesh radio bandwidth). Recents and per‑call outcomes are logged; missed/declined calls prompt the caller to leave a **voicemail**, which lands in the callee's Voicemail tab.
 - **Camera app**: capture (mobile) or import (desktop) photos into an identity‑scoped camera roll; view, send to any contact, or delete.
@@ -42,7 +40,7 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth (and other local
 
 ### Architecture: mesh, gateways, and coverage zones
 
-Bluetooth (and any single radio) only reaches so far. Meshenger grows its coverage zone by letting **every node relay encrypted traffic**:
+Bluetooth only reaches so far. Meshenger grows its coverage zone by letting **every node relay encrypted traffic**:
 
 ```
 [Phone A] ~~bluetooth~~ [Gateway 1] ~~bluetooth~~ [Gateway 2] ~~bluetooth~~ [Phone B]
@@ -54,7 +52,7 @@ Bluetooth (and any single radio) only reaches so far. Meshenger grows its covera
 Three kinds of nodes exist today:
 
 1. **The app** (this repo) — runs on any device: Windows, macOS, Linux, Android, iOS, or Chrome. Sends, receives, and relays for others (toggle in Settings).
-2. **Standalone gateways** (`relay/` in this repo) — a headless pure‑Dart daemon for cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. On Linux it speaks **Bluetooth LE via BlueZ** with the exact same GATT protocol as the phones — phones see a gateway as just another mesh device — *and* the LAN protocol at the same time, **bridging between the two**: Bluetooth in one side, Wi‑Fi/Ethernet out the other. Place a chain of gateways and the coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read. See [Pi as a standalone gateway](#pi-as-a-standalone-gateway) below.
+2. **Standalone gateways** (`relay/` in this repo) — a headless pure‑Dart daemon for cheap dedicated boxes (Raspberry Pi or scratch‑built) that act purely as **signal amplifiers/relays**. On Linux it speaks **Bluetooth LE via BlueZ** with the exact same GATT protocol as the phones — phones see a gateway as just another mesh device. Place a chain of gateways and the coverage zone grows with each one. Gateways never need to be trusted, because they only ever handle ciphertext — without the recipient's private key there is nothing to read. See [Pi as a standalone gateway](#pi-as-a-standalone-gateway) below.
 3. **Specialized devices ("mesh walkie‑talkie" phones)** — down the line, purpose‑built handsets running our own OS image (see MeshOS below) that are simultaneously a full messenger client *and* a gateway, so every device in the field automatically thickens the mesh.
 
 How a multi‑hop delivery works, end to end:
@@ -66,7 +64,7 @@ How a multi‑hop delivery works, end to end:
 
 Routing is **gradient‑guided epidemic**, not fixed shortest‑path. Every packet teaches: gossip arriving via neighbor N saying "Bob, 12 hops" means N leads toward Bob; an envelope's via‑trail teaches the reverse path to everyone on it. When forwarding, a node hands the envelope to its best‑known next hops toward the destination *first*, then to random carriers as insurance — so a message rolls downhill toward its target instead of blindly flooding, duplicates are dropped by ID, and the first copy to arrive wins. Dead next hops don't strand anything: handoffs only count when confirmed, alternate paths go out immediately, and failed paths retry after backoff. A cross‑town chain like `mac → pi → pi → iphone → android → windows → … → mac` needs no planning — if the chain physically exists, a copy walks it, and the ack walks the learned gradient straight back.
 
-**Scale math (SF → NY)**: pure BLE hops reach 10–50 m, but gateways pair over Ethernet/Wi‑Fi and each bridge counts as *one hop* — a freeway chain of bridged Pi pairs covers miles per hop. Hundreds of hops, well inside the 1000 budget. Keys bootstrap by QR (which carries the encryption key), so first contact doesn't wait for gossip to cross the country; gossip (capped at 128 hops) keeps the *nearby* mesh map and key discovery fresh.
+**Scale math**: BLE hops reach 10–50 m, so the 1000‑hop budget spans a gateway chain tens of kilometers long. Keys bootstrap by QR (which carries the encryption key), so first contact doesn't wait for gossip to cross the whole chain; gossip (capped at 128 hops) keeps the *nearby* mesh map and key discovery fresh.
 
 **How a gateway reaches a phone it cannot see** (push delivery): whenever two Meshenger nodes meet, each subscribes to the other's *outbox* characteristic and identifies itself with a signed hello. The connection stays open. From then on either side can push envelopes over it instantly — which turns every gateway into a true **router that initiates delivery**, including to backgrounded iPhones (iOS holds BLE subscriptions open in the background, wakes the app when the relay notifies, the app decrypts and posts a local notification banner). No Apple/Google push servers involved — the "push" is a Bluetooth packet from a $15 Pi.
 
@@ -76,11 +74,11 @@ Because encryption is end‑to‑end, relaying through strangers' hardware carri
 
 To run Meshenger on *literally any machine* — including scratch‑built gateways and custom handsets — the long‑term plan is a minimal Linux‑based OS image ("MeshOS") that boots straight into the mesh stack:
 
-- **Base**: a stripped‑down Linux (e.g. Raspberry Pi OS Lite / Buildroot / Yocto) with Bluetooth, Wi‑Fi, and the mesh daemon preinstalled.
+- **Base**: a stripped‑down Linux (e.g. Raspberry Pi OS Lite / Buildroot / Yocto) with Bluetooth and the mesh daemon preinstalled.
 - **Two profiles**:
   - **Gateway profile** — headless; boots, joins the mesh, and relays encrypted frames. No UI, no stored identity, nothing to steal.
   - **Handset profile** — boots into the Meshenger UI full‑screen (the Flutter app runs natively on Linux), with an identity stored on device like any phone.
-- **Hardware targets**: Raspberry Pi (Zero 2 W / 4 / 5) first because it is cheap and has built‑in Bluetooth + Wi‑Fi; any SBC or old laptop that runs Linux works too.
+- **Hardware targets**: Raspberry Pi (Zero 2 W / 4 / 5) first because it is cheap and has built‑in Bluetooth; any SBC or old laptop that runs Linux works too.
 
 This is a roadmap item — today the app itself already runs on all major desktop/mobile platforms and Chrome, which covers "any machine" for the messenger client; MeshOS is what will cover dedicated gateways and custom phones.
 
@@ -176,7 +174,7 @@ flutter devices          # optional: list available targets
 flutter run -d linux
 ```
 
-> **Linux Bluetooth note**: the desktop‑Linux BLE plugin is central‑only — the app can *discover and message* nearby devices over Bluetooth but cannot *be discovered* (no peripheral/advertising role). For full two‑way Bluetooth on Linux, run the relay daemon alongside the app: the daemon advertises and receives over BlueZ and bridges to the app over the loopback LAN transport. One command: `cd relay && dart run bin/relay.dart --name "My Linux Box"` (see below), then switch the app to the Wi‑Fi transport.
+> **Linux Bluetooth note**: the desktop‑Linux BLE plugin is central‑only — the app can *discover and message* nearby devices over Bluetooth but cannot *be discovered* (no peripheral/advertising role).
 
 ---
 
@@ -205,9 +203,9 @@ flutter run -d linux
 
 #### Pi as a standalone gateway
 
-The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It is **Bluetooth‑first**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It simultaneously speaks the LAN protocol and **bridges the two links** — a phone's Bluetooth message can cross a house over Ethernet/Wi‑Fi between two Pis and come out as Bluetooth on the far side. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, **pushes spooled envelopes to phones that subscribe to its outbox** (that's how it reaches backgrounded iPhones), carries the neighborhood's active **Network posts** like a bulletin board (walk into range and the feed fills in), **passes P2P file‑transfer chunks through live** (bridging a transfer across BLE↔LAN without ever storing the bulk data), and shows up on everyone's Mesh Map under the name you give it.
+The relay daemon ships in this repo at `relay/` — pure Dart, no Flutter, no GUI. It speaks **Bluetooth only**: on Linux it advertises the Meshenger GATT service and scans for phones exactly like the app does, so it drops into the BLE mesh invisibly. It stores and forwards encrypted envelopes it cannot read, re‑floods gossip so phones on opposite sides learn about each other, **pushes spooled envelopes to phones that subscribe to its outbox** (that's how it reaches backgrounded iPhones), carries the neighborhood's active **Network posts** like a bulletin board (walk into range and the feed fills in), **passes P2P file‑transfer chunks through live** (without ever storing the bulk data), and shows up on everyone's Mesh Map under the name you give it.
 
-**Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. A **Pi 3 Model B** also works for testing (onboard Bluetooth 4.1 + Wi‑Fi, 64‑bit OS); it is just slower. Any Linux box with BlueZ works the same (old laptops make great gateways).
+**Recommended hardware**: Raspberry Pi Zero 2 W (~$15, built‑in BLE, tiny), Pi 4, or Pi 5, with **Raspberry Pi OS Lite (64‑bit)** flashed via Raspberry Pi Imager. A **Pi 3 Model B** also works for testing (onboard Bluetooth 4.1, 64‑bit OS); it is just slower. Any Linux box with BlueZ works the same (old laptops make great gateways).
 
 **Fastest path — cross‑compile on your computer, zero internet needed on the Pi.** The Dart SDK cross‑compiles the relay into a single self‑contained Pi binary from any machine:
 
@@ -256,8 +254,7 @@ You should see:
 [12:00:02] BLE: GATT registered (announce + inbox + outbox characteristics)
 [12:00:02] BLE: advertising Meshenger service as "Garden Gateway"
 [12:00:02] BLE: scanning for Meshenger devices
-[12:00:02] LAN: listening on TCP port 40123, announcing on UDP 45654
-[12:00:02] Relay running with ble + lan. Ctrl-C to stop.
+[12:00:02] Relay running over Bluetooth. Ctrl-C to stop.
 [12:00:15] BLE: peer online AbCdEf123456… (F4:5C:89:AA:BB:CC)
 ```
 
@@ -272,8 +269,6 @@ Open the Mesh Map on your phone — the gateway appears by name within ~30 secon
 | Flag | Meaning |
 | --- | --- |
 | `--name "Shed"` | Public name shown on peers' Mesh Maps |
-| `--no-lan` | **Strict Bluetooth‑only relay** — zero network footprint, pure radio |
-| `--no-ble` | LAN‑only (also what you get automatically on macOS/Windows) |
 | `--identity <path>` | Where the relay keypair persists |
 | `--max-spool 512` | Envelopes carried at once (default 256, expire after 48 h) |
 | `--adapter 1` | Use `hci1` instead of `hci0` (USB BLE dongle setups) |
@@ -290,7 +285,7 @@ sudo ./meshenger-relay --name "Garden Gateway"
 ```ini
 [Unit]
 Description=Meshenger mesh gateway
-After=bluetooth.target network.target
+After=bluetooth.target
 Wants=bluetooth.target
 
 [Service]
@@ -311,7 +306,7 @@ journalctl -u meshenger-relay -f     # watch it forward envelopes
 Notes:
 
 - The relay keeps a persistent keypair in `relay-identity.json` so its address (and Mesh Map name) is stable across reboots. The key only signs presence announcements — the relay holds **no message keys** and can never read traffic.
-- **Coverage math**: BLE reaches ~10–50 m per hop depending on walls; the hop budget is 1000, so radio range — not the protocol — is the limit. A line of window‑sill Pis spans a street; for real distance, pair Pis with Ethernet/Wi‑Fi between them — each bridge counts as one hop, so a freeway chain of bridged pairs covers miles per hop. SF→NY is hundreds of hops: expensive to build, cheap for the protocol.
+- **Coverage math**: BLE reaches ~10–50 m per hop depending on walls; the hop budget is 1000, so radio range — not the protocol — is the limit. A line of window‑sill Pis spans a street.
 - **Backgrounded iPhones**: the gateway *can* initiate delivery to an iPhone whose app is backgrounded — the phone subscribes to the gateway's outbox characteristic while in range, iOS keeps that Bluetooth subscription alive in the background, and the gateway pushes envelopes over it (the phone wakes, decrypts, and shows a notification banner). The caveat that remains: if the user **force‑quits** the app (swipes it away), iOS tears down Bluetooth entirely until the next launch.
 - Placement tip: relays only help where they can hear at least two other nodes. A window sill between two houses, a hallway between apartments, a shed halfway down the street.
 
@@ -339,7 +334,7 @@ flutter devices          # optional: list available targets
 flutter run -d chrome
 ```
 
-> Note: the browser cannot open raw UDP/TCP sockets or act as a Bluetooth peripheral, so neither offline transport is available on web. The app runs fully (identity, contacts, QR, chats) and messages queue as *pending*; use a desktop or mobile build for actual offline delivery.
+> Note: the browser cannot act as a Bluetooth peripheral, so the Bluetooth transport is not available on web. The app runs fully (identity, contacts, QR, chats) and messages queue as *pending*; use a desktop or mobile build for actual offline delivery.
 
 ---
 
@@ -436,7 +431,7 @@ Version bumps: raise `version:` in `pubspec.yaml` (e.g. `1.0.0+2` — the `+N` b
 
 ### Test offline messaging: Windows laptop ↔ Mac laptop
 
-This works today with **no network at all** — Bluetooth is the default transport, so the two machines only need to be within Bluetooth range (~10 m indoors) with Bluetooth turned on.
+This works with **no network at all** — the two machines only need to be within Bluetooth range (~10 m indoors) with Bluetooth turned on.
 
 1. **Run the app on both machines** from the project root:
    - Windows: `flutter run -d windows`
@@ -446,11 +441,7 @@ This works today with **no network at all** — Bluetooth is the default transpo
 4. **Chat**: open the contact and press the message icon. The header shows a green **online** dot when the other laptop is discovered (Bluetooth discovery can take ~10–20 seconds). Send a message — it appears on the other machine.
 5. **Test store‑and‑forward**: quit the app on the Mac, send messages from Windows (they show a ⏱ *pending* icon), then reopen the app on the Mac and unlock — the pending messages are delivered automatically and flip to ✓ *sent*.
 
-**Switching transports**: the Bluetooth/Wi‑Fi toggle in the chats screen app bar selects the transport. LAN is faster and has more range if both machines are on the same Wi‑Fi network or phone hotspot; Bluetooth needs no infrastructure whatsoever.
-
-How it works (Bluetooth): each device advertises a Meshenger GATT service and scans for others. On discovery, a device reads the peer's signed announcement (Ed25519‑verified), then delivers messages as chunked GATT writes — end‑to‑end encrypted (X25519 + AES‑256‑GCM) and signed. The final write is only acknowledged after the receiver verifies and decrypts, so a ✓ means real delivery.
-
-How it works (LAN): each device broadcasts a signed UDP announcement on port 45654; peers verify the signature, then deliver messages over a direct TCP connection with the same end‑to‑end encryption. If discovery fails, check that both machines are on the same network and that your firewall allows the app to receive UDP on port 45654 (Windows shows a firewall prompt on first run — click **Allow**).
+How it works: each device advertises a Meshenger GATT service and scans for others. On discovery, a device reads the peer's signed announcement (Ed25519‑verified), then delivers messages as chunked GATT writes — end‑to‑end encrypted (X25519 + AES‑256‑GCM) and signed. The final write is only acknowledged after the receiver verifies and decrypts, so a ✓ means real delivery.
 
 ---
 
@@ -460,11 +451,10 @@ How it works (LAN): each device broadcasts a signed UDP announcement on port 456
 - **Missing platform folder** — regenerate platform projects from the repo root with `flutter create .` (existing `lib/` code is preserved).
 - **Build errors after upgrading Flutter** — try `flutter clean`, then `flutter pub get`, then run again.
 - **Windows: `error C2338 … <experimental/coroutine> … STL1011` when building** — newer MSVC versions (Visual Studio 2026) removed the experimental coroutine headers that the `bluetooth_low_energy_windows` plugin's generated C++/WinRT code still uses. This repo already defines `_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS` in `windows/CMakeLists.txt` to restore them; if you regenerate the Windows project with `flutter create .`, re-add that definition.
-- **Windows: `Transport error: The parameter is incorrect` when switching to Bluetooth** — fixed in app code: on Windows the GATT service provider already advertises when the Meshenger service is registered, so the app skips the extra `BluetoothLEAdvertisementPublisher` call that triggers this WinRT error. Pull latest and hot-restart (`R`) or re-run the app.
+- **Windows: `The parameter is incorrect` when Bluetooth starts** — fixed in app code: on Windows the GATT service provider already advertises when the Meshenger service is registered, so the app skips the extra `BluetoothLEAdvertisementPublisher` call that triggers this WinRT error. Pull latest and hot-restart (`R`) or re-run the app.
 - **Windows never shows the Mac online** — two Windows-specific quirks, both handled in this repo:
   1. *Scan filter never matches*: macOS/iOS peripherals carry their 128-bit service UUID in the BLE scan response, which the Windows advertisement watcher's service-UUID filter does not match against — a "filtered" scan silently discovers nothing. The app therefore scans broadly on Windows and filters by the advertised UUIDs in Dart (`lib/core/transport/ble_transport_io.dart`).
   2. *Random addresses*: macOS/iOS peripherals use *random* Bluetooth addresses; the stock `bluetooth_low_energy_windows` plugin connects with `FromBluetoothAddressAsync(address)`, which assumes a *public* address and silently returns null for them. This repo ships a patched copy of the plugin in `packages/bluetooth_low_energy_windows` (wired up via `dependency_overrides` in `pubspec.yaml`) that remembers each device's address type from its advertisement and passes it when connecting. If you update the `bluetooth_low_energy` dependency, check whether upstream has fixed this before removing the override.
 - **Windows logs `channel sent a message from native to Flutter on a non-platform thread`** — the stock plugin invokes pigeon callbacks and async results from WinRT thread-pool threads, which the Flutter engine flags as unsafe (replies can be lost, which manifests as connects that silently time out). The patched plugin copy in `packages/bluetooth_low_energy_windows` marshals every callback back to the platform thread via the COM apartment captured at startup, so these warnings should no longer appear.
-- **Peers never show “online” (Bluetooth)** — make sure Bluetooth is turned on on both machines and they are within range. The first discovery can take ~10–20 seconds. On macOS, approve the Bluetooth permission prompt on first run (re‑enable under **System Settings → Privacy & Security → Bluetooth** if declined).
-- **Peers never show “online” (LAN)** — confirm both devices are on the same network/subnet, allow the app through the OS firewall (UDP 45654 inbound), and note that some guest/public Wi‑Fi networks block device‑to‑device traffic ("client isolation"). A phone hotspot is a reliable fallback.
-- **macOS: network or Bluetooth blocked** — the app sandbox needs the network client/server and Bluetooth entitlements; they are already set in `macos/Runner/*.entitlements` in this repo. If you regenerate the macOS project with `flutter create .`, re‑add them.
+- **Peers never show “online”** — make sure Bluetooth is turned on on both machines and they are within range. The first discovery can take ~10–20 seconds. On macOS, approve the Bluetooth permission prompt on first run (re‑enable under **System Settings → Privacy & Security → Bluetooth** if declined).
+- **macOS: Bluetooth blocked** — the app sandbox needs the Bluetooth entitlement; it is already set in `macos/Runner/*.entitlements` in this repo. If you regenerate the macOS project with `flutter create .`, re‑add it.

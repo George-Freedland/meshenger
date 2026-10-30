@@ -102,8 +102,8 @@ class _VideoChatScreenState extends State<VideoChatScreen> {
               padding: const EdgeInsets.all(12),
               child: Text(
                 'Video calls ring across the mesh with no internet. While '
-                'connected, voice flows as push-to-talk; live video arrives '
-                'when a higher-bandwidth link (Wi-Fi Direct) lands.',
+                'connected, voice flows as push-to-talk; Bluetooth does not '
+                'have the bandwidth for live video.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                 ),

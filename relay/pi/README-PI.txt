@@ -40,14 +40,14 @@ FAST PATH (recommended) — no internet needed on the Pi
 
      Meshenger relay "Pi Gateway"
      Address: MSGR-...
-     Relay running with ble + lan. Ctrl-C to stop.
+     Relay running over Bluetooth. Ctrl-C to stop.
 
 5. On your Mac / Windows / phone: open Meshenger -> Mesh Map.
    "Pi Gateway" appears within ~30-60 seconds.
 
 VERIFY IT ACTUALLY RELAYS
 -------------------------
-- Put two devices on Bluetooth only (Wi-Fi off).
+- Run Meshenger on two devices near the Pi.
 - QUIT the app on device B. Send it a message from device A.
 - Watch the Pi's log: it spools the encrypted envelope.
 - Reopen the app on device B -> the message arrives via the Pi.
@@ -76,7 +76,7 @@ Uses the SDK + source + offline packages; still no internet needed:
 IF YOU SEE "Undervoltage detected!"
 -----------------------------------
 Your power supply is too weak — this throttles the Pi, corrupts SD cards
-over time, and destabilizes the Bluetooth/Wi-Fi radio. Use a proper
+over time, and destabilizes the Bluetooth radio. Use a proper
 5V / 2.5A wall supply (official Pi PSU or a good 12W phone charger) with a
 short, thick micro-USB cable. Do NOT power the Pi from a computer, TV, or
 console USB port. Fix this before debugging anything else.
@@ -110,7 +110,6 @@ TIPS
 - The gateway's identity (its mesh address + keys) lives in
   relay-identity.json next to the binary. Delete it for a fresh address.
 - Useful flags:  --max-spool 512   carry more messages
-                 --no-lan          Bluetooth-only
                  --adapter 1       use a USB Bluetooth dongle (hci1)
 - Everything the Pi forwards is end-to-end encrypted. It cannot read any
   of it — it only sees opaque envelopes and delivery addresses.

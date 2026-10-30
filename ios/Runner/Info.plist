@@ -49,8 +49,6 @@
 	<string>Meshenger uses the camera to capture photos for chats and stories.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Meshenger lets you attach photos from your library to chats and stories.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Meshenger discovers nearby devices on your local network to deliver end-to-end encrypted messages without a server.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

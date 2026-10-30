@@ -5,17 +5,13 @@ import 'dart:math';
 import 'identity.dart';
 import 'transport.dart';
 
-/// Store-and-forward routing shared by every relay transport.
+/// Store-and-forward routing over the relay's transports.
 ///
 /// The core never decrypts anything: envelopes are ciphertext plus a
-/// routing header. It bridges *between* transports — an envelope that
-/// arrives over Bluetooth is offered to LAN peers and vice versa, which is
-/// what lets a Raspberry Pi stitch two Bluetooth islands together over a
-/// house's Wi-Fi (or a long Ethernet run).
+/// routing header.
 class RelayCore {
   /// Safety valve, not a range limit: dedup + the via window prevent
-  /// loops, and physical distance is finite (SF→NY through bridged
-  /// freeway gateways is hundreds of hops).
+  /// loops, and physical distance is finite.
   static const int defaultMaxHops = 1000;
 
   /// Gossip floods more aggressively than envelopes; keep its depth
@@ -160,12 +156,11 @@ class RelayCore {
     }
   }
 
-  /// P2P file-transfer traffic (bulk chunks + progress signals) bridges
-  /// *live* and is never spooled — multi-GB payloads must not pile up in
-  /// gateway memory. If the target is reachable on any transport right
-  /// now (this is the BLE↔LAN bridge in action), pass it along; if not,
-  /// drop it — the sender's flow-control window pauses the transfer and
-  /// the receiver's watermark resumes it when the path is back.
+  /// P2P file-transfer traffic (bulk chunks + progress signals) passes
+  /// through *live* and is never spooled — multi-GB payloads must not pile
+  /// up in gateway memory. If the target is reachable right now, pass it
+  /// along; if not, drop it — the sender's flow-control window pauses the
+  /// transfer and the receiver's watermark resumes it when the path is back.
   Future<void> _passThroughTransfer(
     Map<String, Object?> packet,
     RelayTransport origin,

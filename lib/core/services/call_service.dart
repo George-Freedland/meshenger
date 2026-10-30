@@ -34,7 +34,7 @@ class CallState {
 /// Signaling (`call-invite`/`accept`/`decline`/`busy`/`end`) travels as
 /// encrypted envelopes like any message. While a call is active, audio
 /// moves as push-to-talk clips through the normal media pipeline — real
-/// half-duplex voice that works over Bluetooth and LAN with no internet.
+/// half-duplex voice that works over Bluetooth with no internet.
 class CallService {
   CallService._();
   static final CallService instance = CallService._();

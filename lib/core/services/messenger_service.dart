@@ -12,7 +12,6 @@ import '../models/incoming_message.dart';
 import '../models/message.dart';
 import '../transport/ble_transport.dart';
 import '../transport/envelope_codec.dart';
-import '../transport/lan_transport.dart';
 import '../transport/mesh_transport.dart';
 import '../transport/message_body.dart';
 import 'chat_storage.dart';
@@ -30,11 +29,10 @@ import 'peer_directory.dart';
 import 'route_table.dart';
 import 'settings_service.dart';
 import 'transport_log.dart';
-import 'transport_settings.dart';
 
-/// The mesh router: coordinates the active transport (Bluetooth or LAN),
-/// end-to-end encryption, local storage, store-and-forward relaying,
-/// gossip, and delivery acks.
+/// The mesh router: coordinates the Bluetooth transport, end-to-end
+/// encryption, local storage, store-and-forward relaying, gossip, and
+/// delivery acks.
 ///
 /// Relay model (epidemic store-and-forward): envelopes not addressed to
 /// this device are spooled and re-offered to every node that comes into
@@ -82,7 +80,6 @@ class MessengerService {
   final Random _random = Random();
 
   MeshTransport? _transport;
-  TransportMode _mode = TransportMode.bluetooth;
   Timer? _sweepTimer;
   Timer? _meshTimer;
 
@@ -95,7 +92,7 @@ class MessengerService {
 
   final _changed = StreamController<String>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
-  final _transportChanged = StreamController<TransportMode>.broadcast();
+  final _transportChanged = StreamController<void>.broadcast();
   final _callSignals = StreamController<IncomingMessage>.broadcast();
 
   StreamSubscription<dynamic>? _packetSub;
@@ -133,7 +130,7 @@ class MessengerService {
 
   Stream<String> get onChanged => _changed.stream;
   Stream<Set<String>> get onPeersChanged => _peers.stream;
-  Stream<TransportMode> get onTransportChanged => _transportChanged.stream;
+  Stream<void> get onTransportChanged => _transportChanged.stream;
 
   /// Lets screens broadcast that they changed chat state directly (e.g.
   /// marking a chat read on open), so lists showing badges refresh live.
@@ -148,10 +145,8 @@ class MessengerService {
   Map<String, int> get peerSignal => _transport?.peerRssi ?? const {};
 
   bool get isTransportRunning => _transport?.isRunning ?? false;
-  TransportMode get mode => _mode;
 
   Future<void> start() async {
-    _mode = await TransportSettings.instance.getMode();
     PeerDirectory.instance.resetCache();
     RouteTable.instance.reset();
     MeshActivityLog.instance.resetCache();
@@ -169,9 +164,6 @@ class MessengerService {
       sendPacket: (peer, packet) async =>
           await _transport?.sendPacket(peer, packet) ?? false,
       onlinePeers: () => onlinePeers,
-      chunkSizeForNewOffers: () => _mode == TransportMode.bluetooth
-          ? FileTransfer.defaultBleChunk
-          : FileTransfer.defaultLanChunk,
       onCompleted: (transfer) {
         _changed.add(transfer.peer);
         unawaited(_notifyIncoming(
@@ -187,14 +179,6 @@ class MessengerService {
     _meshTimer ??=
         Timer.periodic(const Duration(seconds: 25), (_) => _meshTick());
     await _sweepExpired();
-  }
-
-  Future<void> setMode(TransportMode mode) async {
-    if (mode == _mode && isTransportRunning) return;
-    _mode = mode;
-    await TransportSettings.instance.setMode(mode);
-    await _stopTransport();
-    await _startTransport();
   }
 
   /// Stops and restarts the active transport — the retry action after a
@@ -232,10 +216,7 @@ class MessengerService {
     if (isTransportRunning) return;
     transportError = null;
 
-    final transport = switch (_mode) {
-      TransportMode.bluetooth => createBleTransport(),
-      TransportMode.lan => createLanTransport(),
-    };
+    final transport = createBleTransport();
     _transport = transport;
 
     try {
@@ -243,8 +224,8 @@ class MessengerService {
     } catch (e) {
       transportError = e is StateError ? e.message : e.toString();
       TransportLog.instance
-          .log('Transport failed to start (${_mode.name}): $transportError');
-      _transportChanged.add(_mode);
+          .log('Transport failed to start (bluetooth): $transportError');
+      _transportChanged.add(null);
       _peers.add(const <String>{});
       return;
     }
@@ -255,7 +236,7 @@ class MessengerService {
       _onPeersAppeared(peers);
     });
 
-    _transportChanged.add(_mode);
+    _transportChanged.add(null);
     _peers.add(transport.onlinePeers);
     unawaited(_onPeersAppeared(transport.onlinePeers));
   }

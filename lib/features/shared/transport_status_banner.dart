@@ -3,14 +3,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/services/messenger_service.dart';
-import '../../core/services/transport_settings.dart';
 
 /// Persistent transport-health banner.
 ///
-/// Transport startup failures used to be stored silently and only surface
-/// when the user happened to toggle transports — the mesh map just looked
-/// empty. This banner puts the problem (and the fix) where users actually
-/// look:
+/// Transport startup failures used to be stored silently — the mesh map
+/// just looked empty. This banner puts the problem (and the fix) where
+/// users actually look:
 /// - red with a Retry button when the transport failed to start (Bluetooth
 ///   off, permission denied, …);
 /// - amber when running degraded (central-only Bluetooth: can discover
@@ -24,7 +22,7 @@ class TransportStatusBanner extends StatefulWidget {
 }
 
 class _TransportStatusBannerState extends State<TransportStatusBanner> {
-  StreamSubscription<TransportMode>? _sub;
+  StreamSubscription<void>? _sub;
   bool _retrying = false;
 
   @override
@@ -62,15 +60,9 @@ class _TransportStatusBannerState extends State<TransportStatusBanner> {
     final foreground = isError
         ? theme.colorScheme.onErrorContainer
         : theme.colorScheme.onTertiaryContainer;
-    final bluetooth = service.mode == TransportMode.bluetooth;
-    final icon = isError
-        ? (bluetooth ? Icons.bluetooth_disabled : Icons.wifi_off)
-        : Icons.info_outline;
-    final title = isError
-        ? (bluetooth
-            ? 'Bluetooth transport not running'
-            : 'LAN transport not running')
-        : 'Limited Bluetooth mode';
+    final icon = isError ? Icons.bluetooth_disabled : Icons.info_outline;
+    final title =
+        isError ? 'Bluetooth transport not running' : 'Limited Bluetooth mode';
 
     return Material(
       color: background,

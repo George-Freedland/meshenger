@@ -116,7 +116,7 @@ class FileTransfer {
         name: json['name'] as String? ?? 'file',
         mime: json['mime'] as String? ?? 'application/octet-stream',
         size: (json['size'] as num?)?.toInt() ?? 0,
-        chunkSize: (json['chunk'] as num?)?.toInt() ?? defaultLanChunk,
+        chunkSize: (json['chunk'] as num?)?.toInt() ?? defaultBleChunk,
         totalChunks: (json['total'] as num?)?.toInt() ?? 0,
         confirmed: (json['confirmed'] as num?)?.toInt() ?? 0,
         status: FtStatus.values.firstWhere(
@@ -128,11 +128,10 @@ class FileTransfer {
         createdMs: (json['ts'] as num?)?.toInt() ?? 0,
       );
 
-  static const int defaultLanChunk = 256 * 1024;
   static const int defaultBleChunk = 24 * 1024;
 }
 
-/// Peer-to-peer large-file transfer over whatever transport is active.
+/// Peer-to-peer large-file transfer over Bluetooth.
 ///
 /// Built for multi-gigabyte payloads (video clips between two PCs), which
 /// the normal 8 MB message path cannot carry:
@@ -211,7 +210,6 @@ class FileTransferService {
   })? _sendControl;
   Future<bool> Function(String peer, Map<String, Object?> packet)? _sendPacket;
   Set<String> Function()? _onlinePeers;
-  int Function()? _chunkSizeForNewOffers;
   void Function(FileTransfer transfer)? _onIncomingOffer;
   void Function(FileTransfer transfer)? _onCompleted;
 
@@ -226,14 +224,12 @@ class FileTransferService {
     required Future<bool> Function(String peer, Map<String, Object?> packet)
         sendPacket,
     required Set<String> Function() onlinePeers,
-    required int Function() chunkSizeForNewOffers,
     void Function(FileTransfer transfer)? onIncomingOffer,
     void Function(FileTransfer transfer)? onCompleted,
   }) {
     _sendControl = sendControl;
     _sendPacket = sendPacket;
     _onlinePeers = onlinePeers;
-    _chunkSizeForNewOffers = chunkSizeForNewOffers;
     _onIncomingOffer = onIncomingOffer;
     _onCompleted = onCompleted;
   }
@@ -242,7 +238,6 @@ class FileTransferService {
     _sendControl = null;
     _sendPacket = null;
     _onlinePeers = null;
-    _chunkSizeForNewOffers = null;
     _onIncomingOffer = null;
     _onCompleted = null;
     for (final raf in _rafs.values) {
@@ -388,8 +383,7 @@ class FileTransferService {
     final size = await File(path).length();
     if (size == 0) throw StateError('File is empty');
 
-    final chunkSize =
-        _chunkSizeForNewOffers?.call() ?? FileTransfer.defaultLanChunk;
+    const chunkSize = FileTransfer.defaultBleChunk;
     final transfer = FileTransfer(
       tid: _uuid.v4(),
       peer: peer,

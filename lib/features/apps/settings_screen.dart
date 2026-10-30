@@ -5,7 +5,6 @@ import '../../core/services/alert_sound_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/settings_service.dart';
-import '../../core/services/transport_settings.dart';
 import '../../core/ui/avatars.dart';
 
 const _autoDeleteOptions = <(int, String)>[
@@ -33,7 +32,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _relayEnabled = true;
   int _autoDeleteSeconds = 0;
   int _avatarId = 0;
-  TransportMode _transportMode = MessengerService.instance.mode;
   bool _soundEnabled = true;
   AlertTone _alertTone = AlertTone.ping;
 
@@ -103,24 +101,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Profile saved')));
     }
-  }
-
-  Future<void> _setTransport(TransportMode mode) async {
-    setState(() => _transportMode = mode);
-    await MessengerService.instance.setMode(mode);
-    if (!mounted) return;
-    final error = MessengerService.instance.transportError;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          error != null
-              ? 'Transport error: $error'
-              : mode == TransportMode.bluetooth
-                  ? 'Bluetooth transport active, no network needed'
-                  : 'LAN transport active, same Wi-Fi/hotspot required',
-        ),
-      ),
-    );
   }
 
   Future<void> _logout() async {
@@ -289,23 +269,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 24),
                 Text('Network', style: theme.textTheme.titleSmall),
                 const SizedBox(height: 8),
-                SegmentedButton<TransportMode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: TransportMode.bluetooth,
-                      icon: Icon(Icons.bluetooth),
-                      label: Text('Bluetooth'),
-                    ),
-                    ButtonSegment(
-                      value: TransportMode.lan,
-                      icon: Icon(Icons.wifi),
-                      label: Text('LAN'),
-                    ),
-                  ],
-                  selected: {_transportMode},
-                  onSelectionChanged: (s) => _setTransport(s.first),
-                ),
-                const SizedBox(height: 16),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Relay messages for the mesh'),

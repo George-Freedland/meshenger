@@ -15,7 +15,7 @@ class PeerIdentity {
   const PeerIdentity({required this.address, required this.x25519Base64});
 }
 
-/// Shared message envelope crypto used by every transport (LAN, Bluetooth).
+/// Message envelope crypto for everything sent over the mesh.
 ///
 /// Envelope: AES-256-GCM ciphertext under an X25519 ECDH shared key,
 /// signed with the sender's Ed25519 identity key. Relay nodes (other
@@ -27,10 +27,8 @@ class EnvelopeCodec {
   /// Default relay budget for an envelope.
   ///
   /// Physical distance is finite, so this is a safety valve, not a range
-  /// limit: SF→NY through freeway gateways is hundreds of hops (each
-  /// Ethernet/Wi-Fi bridge between two gateways counts as one). Loops are
-  /// prevented by per-node dedup and the via window — not by this cap — so
-  /// a huge value costs nothing on healthy paths.
+  /// limit. Loops are prevented by per-node dedup and the via window — not
+  /// by this cap — so a huge value costs nothing on healthy paths.
   static const int defaultMaxHops = 1000;
 
   /// Gossip (presence + key discovery) floods more aggressively than

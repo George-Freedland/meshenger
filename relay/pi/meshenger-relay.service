@@ -1,6 +1,6 @@
 [Unit]
-Description=Meshenger mesh gateway (Bluetooth + LAN relay)
-After=bluetooth.target network.target
+Description=Meshenger mesh gateway (Bluetooth relay)
+After=bluetooth.target
 Wants=bluetooth.target
 
 [Service]
