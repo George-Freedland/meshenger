@@ -1,7 +1,9 @@
 #ifndef FLUTTER_PLUGIN_CENTRAL_MANAGER_H_
 #define FLUTTER_PLUGIN_CENTRAL_MANAGER_H_
 
+#include <atomic>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 
 #include "winrt/Windows.Devices.Bluetooth.h"
@@ -63,12 +65,18 @@ namespace bluetooth_low_energy_windows
 		std::map<int64_t, std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic>>> m_characteristics;
 		std::map<int64_t, std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattDescriptor>>> m_descriptors;
 		std::optional<winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher::Received_revoker> m_watcher_received_revoker;
+		// Set between StartDiscovery and StopDiscovery. Windows can stop the
+		// watcher on its own (radio busy, adapter reset) without the app
+		// asking; while this is set it gets started again.
+		std::atomic<bool> m_discovering{false};
+		std::optional<winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher::Stopped_revoker> m_watcher_stopped_revoker;
 		std::optional<winrt::Windows::Devices::Radios::Radio::StateChanged_revoker> m_radio_state_changed_revoker;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::ConnectionStatusChanged_revoker>> m_device_connection_status_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession::MaxPduSizeChanged_revoker>> m_session_max_pdu_size_changed_revokers;
 		std::map<int64_t, std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic::ValueChanged_revoker>>> m_characteristic_value_changed_revokers;
 
 		winrt::fire_and_forget InitializeAsync(std::function<void(std::optional<FlutterError> reply)> result);
+		winrt::fire_and_forget RestartDiscoveryAsync(winrt::Windows::Foundation::TimeSpan delay);
 		winrt::fire_and_forget ConnectAsync(int64_t address_args, std::function<void(std::optional<FlutterError> reply)> result);
 		winrt::fire_and_forget GetServicesAsync(int64_t address_args, const CacheModeArgs &mode_args, std::function<void(ErrorOr<flutter::EncodableList> reply)> result);
 		winrt::fire_and_forget GetIncludedServicesAsync(int64_t address_args, int64_t handle_args, const CacheModeArgs &mode_args, std::function<void(ErrorOr<flutter::EncodableList> reply)> result);

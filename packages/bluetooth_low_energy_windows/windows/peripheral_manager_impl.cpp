@@ -4,6 +4,25 @@
 
 namespace bluetooth_low_energy_windows
 {
+	static const char *AdvertisementStatusName(winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus status)
+	{
+		switch (status)
+		{
+		case winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Created:
+			return "created";
+		case winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Stopped:
+			return "stopped";
+		case winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Started:
+			return "started";
+		case winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Aborted:
+			return "aborted";
+		case winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::StartedWithoutAllAdvertisementData:
+			return "started without all advertisement data";
+		default:
+			return "in an unknown state";
+		}
+	}
+
 	PeripheralManagerImpl::PeripheralManagerImpl(flutter::BinaryMessenger *messenger)
 	{
 		const auto api = PeripheralManagerFlutterApi(messenger);
@@ -432,6 +451,8 @@ namespace bluetooth_low_energy_windows
 			[this, hash_code_args](winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProvider provider, winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatusChangedEventArgs event_args)
 			{
 				const auto status = event_args.Status();
+				std::cerr << "[bluetooth_low_energy_windows] advertising " << AdvertisementStatusName(status)
+						  << " (BluetoothError " << static_cast<int32_t>(event_args.Error()) << ")" << std::endl;
 				if (status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Stopped ||
 					status == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatus::Aborted)
 				{
@@ -465,8 +486,10 @@ namespace bluetooth_low_energy_windows
 			}
 			service_provider.StartAdvertising(AdvertisingParameters());
 		}
-		catch (const winrt::hresult_error &)
+		catch (const winrt::hresult_error &ex)
 		{
+			std::cerr << "[bluetooth_low_energy_windows] advertising restart failed: "
+					  << winrt::to_string(ex.message()) << std::endl;
 			retry = true;
 		}
 		if (retry)

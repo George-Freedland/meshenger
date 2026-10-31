@@ -66,6 +66,7 @@ namespace bluetooth_low_energy_windows
 			}
 			filter.Advertisement(advertisement);
 			watcher.AdvertisementFilter(filter);
+			m_discovering = true;
 			watcher.Start();
 			return std::nullopt;
 		}
@@ -83,6 +84,7 @@ namespace bluetooth_low_energy_windows
 		try
 		{
 			const auto &watcher = m_watcher.value();
+			m_discovering = false;
 			watcher.Stop();
 			return std::nullopt;
 		}
@@ -191,6 +193,7 @@ namespace bluetooth_low_energy_windows
 		{
 			const auto &watcher = m_watcher.value();
 			const auto status = watcher.Status();
+			m_discovering = false;
 			if (status == winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStatus::Started)
 			{
 				watcher.Stop();
@@ -260,6 +263,18 @@ namespace bluetooth_low_energy_windows
 						api.OnDiscovered(peripheral_args, rssi_args, timestamp_args, type_args, advertisement_args, [] {}, [](auto error) {});
 					});
 				});
+			m_watcher_stopped_revoker = watcher.Stopped(
+				winrt::auto_revoke,
+				[this](winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher, winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStoppedEventArgs event_args)
+				{
+					if (!m_discovering)
+					{
+						return; // the app stopped it
+					}
+					std::cerr << "[bluetooth_low_energy_windows] Windows stopped the scan (BluetoothError "
+							  << static_cast<int32_t>(event_args.Error()) << ") - restarting it" << std::endl;
+					RestartDiscoveryAsync(std::chrono::seconds(2));
+				});
 			result(std::nullopt);
 		}
 		catch (const winrt::hresult_error &ex)
@@ -276,6 +291,45 @@ namespace bluetooth_low_energy_windows
 			const auto message = ex.what();
 			const auto error = FlutterError(code, message);
 			result(error);
+		}
+	}
+
+	winrt::fire_and_forget CentralManagerImpl::RestartDiscoveryAsync(winrt::Windows::Foundation::TimeSpan delay)
+	{
+		co_await winrt::resume_after(delay);
+		co_await m_ui_context;
+		if (!m_discovering)
+		{
+			co_return;
+		}
+		auto retry = false;
+		try
+		{
+			const auto &watcher = m_watcher.value();
+			const auto status = watcher.Status();
+			if (status == winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStatus::Started)
+			{
+				co_return;
+			}
+			if (status == winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStatus::Stopping)
+			{
+				retry = true; // can't start until it has fully stopped
+			}
+			else
+			{
+				watcher.Start();
+				std::cerr << "[bluetooth_low_energy_windows] scan restarted" << std::endl;
+			}
+		}
+		catch (const winrt::hresult_error &ex)
+		{
+			std::cerr << "[bluetooth_low_energy_windows] scan restart failed: "
+					  << winrt::to_string(ex.message()) << std::endl;
+			retry = true;
+		}
+		if (retry)
+		{
+			RestartDiscoveryAsync(std::chrono::seconds(10));
 		}
 	}
 

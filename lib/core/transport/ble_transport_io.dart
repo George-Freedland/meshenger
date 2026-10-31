@@ -43,6 +43,15 @@ class _IoBleTransport implements MeshTransport {
   static const Duration rescanInterval = Duration(seconds: 12);
   static const Duration peerTimeout = Duration(seconds: 40);
 
+  /// How often the scan is checked. While no peer is connected, the first
+  /// few checks log what the scan heard, to make discovery diagnosable.
+  static const Duration scanCheckInterval = Duration(seconds: 30);
+
+  /// Windows' advertisement watcher can stop without telling the app. A
+  /// broad scan hears something within seconds almost anywhere, so one that
+  /// has heard nothing for this long is restarted.
+  static const Duration silentScanRestartAfter = Duration(seconds: 45);
+
   /// How often we re-send our hello over open push channels (keepalive) —
   /// also refreshes our lastSeen on the peer's side.
   static const Duration helloInterval = Duration(seconds: 20);
@@ -138,6 +147,11 @@ class _IoBleTransport implements MeshTransport {
   Timer? _rescanTimer;
   Timer? _reapTimer;
   Timer? _helloTimer;
+  Timer? _scanCheckTimer;
+  int _advertsHeard = 0;
+  int _meshengerAdvertsHeard = 0;
+  int _lastAdvertHeardMs = 0;
+  int _scanReportsLeft = 0;
 
   /// Serializes central-side GATT operations (connect/discover/write); BLE
   /// stacks misbehave when multiple operations run concurrently.
@@ -348,6 +362,9 @@ class _IoBleTransport implements MeshTransport {
     }
     _reapTimer = Timer.periodic(peerTimeout, (_) => _reapStalePeers());
     _helloTimer = Timer.periodic(helloInterval, (_) => _sendHellos());
+    _lastAdvertHeardMs = DateTime.now().millisecondsSinceEpoch;
+    _scanReportsLeft = 10;
+    _scanCheckTimer = Timer.periodic(scanCheckInterval, (_) => _checkScan());
 
     _running = true;
   }
@@ -361,6 +378,8 @@ class _IoBleTransport implements MeshTransport {
     _reapTimer = null;
     _helloTimer?.cancel();
     _helloTimer = null;
+    _scanCheckTimer?.cancel();
+    _scanCheckTimer = null;
     for (final timer in _pendingResolves.values) {
       timer.cancel();
     }
@@ -494,13 +513,19 @@ class _IoBleTransport implements MeshTransport {
   void _handleDiscovered(DiscoveredEventArgs event) {
     final deviceUuid = event.peripheral.uuid.toString();
     _rssiByDeviceUuid[deviceUuid] = event.rssi;
+    _advertsHeard++;
+    _lastAdvertHeardMs = DateTime.now().millisecondsSinceEpoch;
+    final name = event.advertisement.name;
     // On non-Windows platforms the native scan filter already guarantees
     // this is a Meshenger device (and the callback may omit the UUID list).
+    // Windows reports a Mac's advertisement and scan response as separate
+    // events, and the name and service UUID may be split across them.
     final advertisesMeshenger = !Platform.isWindows ||
-        event.advertisement.serviceUUIDs.contains(serviceUuid);
-    final name = event.advertisement.name;
+        event.advertisement.serviceUUIDs.contains(serviceUuid) ||
+        name == reliablePeripheralName;
 
     if (advertisesMeshenger) {
+      _meshengerAdvertsHeard++;
       _lastAdvertMs[deviceUuid] = DateTime.now().millisecondsSinceEpoch;
       if (name == reliablePeripheralName) _reliableAdvertisers.add(deviceUuid);
       if (_loggedDevices.add(deviceUuid)) {
@@ -763,6 +788,33 @@ class _IoBleTransport implements MeshTransport {
   static String _shortAddr(String address) =>
       address.length <= 12 ? address : '${address.substring(0, 12)}…';
 
+  void _checkScan() {
+    if (!_running) return;
+    final heard = _advertsHeard;
+    final meshenger = _meshengerAdvertsHeard;
+    _advertsHeard = 0;
+    _meshengerAdvertsHeard = 0;
+    if (_lastEmittedPeers.isEmpty && _scanReportsLeft > 0) {
+      _scanReportsLeft--;
+      final window = '${scanCheckInterval.inSeconds} s';
+      TransportLog.instance.log(Platform.isWindows
+          ? 'BLE: scan heard $heard advertisement${heard == 1 ? '' : 's'} '
+              'in $window, $meshenger from Meshenger devices'
+          : 'BLE: scan heard $meshenger Meshenger '
+              'advertisement${meshenger == 1 ? '' : 's'} in $window');
+    }
+    // Only Windows scans broadly; a filtered scan is silent whenever no
+    // Meshenger device is around.
+    if (!Platform.isWindows) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final silentMs = now - _lastAdvertHeardMs;
+    if (silentMs < silentScanRestartAfter.inMilliseconds) return;
+    TransportLog.instance.log(
+        'BLE: scan has heard nothing for ${silentMs ~/ 1000} s, restarting it');
+    _lastAdvertHeardMs = now;
+    unawaited(_restartDiscovery());
+  }
+
   Future<void> _restartDiscovery() async {
     final central = _central;
     if (central == null || !_running) return;
@@ -784,6 +836,7 @@ class _IoBleTransport implements MeshTransport {
   Future<void> rescan() async {
     if (!_running) return;
     TransportLog.instance.log('BLE: rescanning surroundings');
+    _scanReportsLeft = 10;
     for (final timer in _pendingResolves.values) {
       timer.cancel();
     }
