@@ -8,6 +8,7 @@ import '../../core/models/contact.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
 
 /// Local file library: import anything, preview images and audio, send
@@ -67,23 +68,12 @@ class _StorageScreenState extends State<StorageScreen>
         _ => _items,
       };
 
+  /// Copies the file in without loading it, so any size works.
   Future<void> _import() async {
-    final picked = await pickAnyFile();
+    final picked = await pickFileForTransfer();
     if (picked == null) return;
-    if (picked.bytes.length > MediaStore.maxTransferBytes) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Files over ${MediaStore.maxTransferBytes ~/ (1024 * 1024)} MB '
-              'cannot be sent over the mesh (still saved locally).',
-            ),
-          ),
-        );
-      }
-    }
-    await MediaStore.instance.saveBytes(
-      picked.bytes,
+    await MediaStore.instance.copyFile(
+      picked.path,
       name: picked.name,
       mime: picked.mime,
       source: MediaSource.import_,
@@ -123,6 +113,28 @@ class _StorageScreenState extends State<StorageScreen>
       ),
     );
     if (target == null || !mounted) return;
+
+    final name = target.nickname ?? 'contact';
+    if (item.sizeBytes > MediaStore.maxTransferBytes) {
+      // Too big for the mesh path: stream it peer-to-peer instead.
+      final path = await MediaStore.instance.pathFor(item.id);
+      if (path == null) return;
+      try {
+        await MessengerService.instance.sendFileTransfer(target.address,
+            path: path, name: item.name, mime: item.mime);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Offered to $name — it streams straight to '
+                  'them when you are near each other.')));
+        }
+      } on StateError catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(e.message)));
+        }
+      }
+      return;
+    }
 
     final bytes = await MediaStore.instance.readBytes(item.id);
     if (bytes == null) return;
@@ -174,6 +186,11 @@ class _StorageScreenState extends State<StorageScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (item.isAudio && path != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: AudioFileCard(path: path, fileName: item.name),
+              ),
             ListTile(
               title: Text(item.name,
                   maxLines: 1, overflow: TextOverflow.ellipsis),

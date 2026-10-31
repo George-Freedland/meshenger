@@ -3,7 +3,9 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/post_attachment.dart';
 import '../transport/envelope_codec.dart';
+import 'blob_service.dart';
 import 'identity_scope.dart';
 import 'identity_service.dart';
 import 'media_store.dart';
@@ -31,12 +33,17 @@ class NetworkPost {
   /// [EnvelopeCodec.scopeGlobal] or [EnvelopeCodec.scopeSite].
   final String scope;
 
-  /// 'text' | 'image' | 'page'.
+  /// 'text' | 'image' | 'page' | 'file'.
   final String kind;
 
   /// Pages only: path under the author's site ('' = home page).
   final String? path;
   final String? title;
+
+  /// File posts: what's attached (the bytes live in BlobService), and its
+  /// cover art (id in the local MediaStore).
+  final PostAttachment? attachment;
+  final String? artMediaId;
 
   /// Mine and kept on this device only (never published, or withdrawn).
   final bool isPrivate;
@@ -55,8 +62,15 @@ class NetworkPost {
     String? kind,
     this.path,
     this.title,
+    this.attachment,
+    this.artMediaId,
     this.isPrivate = false,
-  }) : kind = kind ?? (mediaId != null ? 'image' : 'text');
+  }) : kind = kind ??
+            (attachment != null
+                ? 'file'
+                : mediaId != null
+                    ? 'image'
+                    : 'text');
 
   bool get isActive => DateTime.now().millisecondsSinceEpoch < expiresMs;
   bool get isPage => kind == 'page';
@@ -77,6 +91,8 @@ class NetworkPost {
         kind: kind,
         path: path,
         title: title,
+        attachment: attachment,
+        artMediaId: artMediaId,
         isPrivate: isPrivate ?? this.isPrivate,
       );
 
@@ -94,6 +110,8 @@ class NetworkPost {
         'kind': kind,
         if (path != null) 'path': path,
         if (title != null) 'title': title,
+        if (attachment != null) 'att': attachment!.toJson(),
+        if (artMediaId != null) 'artMediaId': artMediaId,
         if (isPrivate) 'private': true,
       };
 
@@ -111,8 +129,14 @@ class NetworkPost {
         kind: json['kind'] as String?,
         path: json['path'] as String?,
         title: json['title'] as String?,
+        attachment: PostAttachment.fromJson(json['att']),
+        artMediaId: json['artMediaId'] as String?,
         isPrivate: json['private'] == true,
       );
+
+  /// Local media this post owns (deleted with it).
+  Iterable<String> get ownedMedia =>
+      [if (mediaId != null) mediaId!, if (artMediaId != null) artMediaId!];
 }
 
 /// Local store for the Network (my posts and pages + everything heard from
@@ -219,10 +243,7 @@ class NetworkService {
     if (removed.isEmpty) return;
     posts.removeWhere((p) => p.id == id);
     await _writeAll(posts);
-    for (final post in removed) {
-      final mediaId = post.mediaId;
-      if (mediaId != null) await MediaStore.instance.delete(mediaId);
-    }
+    await _dropMediaOf(removed, posts);
     _notifyPostsChanged();
   }
 
@@ -232,14 +253,29 @@ class NetworkService {
     final posts = await _readAll();
     final active = posts.where((p) => p.isActive).toList();
     if (active.length == posts.length) return false;
-    final expired = posts.where((p) => !p.isActive);
-    for (final post in expired) {
-      final mediaId = post.mediaId;
-      if (mediaId != null) await MediaStore.instance.delete(mediaId);
-    }
     await _writeAll(active);
+    await _dropMediaOf(posts.where((p) => !p.isActive), active);
     _notifyPostsChanged();
     return true;
+  }
+
+  /// Deletes what [gone] posts owned. Attached files are shared by hash,
+  /// so one stays while any [remaining] post still points at it.
+  Future<void> _dropMediaOf(
+    Iterable<NetworkPost> gone,
+    List<NetworkPost> remaining,
+  ) async {
+    for (final post in gone) {
+      for (final mediaId in post.ownedMedia) {
+        await MediaStore.instance.delete(mediaId);
+      }
+    }
+    if (gone.any((p) => p.attachment != null)) {
+      await BlobService.instance.retain({
+        for (final p in remaining)
+          if (p.attachment != null) p.attachment!.sha256,
+      });
+    }
   }
 
   // ---------------------------------------------------------------------

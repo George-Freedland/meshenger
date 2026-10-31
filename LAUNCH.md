@@ -380,6 +380,7 @@ Rules for every video:
 | 8 | "I sent a disappearing photo with no internet." | View-once photo, the other person opens it, it burns on both phones | "End-to-end encrypted. Offline." |
 | 9 | "Watch me vanish from his map." | Your dot on a friend's Mesh Map, tap Invisible, it disappears | "You can still send and receive." |
 | 10 | "Day 1 of building an internet that works without the internet." | Build-in-public: one feature or test per day, face to camera with a screen recording | "Follow to see if it works." |
+| 11 | "I just dropped a song to everyone in this room. No internet." | Post an MP3 on Global (the card shows its cover art), friends' phones in airplane mode tap play, the song downloads from your phone and plays | "Your mixtape, passed phone to phone." |
 
 Also **reply to comments with videos**, like "does it work through walls?" or "what's the range?". Each test answers a real question and the algorithms favor replies.
 

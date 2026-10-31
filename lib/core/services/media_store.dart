@@ -199,6 +199,29 @@ class MediaStore {
     return item;
   }
 
+  /// Copies a file into the library; the original stays where it is.
+  Future<MediaItem> copyFile(
+    String sourcePath, {
+    required String name,
+    required String mime,
+    required MediaSource source,
+  }) async {
+    final item = MediaItem(
+      id: _uuid.v4(),
+      name: name,
+      mime: mime,
+      sizeBytes: await File(sourcePath).length(),
+      createdMs: DateTime.now().millisecondsSinceEpoch,
+      source: source,
+    );
+    await File(sourcePath).copy((await fileFor(item)).path);
+    final items = await _readAll();
+    items.add(item);
+    await _writeAll(items);
+    _changed.add(null);
+    return item;
+  }
+
   Future<void> delete(String id) async {
     final items = await _readAll();
     final idx = items.indexWhere((i) => i.id == id);

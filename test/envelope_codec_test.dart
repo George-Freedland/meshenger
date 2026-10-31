@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:meshenger/core/models/post_attachment.dart';
 import 'package:meshenger/core/services/identity_service.dart';
 import 'package:meshenger/core/transport/envelope_codec.dart';
 import 'package:meshenger/core/transport/message_body.dart';
@@ -393,6 +394,59 @@ void main() {
         ..['scope'] = EnvelopeCodec.scopeGlobal;
       expect(await EnvelopeCodec.verifyNetworkPost(moved), isNull,
           reason: 'a site post cannot be moved onto global');
+    });
+
+    test('a file post carries its attachment and cover, all signed',
+        () async {
+      await unlockAs(alice);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final song = PostAttachment(
+        name: 'Mesh Love.mp3',
+        mime: 'audio/mpeg',
+        size: 5 * 1024 * 1024,
+        sha256: 'ab' * 32,
+        title: 'Mesh Love',
+        artist: 'The Nodes',
+        album: 'Offline',
+        durationMs: 201000,
+      );
+      final art = base64Encode([0xFF, 0xD8, 1, 2, 3]);
+      final packet = await EnvelopeCodec.buildNetworkPost(
+        id: 'song-1',
+        text: 'new single',
+        tsMs: now,
+        expMs: now + 3600000,
+        attachment: song,
+        artB64: art,
+      );
+      expect(packet['v'], 3);
+      expect(packet.containsKey('media'), isFalse,
+          reason: 'a 5 MB file travels on request, not in the post');
+
+      final relayed = jsonDecode(jsonEncode(packet)) as Map<String, Object?>
+        ..['hops'] = 4;
+      final verified = await EnvelopeCodec.verifyNetworkPost(relayed);
+      expect(verified, isNotNull);
+      expect(verified!.kind, 'file');
+      expect(verified.attachment!.sha256, song.sha256);
+      expect(verified.attachment!.title, 'Mesh Love');
+      expect(verified.attachment!.artist, 'The Nodes');
+      expect(verified.attachment!.durationMs, 201000);
+      expect(verified.artB64, art);
+
+      for (final (field, value) in <(String, Object)>[
+        ('att', song.encode().replaceAll('ab', 'cd')),
+        ('att', song.encode().replaceAll('Mesh Love.mp3', 'virus.exe')),
+        ('art', base64Encode([0xFF, 0xD8, 9])),
+        ('text', 'planted'),
+        ('scope', EnvelopeCodec.scopeSite),
+      ]) {
+        final tampered = Map<String, Object?>.from(packet)..[field] = value;
+        expect(await EnvelopeCodec.verifyNetworkPost(tampered), isNull,
+            reason: 'changing $field must break the signature');
+      }
+      final noAttachment = Map<String, Object?>.from(packet)..remove('att');
+      expect(await EnvelopeCodec.verifyNetworkPost(noAttachment), isNull);
     });
   });
 

@@ -161,9 +161,10 @@ class _NetworkScreenState extends State<NetworkScreen> {
         .toList();
 
     for (final post in posts) {
-      final mediaId = post.mediaId;
-      if (mediaId != null && !_mediaPaths.containsKey(mediaId)) {
-        _mediaPaths[mediaId] = await MediaStore.instance.pathFor(mediaId);
+      for (final mediaId in post.ownedMedia) {
+        if (!_mediaPaths.containsKey(mediaId)) {
+          _mediaPaths[mediaId] = await MediaStore.instance.pathFor(mediaId);
+        }
       }
     }
 

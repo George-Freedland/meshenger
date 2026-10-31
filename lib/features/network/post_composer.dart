@@ -2,9 +2,11 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../core/media/post_file.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/media_widgets.dart';
+import 'post_attachment_view.dart';
 
 const networkPostDurations = <(int, String)>[
   (3600, '1 hour'),
@@ -44,6 +46,8 @@ class _PostComposerState extends State<_PostComposer> {
   int _ttlSeconds = 86400;
   Uint8List? _image;
   String? _imageMime;
+  PreparedPostFile? _file;
+  bool _preparing = false;
   bool _posting = false;
   String? _error;
 
@@ -70,13 +74,38 @@ class _PostComposerState extends State<_PostComposer> {
     setState(() {
       _image = picked.bytes;
       _imageMime = picked.mime;
+      _file = null;
       _error = null;
     });
   }
 
+  Future<void> _attachFile() async {
+    final picked = await pickFileForTransfer();
+    if (picked == null || !mounted) return;
+    setState(() {
+      _preparing = true;
+      _image = null;
+      _file = null;
+      _error = null;
+    });
+    try {
+      final prepared = await preparePostFile(
+          path: picked.path, name: picked.name, mime: picked.mime);
+      if (mounted) setState(() => _file = prepared);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
   Future<void> _post() async {
     final text = _text.text.trim();
-    if ((text.isEmpty && _image == null) || _posting) return;
+    if ((text.isEmpty && _image == null && _file == null) ||
+        _posting ||
+        _preparing) {
+      return;
+    }
     setState(() {
       _posting = true;
       _error = null;
@@ -87,6 +116,7 @@ class _PostComposerState extends State<_PostComposer> {
         ttlSeconds: _ttlSeconds,
         imageBytes: _image,
         imageMime: _imageMime,
+        file: _file,
         scope: _scope,
         isPrivate: _toSite && _private,
       );
@@ -192,6 +222,13 @@ class _PostComposerState extends State<_PostComposer> {
                 ],
               ),
             ],
+            if (_preparing || _file != null) ...[
+              const SizedBox(height: 10),
+              AttachedFilePreview(
+                file: _file,
+                onRemove: () => setState(() => _file = null),
+              ),
+            ],
             const SizedBox(height: 10),
             Wrap(
               spacing: 8,
@@ -208,6 +245,11 @@ class _PostComposerState extends State<_PostComposer> {
                   tooltip: 'Attach photo',
                   onPressed: () => _attach(fromCamera: false),
                   icon: const Icon(Icons.photo_outlined),
+                ),
+                IconButton(
+                  tooltip: 'Attach file',
+                  onPressed: _attachFile,
+                  icon: const Icon(Icons.attach_file_rounded),
                 ),
                 if (supportsCameraCapture)
                   IconButton(

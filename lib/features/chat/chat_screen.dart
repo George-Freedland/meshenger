@@ -16,6 +16,7 @@ import '../../core/services/identity_service.dart';
 import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/safety_service.dart';
+import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
 import '../shared/peer_info_sheet.dart';
 import '../shared/safety_actions.dart';
@@ -238,37 +239,27 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ListTile(
-              leading: const Icon(Icons.insert_drive_file_outlined),
+              leading: const Icon(Icons.attach_file_rounded),
               title: const Text('File'),
-              subtitle: const Text('Up to 8 MB, travels through the mesh'),
+              subtitle: Text(_isGroup
+                  ? 'Songs, videos, documents — up to 8 MB'
+                  : 'Songs, videos, documents — any size'),
               onTap: () {
                 Navigator.pop(ctx);
                 _sendFile();
               },
             ),
-            if (!_isGroup)
-              ListTile(
-                leading: const Icon(Icons.swap_vert_circle_outlined),
-                title: const Text('File transfer (any size)'),
-                subtitle: const Text(
-                    'Peer-to-peer, resumable — for multi-GB video and more'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  _startFileTransfer();
-                },
-              ),
           ],
         ),
       ),
     );
   }
 
-  Future<void> _startFileTransfer() async {
+  /// Big files stream straight to the other person, resumably, whenever
+  /// the two devices are near each other.
+  Future<void> _offerTransfer(PickedFileHandle picked) async {
     final key = _chatKey;
     if (key == null) return;
-    final picked = await pickFileForTransfer();
-    if (picked == null || !mounted) return;
-
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -368,14 +359,33 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Any file. Up to 8 MB it travels through the mesh like a message
+  /// (relays carry it); bigger ones go peer-to-peer.
   Future<void> _sendFile() async {
-    final picked = await pickAnyFile();
+    final picked = await pickFileForTransfer();
     if (picked == null || !mounted) return;
+    if (picked.size > MediaStore.maxTransferBytes) {
+      if (_isGroup) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Files over 8 MB go to one person at a time — '
+              'send it in a private chat.'),
+        ));
+        return;
+      }
+      await _offerTransfer(picked);
+      return;
+    }
+    final bytes = await File(picked.path).readAsBytes();
+    if (!mounted) return;
     await _sendMediaGuarded(
-      bytes: picked.bytes,
+      bytes: bytes,
       name: picked.name,
       mime: picked.mime,
-      kind: picked.mime.startsWith('image/') ? 'image' : 'file',
+      kind: picked.mime.startsWith('image/')
+          ? 'image'
+          : picked.mime.startsWith('audio/')
+              ? 'audio'
+              : 'file',
     );
   }
 
@@ -913,6 +923,10 @@ class _ChatScreenState extends State<ChatScreen> {
     await _loadMessages();
   }
 
+  /// Recordings made in the app keep the compact voice player; anything
+  /// else that's audio gets the full music card.
+  static const _recordingNames = {'voice.m4a', 'voicemail.m4a', 'call.m4a'};
+
   Widget _buildMediaContent(
     BuildContext context,
     ChatMessage message,
@@ -1016,6 +1030,18 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
         ],
+      );
+    }
+
+    final isMusic = path != null &&
+        !message.voicemail &&
+        !_recordingNames.contains(message.mediaName ?? 'voice.m4a') &&
+        (message.kind == 'audio' ||
+            (message.mediaMime?.startsWith('audio/') ?? false));
+    if (isMusic) {
+      return AudioFileCard(
+        path: path,
+        fileName: message.mediaName ?? 'Audio',
       );
     }
 
@@ -1618,6 +1644,9 @@ class TransferBubble extends StatefulWidget {
 
 class _TransferBubbleState extends State<TransferBubble> {
   FileTransfer? _transfer;
+
+  /// A finished song, playable in place.
+  String? _audioPath;
   StreamSubscription<String>? _sub;
 
   @override
@@ -1637,7 +1666,26 @@ class _TransferBubbleState extends State<TransferBubble> {
 
   Future<void> _reload() async {
     final transfer = await FileTransferService.instance.get(widget.tid);
-    if (mounted) setState(() => _transfer = transfer);
+    String? audioPath;
+    if (transfer != null &&
+        transfer.status == FtStatus.done &&
+        transfer.mime.startsWith('audio/')) {
+      final mediaId = transfer.mediaId;
+      audioPath = transfer.outgoing
+          ? transfer.path
+          : mediaId == null
+              ? null
+              : await MediaStore.instance.pathFor(mediaId);
+      if (audioPath != null && !await File(audioPath).exists()) {
+        audioPath = null;
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _transfer = transfer;
+        _audioPath = audioPath;
+      });
+    }
   }
 
   String _statusLine(FileTransfer t) {
@@ -1672,6 +1720,23 @@ class _TransferBubbleState extends State<TransferBubble> {
           const SizedBox(width: 8),
           Text(widget.fallbackName,
               style: theme.textTheme.bodyMedium?.copyWith(color: color)),
+        ],
+      );
+    }
+
+    final audioPath = _audioPath;
+    if (audioPath != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AudioFileCard(path: audioPath, fileName: t.name),
+          const SizedBox(height: 4),
+          Text(
+            _statusLine(t),
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: color.withValues(alpha: 0.75)),
+          ),
         ],
       );
     }

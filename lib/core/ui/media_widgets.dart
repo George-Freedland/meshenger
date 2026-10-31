@@ -24,20 +24,53 @@ String formatDuration(Duration d) {
   return '$minutes:${seconds.toString().padLeft(2, '0')}';
 }
 
+const _mimeByExtension = <String, String>{
+  'jpg': 'image/jpeg',
+  'jpeg': 'image/jpeg',
+  'png': 'image/png',
+  'gif': 'image/gif',
+  'webp': 'image/webp',
+  'heic': 'image/heic',
+  'svg': 'image/svg+xml',
+  'mp3': 'audio/mpeg',
+  'm4a': 'audio/mp4',
+  'aac': 'audio/mp4',
+  'wav': 'audio/wav',
+  'flac': 'audio/flac',
+  'ogg': 'audio/ogg',
+  'oga': 'audio/ogg',
+  'opus': 'audio/ogg',
+  'aif': 'audio/aiff',
+  'aiff': 'audio/aiff',
+  'mp4': 'video/mp4',
+  'm4v': 'video/mp4',
+  'mov': 'video/quicktime',
+  'webm': 'video/webm',
+  'mkv': 'video/x-matroska',
+  'pdf': 'application/pdf',
+  'txt': 'text/plain',
+  'md': 'text/markdown',
+  'csv': 'text/csv',
+  'html': 'text/html',
+  'json': 'application/json',
+  'zip': 'application/zip',
+  'epub': 'application/epub+zip',
+  'doc': 'application/msword',
+  'docx':
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'xls': 'application/vnd.ms-excel',
+  'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'ppt': 'application/vnd.ms-powerpoint',
+  'pptx':
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'apk': 'application/vnd.android.package-archive',
+};
+
 String mimeFromName(String name) {
-  final lower = name.toLowerCase();
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-  if (lower.endsWith('.png')) return 'image/png';
-  if (lower.endsWith('.gif')) return 'image/gif';
-  if (lower.endsWith('.webp')) return 'image/webp';
-  if (lower.endsWith('.heic')) return 'image/heic';
-  if (lower.endsWith('.m4a') || lower.endsWith('.aac')) return 'audio/mp4';
-  if (lower.endsWith('.mp3')) return 'audio/mpeg';
-  if (lower.endsWith('.wav')) return 'audio/wav';
-  if (lower.endsWith('.pdf')) return 'application/pdf';
-  if (lower.endsWith('.txt')) return 'text/plain';
-  if (lower.endsWith('.mp4')) return 'video/mp4';
-  return 'application/octet-stream';
+  final dot = name.lastIndexOf('.');
+  if (dot < 0) return 'application/octet-stream';
+  return _mimeByExtension[name.substring(dot + 1).toLowerCase()] ??
+      'application/octet-stream';
 }
 
 /// A picked media payload ready for sending or saving.
@@ -78,18 +111,6 @@ Future<PickedMedia?> pickImage({
 
 /// Whether this platform can capture with a live camera via image_picker.
 bool get supportsCameraCapture => Platform.isIOS || Platform.isAndroid;
-
-/// Picks any file via the platform file selector. Returns null on cancel.
-Future<PickedMedia?> pickAnyFile() async {
-  final file = await openFile();
-  if (file == null) return null;
-  final bytes = await file.readAsBytes();
-  return PickedMedia(
-    bytes: bytes,
-    name: file.name,
-    mime: mimeFromName(file.name),
-  );
-}
 
 /// A file selected for P2P transfer: path + metadata only. The content is
 /// never loaded into memory — transfers stream it from disk chunk by

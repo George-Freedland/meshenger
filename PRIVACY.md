@@ -27,6 +27,7 @@ Meshenger works by devices talking to each other directly. To do that, some info
 | The **content** of your messages, photos, voice notes, files and calls | Only you and the recipients (end-to-end encrypted with X25519 and AES-256-GCM, signed with Ed25519) |
 | The **envelope** of a message: sender and recipient public keys, size, hop count and expiry time | Devices and relays that carry the message for you. They store and forward it but can't read it |
 | **Global posts**, and **site posts and pages** you publish | Everyone your mesh reaches. They're signed with your key and copied from device to device |
+| **Songs and files** attached to those posts | Anyone your mesh reaches can download them. Every device that downloads one keeps a copy and shares it with others until the post expires |
 
 **Invisible mode** stops your device from advertising itself and announcing you to others. You disappear from other people's Mesh Maps and activity lists. You can still send and receive.
 

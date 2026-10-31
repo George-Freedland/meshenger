@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 
 import '../models/incoming_message.dart';
+import '../models/post_attachment.dart';
 import '../services/identity_service.dart';
 import 'message_body.dart';
 
@@ -54,6 +55,13 @@ class EnvelopeCodec {
   /// Cap for a site page's HTML (UTF-8 bytes, inline images included), for
   /// the same reason: every device in the radius carries every page.
   static const int maxPageBytes = 96 * 1024;
+
+  /// Files up to this size ride inside their post; bigger ones travel on
+  /// request from whoever has them (BlobService).
+  static const int maxInlineFileBytes = maxPostMediaBytes;
+
+  /// Cover art embedded in a post with an audio file.
+  static const int maxPostArtBytes = 64 * 1024;
 
   /// Network post audiences: the shared public square, or the author's own
   /// site (their public key's page in the Network browser).
@@ -323,11 +331,44 @@ class EnvelopeCodec {
             mediaB64,
           ])}';
 
+  /// Signing payload for v3 posts (a file attached). Like v2, plus the
+  /// attachment's description (signed as the exact text that travels) and
+  /// its cover art.
+  static String _postSigningPayloadV3({
+    required String author,
+    required String id,
+    required int tsMs,
+    required int expMs,
+    required bool deleted,
+    required String nick,
+    required String scope,
+    required String text,
+    required String mediaB64,
+    required String attachment,
+    required String artB64,
+  }) =>
+      'netpost3|${jsonEncode(<Object>[
+            author,
+            id,
+            tsMs,
+            expMs,
+            deleted,
+            'file',
+            nick,
+            scope,
+            text,
+            mediaB64,
+            attachment,
+            artB64,
+          ])}';
+
   /// Builds my signed Network post (or its deletion tombstone).
   ///
   /// Global text/image posts keep the original (v1) format so older apps
   /// still show them; site posts and pages ([pagePath] set, with the HTML
-  /// in [text]) use v2.
+  /// in [text]) use v2; posts with a file attached use v3 (older apps skip
+  /// them). For a file, [mediaB64] is the whole file when it is small
+  /// enough to ride along, and [artB64] its cover art.
   static Future<Map<String, Object?>> buildNetworkPost({
     required String id,
     required String text,
@@ -340,16 +381,53 @@ class EnvelopeCodec {
     String scope = scopeGlobal,
     String? pagePath,
     String? pageTitle,
+    PostAttachment? attachment,
+    String? artB64,
   }) async {
     final identity = IdentityService.instance;
     final address = await identity.getPublicAddressBase64();
     if (address == null || !identity.isUnlocked) {
       throw StateError('Identity must be unlocked');
     }
+    final nick = nickname ?? '';
+    if (attachment != null && pagePath == null) {
+      final described = attachment.encode();
+      final signature = await identity.sign(utf8.encode(_postSigningPayloadV3(
+        author: address,
+        id: id,
+        tsMs: tsMs,
+        expMs: expMs,
+        deleted: deleted,
+        nick: nick,
+        scope: scope,
+        text: text,
+        mediaB64: mediaB64 ?? '',
+        attachment: described,
+        artB64: artB64 ?? '',
+      )));
+      return <String, Object?>{
+        't': 'post',
+        'v': 3,
+        'id': id,
+        'author': address,
+        'nick': nick,
+        'text': text,
+        'kind': 'file',
+        'scope': scope,
+        'att': described,
+        if (artB64 != null) 'art': artB64,
+        if (mediaB64 != null) 'media': mediaB64,
+        'ts': tsMs,
+        'exp': expMs,
+        if (deleted) 'del': true,
+        'sig': base64Encode(signature.bytes),
+        'hops': 0,
+        'max': postMaxHops,
+      };
+    }
     final isPage = pagePath != null;
     final kind = isPage ? 'page' : (mediaB64 != null ? 'image' : 'text');
     final v2 = isPage || scope != scopeGlobal;
-    final nick = nickname ?? '';
     final title = pageTitle ?? '';
     final payload = v2
         ? _postSigningPayloadV2(
@@ -420,6 +498,50 @@ class EnvelopeCodec {
       if (id == null || author == null || ts == null || exp == null ||
           sig == null) {
         return null;
+      }
+
+      if (decoded['v'] == 3) {
+        final scope = decoded['scope'] as String?;
+        final described = decoded['att'] as String?;
+        final artB64 = decoded['art'] as String?;
+        if (kind != 'file' || described == null) return null;
+        if (scope != scopeGlobal && scope != scopeSite) return null;
+        final attachment = PostAttachment.decode(described);
+        if (attachment == null) return null;
+        final valid = await IdentityService.verify(
+          message: utf8.encode(_postSigningPayloadV3(
+            author: author,
+            id: id,
+            tsMs: ts,
+            expMs: exp,
+            deleted: deleted,
+            nick: nick,
+            scope: scope!,
+            text: text,
+            mediaB64: mediaB64 ?? '',
+            attachment: described,
+            artB64: artB64 ?? '',
+          )),
+          signatureBytes: base64Decode(sig),
+          publicKeyBase64: author,
+        );
+        if (!valid) return null;
+        return VerifiedNetworkPost(
+          id: id,
+          author: author,
+          nickname: nick.isEmpty ? null : nick,
+          text: text,
+          kind: 'file',
+          mediaB64: mediaB64,
+          mediaMime: attachment.mime,
+          tsMs: ts,
+          expMs: exp,
+          deleted: deleted,
+          hops: (decoded['hops'] as num?)?.toInt() ?? 0,
+          scope: scope,
+          attachment: attachment,
+          artB64: artB64,
+        );
       }
 
       final v2 = decoded['v'] == 2;
@@ -541,7 +663,7 @@ class VerifiedNetworkPost {
   final String author;
   final String? nickname;
   final String text;
-  final String kind; // 'text' | 'image'
+  final String kind; // 'text' | 'image' | 'page' | 'file'
   final String? mediaB64;
   final String? mediaMime;
   final int tsMs;
@@ -555,6 +677,10 @@ class VerifiedNetworkPost {
   /// Site pages only ('' = the author's home page).
   final String? path;
   final String? title;
+
+  /// File posts only: what's attached, and its cover art.
+  final PostAttachment? attachment;
+  final String? artB64;
 
   const VerifiedNetworkPost({
     required this.id,
@@ -571,6 +697,8 @@ class VerifiedNetworkPost {
     this.scope = EnvelopeCodec.scopeGlobal,
     this.path,
     this.title,
+    this.attachment,
+    this.artB64,
   });
 }
 

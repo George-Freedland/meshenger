@@ -15,13 +15,14 @@ Don't use Meshenger to send or publish:
 - sexual content shared without consent
 - violent or extremist content
 - other people's private information
+- songs, films or other files you don't have the right to share
 - impersonation, spam, scams or malware
 
 Identities reported and confirmed to break these rules are blocked for everyone in app updates.
 
 ## What you publish is public
 
-Global posts, site posts and pages can be seen by everyone your mesh reaches, and they're copied from device to device. Deleting them may not remove every copy. You're responsible for what you send and publish.
+Global posts, site posts and pages, and the files attached to them, can be seen by everyone your mesh reaches, and they're copied from device to device. Deleting them may not remove every copy. You're responsible for what you send and publish.
 
 ## Block and report
 

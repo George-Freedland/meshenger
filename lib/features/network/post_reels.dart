@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/services/network_service.dart';
 import 'network_common.dart';
+import 'post_attachment_view.dart';
 
 /// Full-screen, swipe-up viewer for a run of posts.
 Future<void> showPostReels(
@@ -65,30 +66,38 @@ class _PostReelsState extends State<_PostReels> {
         controller: _pager,
         scrollDirection: Axis.vertical,
         itemCount: widget.posts.length,
-        itemBuilder: (context, i) => PostReel(
-          post: widget.posts[i],
-          names: widget.names,
-          mediaPath: widget.posts[i].mediaId == null
-              ? null
-              : widget.mediaPaths[widget.posts[i].mediaId!],
-        ),
+        itemBuilder: (context, i) {
+          final post = widget.posts[i];
+          return PostReel(
+            post: post,
+            names: widget.names,
+            mediaPath:
+                post.mediaId == null ? null : widget.mediaPaths[post.mediaId!],
+            artPath: post.artMediaId == null
+                ? null
+                : widget.mediaPaths[post.artMediaId!],
+          );
+        },
       ),
     );
   }
 }
 
-/// One post filling the screen: its photo, or its text on a gradient.
+/// One post filling the screen: its photo or attached file, or its text on
+/// a gradient.
 class PostReel extends StatelessWidget {
   const PostReel({
     super.key,
     required this.post,
     required this.names,
     required this.mediaPath,
+    this.artPath,
   });
 
   final NetworkPost post;
   final NetworkNames names;
   final String? mediaPath;
+  final String? artPath;
 
   @override
   Widget build(BuildContext context) {
@@ -96,7 +105,8 @@ class PostReel extends StatelessWidget {
     final (colorA, colorB) = paletteFor(post.id);
     final name = names.of(post.author, carried: post.authorNick);
     final mine = post.author == names.myAddress;
-    final textOnly = mediaPath == null;
+    final attachment = post.attachment;
+    final textOnly = mediaPath == null && attachment == null;
 
     return Stack(
       fit: StackFit.expand,
@@ -129,6 +139,16 @@ class PostReel extends StatelessWidget {
             ),
           ),
         ),
+        if (attachment != null)
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 90, 20, 170),
+              child: PostAttachmentView(
+                attachment: attachment,
+                artPath: artPath,
+              ),
+            ),
+          ),
         if (textOnly && post.text.isNotEmpty)
           Center(
             child: Padding(

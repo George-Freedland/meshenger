@@ -8,6 +8,7 @@ import '../shared/safety_actions.dart';
 import 'mesh_html_view.dart';
 import 'mesh_url.dart';
 import 'network_common.dart';
+import 'post_attachment_view.dart';
 import 'post_reels.dart';
 
 /// A person's site: their home page, their other pages, and their personal
@@ -386,7 +387,20 @@ class SiteView extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (mediaPath != null)
+            if (post.attachment != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: PostAttachmentView(
+                    attachment: post.attachment!,
+                    artPath: post.artMediaId == null
+                        ? null
+                        : mediaPaths[post.artMediaId!],
+                  ),
+                ),
+              )
+            else if (mediaPath != null)
               ConstrainedBox(
                 constraints: const BoxConstraints(maxHeight: 320),
                 child: Image.file(File(mediaPath), fit: BoxFit.cover),
@@ -419,7 +433,8 @@ class SiteView extends StatelessWidget {
                   Expanded(
                     child: Text(
                       [
-                        if (mediaPath != null && post.text.isNotEmpty)
+                        if ((mediaPath != null || post.attachment != null) &&
+                            post.text.isNotEmpty)
                           post.text,
                         timeAgo(post.tsMs),
                         if (post.isPrivate)

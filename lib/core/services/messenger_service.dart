@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -8,13 +9,16 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../media/post_file.dart';
 import '../models/group_info.dart';
 import '../models/incoming_message.dart';
 import '../models/message.dart';
+import '../models/post_attachment.dart';
 import '../transport/ble_transport.dart';
 import '../transport/envelope_codec.dart';
 import '../transport/mesh_transport.dart';
 import '../transport/message_body.dart';
+import 'blob_service.dart';
 import 'chat_storage.dart';
 import 'contacts_service.dart';
 import 'file_transfer_service.dart';
@@ -192,6 +196,12 @@ class MessengerService {
         ));
       },
     );
+    BlobService.instance.attach(
+      send: (peer, packet) async =>
+          await _transport?.sendPacket(peer, packet) ?? false,
+      onlinePeers: () => onlinePeers,
+      myAddress: IdentityService.instance.getPublicAddressBase64,
+    );
     await _startTransport();
     _sweepTimer ??=
         Timer.periodic(const Duration(seconds: 15), (_) => _sweepExpired());
@@ -251,6 +261,7 @@ class MessengerService {
     _postOfferedTo.clear();
     _deletedPostIds.clear();
     await FileTransferService.instance.detach();
+    await BlobService.instance.detach();
     await _stopTransport();
   }
 
@@ -386,6 +397,7 @@ class MessengerService {
     await _flushControlOutbox(peersNow);
     await _offerPostsTo(peersNow);
     await FileTransferService.instance.onPeersChanged(peersNow);
+    await BlobService.instance.onPeersChanged(peersNow);
   }
 
   /// Diffs the direct-range peer set and logs joins/leaves for the
@@ -458,6 +470,11 @@ class MessengerService {
   // Packet router
   // ---------------------------------------------------------------------
 
+  /// A packet, as if a device in range had just sent it.
+  @visibleForTesting
+  Future<void> debugHandlePacket(Map<String, Object?> packet) =>
+      _handlePacket(packet);
+
   Future<void> _handlePacket(Map<String, Object?> packet) async {
     if (!IdentityScope.hasActive) return;
     switch (packet['t']) {
@@ -470,6 +487,11 @@ class MessengerService {
       case 'ftc':
       case 'fta':
         await _handleTransferPacket(packet);
+      case 'bwho':
+      case 'bhave':
+      case 'bget':
+      case 'bdat':
+        await BlobService.instance.handlePacket(packet);
     }
   }
 
@@ -1646,8 +1668,14 @@ class MessengerService {
       return;
     }
 
-    String? mediaId;
-    if (verified.kind == 'image' && verified.mediaB64 != null) {
+    // The same post can arrive again after a restart: keep the media saved
+    // the first time instead of storing another copy.
+    final known = await NetworkService.instance.byId(id);
+    var mediaId = known?.mediaId;
+    var artMediaId = known?.artMediaId;
+    if (mediaId == null &&
+        verified.kind == 'image' &&
+        verified.mediaB64 != null) {
       try {
         final bytes = base64Decode(verified.mediaB64!);
         if (bytes.length <= EnvelopeCodec.maxPostMediaBytes) {
@@ -1661,6 +1689,37 @@ class MessengerService {
           mediaId = item.id;
         }
       } catch (_) {}
+    }
+    final attachment = verified.attachment;
+    if (attachment != null) {
+      final art = verified.artB64;
+      if (artMediaId == null && art != null) {
+        try {
+          final bytes = Uint8List.fromList(base64Decode(art));
+          if (bytes.length <= EnvelopeCodec.maxPostArtBytes) {
+            artMediaId = (await MediaStore.instance.saveBytes(
+              bytes,
+              name: 'cover',
+              mime: _coverMime(bytes),
+              source: MediaSource.received,
+              temp: true,
+            ))
+                .id;
+          }
+        } catch (_) {}
+      }
+      // Small files ride inside the post; kept only if they match the hash.
+      final inline = verified.mediaB64;
+      if (inline != null &&
+          attachment.size <= EnvelopeCodec.maxInlineFileBytes) {
+        try {
+          await BlobService.instance.addBytes(
+            Uint8List.fromList(base64Decode(inline)),
+            sha: attachment.sha256,
+            name: attachment.name,
+          );
+        } catch (_) {}
+      }
     }
 
     await NetworkService.instance.upsert(NetworkPost(
@@ -1677,9 +1736,15 @@ class MessengerService {
       kind: verified.kind,
       path: verified.path,
       title: verified.title,
+      attachment: attachment,
+      artMediaId: artMediaId,
     ));
-    TransportLog.instance.log(
-        'Network: ${verified.kind == 'page' ? 'page /${verified.path}' : 'post'} '
+    final what = switch (verified.kind) {
+      'page' => 'page /${verified.path}',
+      'file' => 'file "${attachment?.name}"',
+      _ => 'post',
+    };
+    TransportLog.instance.log('Network: $what '
         'from ${_shortAddr(verified.author)} '
         '(${verified.hops} hop${verified.hops == 1 ? '' : 's'} away)');
 
@@ -1700,6 +1765,7 @@ class MessengerService {
     int ttlSeconds = 86400,
     Uint8List? imageBytes,
     String? imageMime,
+    PreparedPostFile? file,
     String scope = EnvelopeCodec.scopeGlobal,
     bool isPrivate = false,
   }) async {
@@ -1726,6 +1792,34 @@ class MessengerService {
       mediaB64 = base64Encode(imageBytes);
     }
 
+    PostAttachment? attachment;
+    String? artMediaId;
+    String? artB64;
+    if (file != null) {
+      attachment = file.attachment;
+      // My own copy, so this device keeps sharing it wherever the
+      // original goes.
+      await BlobService.instance.addLocalFile(
+        file.path,
+        sha: attachment.sha256,
+        name: attachment.name,
+      );
+      final cover = file.cover;
+      if (cover != null) {
+        artMediaId = (await MediaStore.instance.saveBytes(
+          cover,
+          name: 'cover',
+          mime: _coverMime(cover),
+          source: MediaSource.sent,
+          temp: true,
+        ))
+            .id;
+        artB64 = base64Encode(cover);
+      }
+      final inline = file.inlineBytes;
+      if (inline != null) mediaB64 = base64Encode(inline);
+    }
+
     final now = DateTime.now().millisecondsSinceEpoch;
     final id = _uuid.v4();
     final nickname = IdentityService.instance.active?.nickname;
@@ -1740,12 +1834,19 @@ class MessengerService {
       mediaId: mediaId,
       mediaMime: imageMime,
       scope: scope,
+      attachment: attachment,
+      artMediaId: artMediaId,
       isPrivate: private,
     );
     await NetworkService.instance.upsert(post);
     if (private) return;
-    await _publishMyPost(post, mediaB64: mediaB64);
+    await _publishMyPost(post, mediaB64: mediaB64, artB64: artB64);
   }
+
+  static String _coverMime(Uint8List bytes) =>
+      bytes.length > 1 && bytes[0] == 0x89 && bytes[1] == 0x50
+          ? 'image/png'
+          : 'image/jpeg';
 
   /// Publishes (or replaces) a page of my site at [path] ('' = home page).
   /// [html] is the page source; a private page stays on this device.
@@ -1816,13 +1917,28 @@ class MessengerService {
     );
     await NetworkService.instance.rekey(id, fresh);
     final mediaId = fresh.mediaId;
-    final media =
+    var media =
         mediaId == null ? null : await MediaStore.instance.readBytes(mediaId);
-    await _publishMyPost(fresh,
-        mediaB64: media == null ? null : base64Encode(media));
+    final attachment = fresh.attachment;
+    if (attachment != null &&
+        attachment.size <= EnvelopeCodec.maxInlineFileBytes) {
+      final path = await BlobService.instance.pathFor(attachment.sha256);
+      if (path != null) media = await File(path).readAsBytes();
+    }
+    final artId = fresh.artMediaId;
+    final art = artId == null ? null : await MediaStore.instance.readBytes(artId);
+    await _publishMyPost(
+      fresh,
+      mediaB64: media == null ? null : base64Encode(media),
+      artB64: art == null ? null : base64Encode(art),
+    );
   }
 
-  Future<void> _publishMyPost(NetworkPost post, {String? mediaB64}) async {
+  Future<void> _publishMyPost(
+    NetworkPost post, {
+    String? mediaB64,
+    String? artB64,
+  }) async {
     final packet = await EnvelopeCodec.buildNetworkPost(
       id: post.id,
       text: post.text,
@@ -1834,6 +1950,8 @@ class MessengerService {
       scope: post.scope,
       pagePath: post.isPage ? post.path ?? '' : null,
       pageTitle: post.title,
+      attachment: post.attachment,
+      artB64: artB64,
     );
     _markSeen('post:${post.id}'); // never re-process our own echo
     await _addToPostSpool(packet);
@@ -1916,6 +2034,7 @@ class MessengerService {
     final me = await IdentityService.instance.getPublicAddressBase64();
     int sizeOf(Map<String, Object?> p) =>
         ((p['media'] as String?)?.length ?? 0) +
+        ((p['art'] as String?)?.length ?? 0) +
         ((p['text'] as String?)?.length ?? 0) +
         512;
     spool.sort((a, b) {
