@@ -1,4 +1,4 @@
-package com.example.meshenger
+package com.georgefreedland.meshenger
 
 import io.flutter.embedding.android.FlutterActivity
 

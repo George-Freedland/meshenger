@@ -72,6 +72,20 @@ class SettingsService {
     _changed.add(null);
   }
 
+  static const _activityExpandedKey = 'network_activity_expanded_v1';
+
+  /// Whether the joined/left list on the Network global page is expanded.
+  /// Default collapsed to a one-line summary.
+  Future<bool> getActivityExpanded() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(IdentityScope.key(_activityExpandedKey)) ?? false;
+  }
+
+  Future<void> setActivityExpanded(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(IdentityScope.key(_activityExpandedKey), value);
+  }
+
   static const _soundEnabledKey = 'alert_sound_enabled_v1';
   static const _soundToneKey = 'alert_sound_tone_v1';
 

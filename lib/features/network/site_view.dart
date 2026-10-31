@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../core/services/network_service.dart';
+import '../shared/peer_info_sheet.dart';
+import '../shared/safety_actions.dart';
 import 'mesh_html_view.dart';
 import 'mesh_url.dart';
 import 'network_common.dart';
@@ -254,6 +256,7 @@ class SiteView extends StatelessWidget {
                 style: theme.textTheme.bodySmall?.copyWith(color: muted),
               ),
             ),
+            if (!_mine) SafetyMenu(address: _owner, name: owner, post: page),
           ],
         ),
         const SizedBox(height: 10),
@@ -282,8 +285,8 @@ class SiteView extends StatelessWidget {
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              Text(
-                shortAddress(_owner),
+              CopyableAddress(
+                _owner,
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: muted, fontFamily: 'monospace'),
               ),
@@ -301,6 +304,7 @@ class SiteView extends StatelessWidget {
           icon: const Icon(Icons.link),
           onPressed: () => onCopyLink(MeshUrl.site(_owner)),
         ),
+        if (!_mine) SafetyMenu(address: _owner, name: name),
       ],
     );
   }
@@ -433,6 +437,12 @@ class SiteView extends StatelessWidget {
                       post: post,
                       onDelete: onDelete,
                       onSetPrivate: onSetPrivate,
+                    )
+                  else
+                    SafetyMenu(
+                      address: _owner,
+                      name: names.of(_owner, carried: post.authorNick),
+                      post: post,
                     ),
                 ],
               ),

@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 import '../../core/services/mesh_activity.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/network_service.dart';
+import '../../core/services/settings_service.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/media_widgets.dart';
+import '../shared/safety_actions.dart';
 import 'network_common.dart';
 import 'post_composer.dart';
 
@@ -95,7 +97,7 @@ class _GlobalFeedState extends State<GlobalFeed> {
     final posts = widget.posts;
     return Column(
       children: [
-        if (widget.events.isNotEmpty) _ActivityTicker(widget: widget),
+        if (widget.events.isNotEmpty) _ActivityPanel(widget: widget),
         Expanded(
           child: ListView.builder(
             reverse: true,
@@ -311,6 +313,14 @@ class _Bubble extends StatelessWidget {
               visualDensity: VisualDensity.compact,
               icon: Icon(Icons.delete_outline, size: 18, color: muted),
               onPressed: () => widget.onDelete(post),
+            )
+          else
+            SafetyMenu(
+              address: post.author,
+              name: name,
+              post: post,
+              iconSize: 18,
+              color: muted,
             ),
         ],
       ),
@@ -318,39 +328,121 @@ class _Bubble extends StatelessWidget {
   }
 }
 
-class _ActivityTicker extends StatelessWidget {
-  const _ActivityTicker({required this.widget});
+/// Who joined or left the mesh: one summary line when minimized, a short
+/// scrollable list when expanded. The choice is remembered.
+class _ActivityPanel extends StatefulWidget {
+  const _ActivityPanel({required this.widget});
 
   final GlobalFeed widget;
 
   @override
+  State<_ActivityPanel> createState() => _ActivityPanelState();
+}
+
+class _ActivityPanelState extends State<_ActivityPanel> {
+  bool _expanded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsService.instance.getActivityExpanded().then((expanded) {
+      if (mounted && expanded != _expanded) {
+        setState(() => _expanded = expanded);
+      }
+    });
+  }
+
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    SettingsService.instance.setActivityExpanded(_expanded);
+  }
+
+  String _describe(MeshActivityEvent event) {
+    final name =
+        widget.widget.names.of(event.address, carried: event.nickname);
+    return '$name ${event.joined ? 'joined your mesh' : 'left'}';
+  }
+
+  Widget _icon(MeshActivityEvent event, double size) => Icon(
+        event.joined ? Icons.sensors : Icons.sensors_off,
+        size: size,
+        color: event.joined ? Colors.greenAccent : null,
+      );
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SizedBox(
-      height: 40,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-        itemCount: widget.events.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 6),
-        itemBuilder: (context, i) {
-          final event = widget.events[i];
-          final name = widget.names.of(event.address, carried: event.nickname);
-          return ActionChip(
-            visualDensity: VisualDensity.compact,
-            avatar: Icon(
-              event.joined ? Icons.sensors : Icons.sensors_off,
-              size: 14,
-              color: event.joined ? Colors.greenAccent : null,
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+    final events = widget.widget.events;
+    final latest = events.first;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              onTap: _toggle,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+                child: Row(
+                  children: [
+                    _icon(latest, 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _expanded
+                            ? 'Mesh activity'
+                            : '${_describe(latest)} · ${timeAgo(latest.tsMs)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: _expanded
+                            ? theme.textTheme.labelLarge
+                            : theme.textTheme.bodySmall,
+                      ),
+                    ),
+                    if (events.length > 1)
+                      Text('${events.length}',
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: muted)),
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      semanticLabel: _expanded
+                          ? 'Minimize mesh activity'
+                          : 'Show all mesh activity',
+                    ),
+                  ],
+                ),
+              ),
             ),
-            label: Text(
-              '$name ${event.joined ? 'joined your mesh' : 'left'} · '
-              '${timeAgo(event.tsMs)}',
-              style: theme.textTheme.bodySmall,
-            ),
-            onPressed: () => widget.onOpenSite(event.address),
-          );
-        },
+            if (_expanded)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.only(bottom: 4),
+                  itemCount: events.length,
+                  itemBuilder: (context, i) {
+                    final event = events[i];
+                    return ListTile(
+                      dense: true,
+                      visualDensity: VisualDensity.compact,
+                      leading: _icon(event, 18),
+                      title: Text(_describe(event),
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      trailing: Text(timeAgo(event.tsMs),
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: muted)),
+                      onTap: () => widget.widget.onOpenSite(event.address),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

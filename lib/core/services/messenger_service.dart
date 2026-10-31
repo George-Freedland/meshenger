@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -27,6 +28,7 @@ import 'network_service.dart';
 import 'notification_service.dart';
 import 'peer_directory.dart';
 import 'route_table.dart';
+import 'safety_service.dart';
 import 'settings_service.dart';
 import 'transport_log.dart';
 
@@ -858,6 +860,11 @@ class MessengerService {
   // Incoming
   // ---------------------------------------------------------------------
 
+  /// A decrypted message, as if it had just arrived over the mesh.
+  @visibleForTesting
+  Future<void> debugHandleIncoming(IncomingMessage incoming) =>
+      _handleIncoming(incoming);
+
   Future<void> _handleIncoming(IncomingMessage incoming) async {
     final action = incoming.action;
 
@@ -867,6 +874,8 @@ class MessengerService {
       await _handleAck(incoming);
       return;
     }
+
+    if (await SafetyService.instance.isBlocked(incoming.fromAddress)) return;
 
     final allowAnyone =
         await SettingsService.instance.getAllowMessagesFromAnyone();

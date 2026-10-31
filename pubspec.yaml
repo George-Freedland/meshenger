@@ -1,6 +1,7 @@
 name: meshenger
 description: Offline Bluetooth-based messenger with crypto identity.
 publish_to: "none"
+version: 1.0.0+1
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -47,11 +48,15 @@ dependencies:
   path_provider: any
   flutter_local_notifications: ^22.3.0
   flutter_widget_from_html_core: ^0.17.4
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: any
+  url_launcher_platform_interface: ^2.3.2
+  plugin_platform_interface: ^2.1.8
+  flutter_launcher_icons: ^0.14.4
 
 dependency_overrides:
   # Patched copy: passes the discovered Bluetooth address type to
@@ -65,3 +70,24 @@ flutter:
   uses-material-design: true
   assets:
     - assets/sounds/
+    - TERMS.md
+
+# Regenerate every platform's app icon after changing the image:
+#   dart run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: assets/branding/icon.png
+  android: true
+  adaptive_icon_background: "#00030D"
+  adaptive_icon_foreground: assets/branding/icon_android_foreground.png
+  ios: true
+  remove_alpha_ios: true
+  macos:
+    generate: true
+    image_path: assets/branding/icon_macos.png
+  windows:
+    generate: true
+    icon_size: 256
+  web:
+    generate: true
+    background_color: "#05070A"
+    theme_color: "#05070A"

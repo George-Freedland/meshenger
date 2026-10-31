@@ -10,6 +10,7 @@ import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../shared/peer_info_sheet.dart';
 import '../shared/rescan_button.dart';
 import '../shared/transport_status_banner.dart';
 
@@ -221,7 +222,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     final dx = preferRight
         ? (node.dx + 22).clamp(8.0, max(8.0, size.width - width - 8))
         : (node.dx - width - 22).clamp(8.0, max(8.0, size.width - width - 8));
-    final dy = (node.dy - 48).clamp(8.0, max(8.0, size.height - 200));
+    final dy = (node.dy - 48).clamp(8.0, max(8.0, size.height - 240));
     return Offset(dx.toDouble(), dy.toDouble());
   }
 
@@ -350,7 +351,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                 top: _detailsOrigin(selectedPos, size, width: 268).dy,
                 child: _PeerDetailsCard(
                   title: _labelFor(selected),
-                  address: _short(selected),
+                  address: selected,
                   route: _routeLabel(selected),
                   lastSeen: _lastSeenLabel(selected),
                   signal: _rssi[selected],
@@ -538,12 +539,7 @@ class _PeerDetailsCard extends StatelessWidget {
                   ),
                 ],
               ),
-              Text(
-                address,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                ),
-              ),
+              CopyableAddress(address),
               const SizedBox(height: 6),
               Text(route, style: theme.textTheme.bodySmall),
               Text(
@@ -567,6 +563,15 @@ class _PeerDetailsCard extends StatelessWidget {
                     onPressed: onMessage,
                     icon: const Icon(Icons.chat_bubble_outline, size: 16),
                     label: const Text('Message'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => showPeerInfoSheet(
+                      context,
+                      address: address,
+                      name: title,
+                    ),
+                    icon: const Icon(Icons.badge_outlined, size: 16),
+                    label: const Text('Details'),
                   ),
                   if (!isContact)
                     TextButton.icon(

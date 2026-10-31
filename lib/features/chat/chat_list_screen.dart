@@ -533,14 +533,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
       appBar: AppBar(
         leading: IconButton(
           tooltip: 'Home',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (context.canPop()) {
-              context.pop();
-            } else {
-              context.go('/home');
-            }
-          },
+          icon: const Icon(Icons.home_outlined),
+          onPressed: () => context.go('/home'),
         ),
         title: const Text('Chats'),
         actions: [

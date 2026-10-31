@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/app_info.dart';
 import '../../core/services/alert_sound_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/safety_service.dart';
 import '../../core/services/settings_service.dart';
 import '../../core/ui/avatars.dart';
+import '../onboarding/terms_screen.dart';
+import 'blocked_people_screen.dart';
 
 const _autoDeleteOptions = <(int, String)>[
   (0, 'Off'),
@@ -68,6 +74,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _alertTone = tone;
       _loading = false;
     });
+  }
+
+  Future<void> _unhidePosts() async {
+    final hidden = await SafetyService.instance.hiddenPosts();
+    if (hidden.isNotEmpty) await SafetyService.instance.unhideAllPosts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(hidden.isEmpty
+          ? 'No hidden posts'
+          : 'Showing ${hidden.length} hidden '
+              '${hidden.length == 1 ? 'post' : 'posts'} again'),
+    ));
+  }
+
+  /// Links need the internet; without it, the address is copied instead.
+  Future<void> _open(Uri uri) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(uri);
+    } catch (_) {}
+    if (opened || !mounted) return;
+    final text = uri.scheme == 'mailto' ? uri.path : uri.toString();
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('Copied $text')));
   }
 
   Future<void> _pickAvatar() async {
@@ -365,6 +397,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 .play(tone: value, ignoreMute: true);
                           },
                   ),
+                ),
+                const SizedBox(height: 24),
+                Text('Safety', style: theme.textTheme.titleSmall),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.block),
+                  title: const Text('Blocked people'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => const BlockedPeopleScreen(),
+                  )),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.visibility_outlined),
+                  title: const Text('Show hidden posts again'),
+                  onTap: _unhidePosts,
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.gavel_outlined),
+                  title: const Text('Terms of use'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => Scaffold(
+                      appBar: AppBar(title: const Text('Terms of use')),
+                      body: const SingleChildScrollView(
+                        padding: EdgeInsets.all(20),
+                        child: TermsText(),
+                      ),
+                    ),
+                  )),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.privacy_tip_outlined),
+                  title: const Text('Privacy policy'),
+                  onTap: () => _open(Uri.parse(kPrivacyPolicyUrl)),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.mail_outline),
+                  title: const Text('Contact and report a problem'),
+                  subtitle: const Text(kContactEmail),
+                  onTap: () =>
+                      _open(Uri(scheme: 'mailto', path: kContactEmail)),
                 ),
                 const SizedBox(height: 24),
                 Text('Account', style: theme.textTheme.titleSmall),

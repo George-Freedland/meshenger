@@ -36,7 +36,8 @@ class AlertSoundService {
   AlertSoundService._();
   static final AlertSoundService instance = AlertSoundService._();
 
-  final AudioPlayer _player = AudioPlayer();
+  // Created on the first sound, so muted devices never start an audio player.
+  late final AudioPlayer _player = AudioPlayer();
 
   Future<void> play({AlertTone? tone, bool ignoreMute = false}) async {
     if (!ignoreMute && !await SettingsService.instance.getSoundEnabled()) {

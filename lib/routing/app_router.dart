@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/services/safety_service.dart';
 import '../features/apps/appstore_screen.dart';
 import '../features/apps/camera_screen.dart';
 import '../features/apps/contacts_screen.dart';
@@ -15,6 +16,7 @@ import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/onboarding/onboarding_screen.dart';
+import '../features/onboarding/terms_screen.dart';
 
 /// Root navigator key, shared so global overlays (incoming calls,
 /// voicemail prompts) can open dialogs from outside the router tree.
@@ -24,7 +26,15 @@ final GlobalKey<NavigatorState> rootNavigatorKey =
 final GoRouter appRouter = GoRouter(
   navigatorKey: rootNavigatorKey,
   initialLocation: '/',
+  redirect: (context, state) async {
+    if (state.matchedLocation == '/terms') return null;
+    return await SafetyService.instance.termsAccepted() ? null : '/terms';
+  },
   routes: <RouteBase>[
+    GoRoute(
+      path: '/terms',
+      builder: (context, state) => const TermsScreen(),
+    ),
     GoRoute(
       path: '/',
       name: 'onboarding',

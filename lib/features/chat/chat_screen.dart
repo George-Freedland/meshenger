@@ -15,7 +15,10 @@ import '../../core/services/file_transfer_service.dart';
 import '../../core/services/identity_service.dart';
 import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
+import '../../core/services/safety_service.dart';
 import '../../core/ui/media_widgets.dart';
+import '../shared/peer_info_sheet.dart';
+import '../shared/safety_actions.dart';
 
 const _monthNames = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -50,6 +53,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String? _nickname;
   bool _isContact = false;
+  bool _blocked = false;
   GroupInfo? _groupInfo;
   List<ChatMessage> _messages = const <ChatMessage>[];
   List<Contact> _contacts = const <Contact>[];
@@ -64,6 +68,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   StreamSubscription<String>? _changesSub;
   StreamSubscription<Set<String>>? _peersSub;
+  StreamSubscription<void>? _safetySub;
 
   String? get _chatKey => widget.peerAddress;
 
@@ -92,6 +97,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() => _onlinePeers = peers);
       });
       _onlinePeers = MessengerService.instance.visiblePeers;
+      _safetySub = SafetyService.instance.onChanged.listen((_) => _load());
     }
   }
 
@@ -99,6 +105,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _changesSub?.cancel();
     _peersSub?.cancel();
+    _safetySub?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -139,11 +146,13 @@ class _ChatScreenState extends State<ChatScreen> {
       });
     } else {
       final contact = await ContactsService.instance.getContact(key);
+      final blocked = await SafetyService.instance.isBlocked(key);
     if (!mounted) return;
       setState(() {
         _contacts = contacts;
         _nickname = contact?.nickname;
         _isContact = contact != null;
+        _blocked = blocked;
       });
     }
     await _loadMessages();
@@ -1251,38 +1260,82 @@ class _ChatScreenState extends State<ChatScreen> {
       statusLabel = online ? 'in range' : 'via mesh';
     }
 
+    // Phones: keep room for the name by moving "Add as contact" into More.
+    final narrow = MediaQuery.sizeOf(context).width < 480;
+    final canAddContact = key != null && !_isGroup && !_isContact;
+
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Back to chats',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: _goBack,
-        ),
-        title: Row(
+        leadingWidth: 88,
+        leading: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Flexible(
-              child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: online ? Colors.greenAccent : Colors.grey,
-              ),
-            ),
             const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                statusLabel,
-                overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                ),
-              ),
+            IconButton(
+              tooltip: 'Back to chats',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.arrow_back),
+              onPressed: _goBack,
+            ),
+            IconButton(
+              tooltip: 'Home',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.home_outlined),
+              onPressed: () => context.go('/home'),
             ),
           ],
+        ),
+        titleSpacing: 0,
+        title: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: key == null
+              ? null
+              : _isGroup
+                  ? _showGroupInfoModal
+                  : () => showPeerInfoSheet(
+                        context,
+                        address: key,
+                        name: title,
+                        showMessage: false,
+                      ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: online ? Colors.greenAccent : Colors.grey,
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  statusLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
         actions: [
           if (key != null && !_isGroup) ...[
@@ -1303,7 +1356,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: _showGroupInfoModal,
               icon: const Icon(Icons.group_outlined),
             ),
-          if (key != null && !_isGroup && !_isContact)
+          if (canAddContact && !narrow)
           IconButton(
               tooltip: 'Add as contact',
               onPressed: _addAsContact,
@@ -1313,6 +1366,16 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: 'More',
             onSelected: (value) {
               switch (value) {
+                case 'contact':
+                  _addAsContact();
+                case 'copy':
+                  copyFullAddress(context, key!);
+                case 'block':
+                  confirmBlock(context, address: key!, name: title);
+                case 'unblock':
+                  unblockPerson(context, address: key!, name: title);
+                case 'report':
+                  showReportDialog(context, address: key!, name: title);
                 case 'clear':
                   _clearMessages();
                 case 'remove':
@@ -1320,6 +1383,25 @@ class _ChatScreenState extends State<ChatScreen> {
               }
             },
             itemBuilder: (context) => [
+              if (canAddContact && narrow)
+                const PopupMenuItem(
+                  value: 'contact',
+                  child: Text('Add as contact'),
+                ),
+              if (key != null && !_isGroup) ...[
+                const PopupMenuItem(
+                  value: 'copy',
+                  child: Text('Copy public address'),
+                ),
+                PopupMenuItem(
+                  value: _blocked ? 'unblock' : 'block',
+                  child: Text(_blocked ? 'Unblock' : 'Block'),
+                ),
+                const PopupMenuItem(
+                  value: 'report',
+                  child: Text('Report…'),
+                ),
+              ],
               const PopupMenuItem(
                 value: 'clear',
                 child: Text('Clear messages'),
@@ -1380,94 +1462,120 @@ class _ChatScreenState extends State<ChatScreen> {
                           },
                         ),
                 ),
-                SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_editing != null)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Row(
-                              children: [
-                                Icon(Icons.edit_outlined,
-                                    size: 16,
-                                    color: theme.colorScheme.primary),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    'Editing message',
-                                    style:
-                                        theme.textTheme.labelMedium?.copyWith(
-                                      color: theme.colorScheme.primary,
+                if (_blocked && !_isGroup)
+                  SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
+                      child: Row(
+                        children: [
+                          Icon(Icons.block,
+                              size: 18, color: theme.colorScheme.error),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'You blocked $title. You won\'t get their '
+                              'messages or calls.',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => unblockPerson(context,
+                                address: key, name: title),
+                            child: const Text('Unblock'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                else
+                  SafeArea(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_editing != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit_outlined,
+                                      size: 16,
+                                      color: theme.colorScheme.primary),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'Editing message',
+                                      style:
+                                          theme.textTheme.labelMedium?.copyWith(
+                                        color: theme.colorScheme.primary,
+                                      ),
                                     ),
                                   ),
+                                  IconButton(
+                                    tooltip: 'Cancel edit',
+                                    visualDensity: VisualDensity.compact,
+                                    icon: const Icon(Icons.close, size: 18),
+                                    onPressed: () {
+                                      setState(() {
+                                        _editing = null;
+                                        _inputController.clear();
+                                      });
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          Row(
+                            children: [
+                              IconButton(
+                                tooltip: 'Attach',
+                                onPressed: _sending ? null : _showAttachSheet,
+                                icon: const Icon(Icons.add_circle_outline),
+                              ),
+                          Expanded(
+                            child: TextField(
+                              controller: _inputController,
+                              onSubmitted: (_) => _send(),
+                              textInputAction: TextInputAction.send,
+                                  decoration: InputDecoration(
+                                    hintText: _editing != null
+                                        ? 'Edit message…'
+                                        : 'Message…',
+                                    border: const OutlineInputBorder(
+                                  borderRadius:
+                                      BorderRadius.all(Radius.circular(24)),
                                 ),
-                                IconButton(
-                                  tooltip: 'Cancel edit',
-                                  visualDensity: VisualDensity.compact,
-                                  icon: const Icon(Icons.close, size: 18),
-                                  onPressed: () {
-                                    setState(() {
-                                      _editing = null;
-                                      _inputController.clear();
-                                    });
-                                  },
+                                    contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 12,
                                 ),
-                              ],
+                              ),
                             ),
                           ),
-                        Row(
-                          children: [
-                            IconButton(
-                              tooltip: 'Attach',
-                              onPressed: _sending ? null : _showAttachSheet,
-                              icon: const Icon(Icons.add_circle_outline),
-                            ),
-                        Expanded(
-                          child: TextField(
-                            controller: _inputController,
-                            onSubmitted: (_) => _send(),
-                            textInputAction: TextInputAction.send,
-                                decoration: InputDecoration(
-                                  hintText: _editing != null
-                                      ? 'Edit message…'
-                                      : 'Message…',
-                                  border: const OutlineInputBorder(
-                                borderRadius:
-                                    BorderRadius.all(Radius.circular(24)),
-                              ),
-                                  contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
-                              ),
-                            ),
+                          const SizedBox(width: 8),
+                              if (_composerHasText || _editing != null)
+                          IconButton.filled(
+                                  tooltip:
+                                      _editing != null ? 'Save edit' : 'Send',
+                            onPressed: _sending ? null : _send,
+                                  icon: Icon(_editing != null
+                                      ? Icons.check
+                                      : Icons.send),
+                                )
+                              else
+                                IconButton.filled(
+                                  tooltip: 'Record voice message',
+                                  onPressed:
+                                      _sending ? null : _recordVoiceNote,
+                                  icon: const Icon(Icons.mic),
+                                ),
+                            ],
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                            if (_composerHasText || _editing != null)
-                        IconButton.filled(
-                                tooltip:
-                                    _editing != null ? 'Save edit' : 'Send',
-                          onPressed: _sending ? null : _send,
-                                icon: Icon(_editing != null
-                                    ? Icons.check
-                                    : Icons.send),
-                              )
-                            else
-                              IconButton.filled(
-                                tooltip: 'Record voice message',
-                                onPressed:
-                                    _sending ? null : _recordVoiceNote,
-                                icon: const Icon(Icons.mic),
-                              ),
-                          ],
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
     );

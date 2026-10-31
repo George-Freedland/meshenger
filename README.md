@@ -1,6 +1,10 @@
+**[Download Meshenger](https://george-freedland.github.io/meshenger/)**: Mac · Windows · Android · iPhone (TestFlight) · Raspberry Pi relay
+
 ## Meshenger
 
 Offline, end‑to‑end encrypted messenger that uses Bluetooth to relay messages over a mesh, with no central server.
+
+> **Releasing it?** [LAUNCH.md](LAUNCH.md) is the step-by-step playbook: release builds, stores, the website in `docs/`, and the launch plan. Privacy policy: [PRIVACY.md](PRIVACY.md).
 
 ### About
 
@@ -37,6 +41,7 @@ Offline, end‑to‑end encrypted messenger that uses Bluetooth to relay message
 - **Mesh Map**: live graph of the mesh — devices in direct radio range (green, positioned by signal strength) *plus* devices known through relays (blue, with hop count), like Raspberry Pi gateways and neighbors‑of‑neighbors. Message or save any node directly from the map. The refresh button (also on the home screen) rescans your surroundings on demand.
 - **Profile card + invisible mode**: tap your name on the home screen for your public key (copy), your QR, how many devices are in range, and an **Invisible** switch. Invisible stops advertising and announcing yourself: you vanish from other people's mesh maps and presence feeds, but can still see everyone, send, and receive over the connections your device opens.
 - **Network — a browser for the mesh**: no server, no geolocation, no internet — your radio neighborhood **is** the web. The address bar starts at **`global`**, a public square laid out like a group chat for everyone your mesh reaches. Paste anyone's **public key** (or search a name you know) and you're on **their site**: their home page, their pages, and their personal posts. Your public key is your own website — write pages in HTML (headings, links, inline images, your own colors) at `<your key>` and at paths like `<your key>/blog`, with a live preview editor. Posts go to *Global* or *My site*; site posts and pages can be **private** (kept on your device) and made public any time. Everything is signed by its author, floods the local mesh (up to 64 hops; pages up to 96 KB), and travels with people between meshes; gateways carry it too. Pages render with no scripts and no network fetches; edits and deletes propagate as signed replacements and tombstones.
+- **Safety without a server**: the [Terms of Use](TERMS.md) are accepted once per device before anything else. Anyone can be **blocked** from a chat, their site, a post's ⋮ menu or the Mesh Map. A blocked person's messages, calls and file offers are dropped on arrival, and their posts and site are hidden; their posts still relay for others. Posts and pages can be **hidden**. **Report** opens a pre-filled email with the reason, the full public key and the post, never chat contents. Identities confirmed as abusive can be blocked for everyone in an update (`SafetyService.builtInBlocked`). Settings → Safety lists blocked people and links the terms, privacy policy and contact address.
 - **Notification sounds + unread badges**: four built-in alert tones (pick or mute in Settings), iPhone-style red unread badges per chat and rolled up on the home screen, and an in-app banner slides down when a message arrives while you're elsewhere in the app.
 
 ### Architecture: mesh, gateways, and coverage zones
@@ -409,7 +414,7 @@ One‑time setup:
 
 1. In [App Store Connect](https://appstoreconnect.apple.com) → **Apps → +** create the app. Pick a unique bundle ID (e.g. `com.yourname.meshenger`) — register it first under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) if it isn't listed.
 2. Point the project at your bundle ID and team: open `ios/Runner.xcworkspace` in Xcode → select the **Runner** target → **Signing & Capabilities** → set **Team** to your developer account and **Bundle Identifier** to the ID from step 1, with **Automatically manage signing** on.
-3. Export compliance is already answered in code: `ITSAppUsesNonExemptEncryption=false` is set in `ios/Runner/Info.plist` (the app uses only standard, exempt encryption — AES‑GCM/X25519/Ed25519). No questionnaire on every upload. (US distribution formality: file the [annual self‑classification report](https://www.bis.doc.gov/index.php/policy-guidance/encryption) once.)
+3. Export compliance: `ITSAppUsesNonExemptEncryption=true` is set in `ios/Runner/Info.plist`, because the app implements its own end‑to‑end encryption (AES‑256‑GCM/X25519/Ed25519 in Dart, not Apple's built‑in crypto). The first time you submit a build, App Store Connect asks you to create an encryption declaration: choose **standard encryption algorithms not provided by the Apple operating system**. No documents are needed unless you distribute in **France**, which requires a French encryption declaration. Either upload it, or leave France out of the app's availability until you have one. See [LAUNCH.md](LAUNCH.md#ios-testflight).
 
 Every release:
 
@@ -460,3 +465,7 @@ How it works: each device advertises a Meshenger GATT service and scans for othe
 - **Windows logs `channel sent a message from native to Flutter on a non-platform thread`** — the stock plugin invokes pigeon callbacks and async results from WinRT thread-pool threads, which the Flutter engine flags as unsafe (replies can be lost, which manifests as connects that silently time out). The patched plugin copy in `packages/bluetooth_low_energy_windows` marshals every callback back to the platform thread via the COM apartment captured at startup, so these warnings should no longer appear.
 - **Peers never show “online”** — make sure Bluetooth is turned on on both machines and they are within range. The first discovery can take ~10–20 seconds. On macOS, approve the Bluetooth permission prompt on first run (re‑enable under **System Settings → Privacy & Security → Bluetooth** if declined).
 - **macOS: Bluetooth blocked** — the app sandbox needs the Bluetooth entitlement; it is already set in `macos/Runner/*.entitlements` in this repo. If you regenerate the macOS project with `flutter create .`, re‑add it.
+
+### License
+
+Meshenger is free software under the [GNU GPL v3](LICENSE). Using the app means agreeing to the [Terms of Use](TERMS.md); see also the [privacy policy](PRIVACY.md).
