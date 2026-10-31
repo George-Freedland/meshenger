@@ -1,0 +1,8 @@
+# LF everywhere, so files Flutter regenerates on Windows match what the Mac
+# commits (otherwise core.autocrlf=true flags them as modified).
+* text=auto eol=lf
+
+# Windows-only scripts need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

@@ -459,7 +459,7 @@ class _IoBleTransport implements MeshTransport {
       case BluetoothLowEnergyState.unauthorized:
         if (Platform.isMacOS) {
           return 'Bluetooth permission denied. Open System Settings → '
-              'Privacy & Security → Bluetooth, allow meshenger, then retry.';
+              'Privacy & Security → Bluetooth, allow Meshenger, then retry.';
         }
         if (Platform.isIOS) {
           return 'Bluetooth permission denied. Open Settings → Privacy & '
