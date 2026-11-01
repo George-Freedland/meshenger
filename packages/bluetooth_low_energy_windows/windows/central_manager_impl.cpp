@@ -241,27 +241,49 @@ namespace bluetooth_low_energy_windows
 				winrt::auto_revoke,
 				[this](winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher watcher, winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs event_args)
 				{
-					const auto address = event_args.BluetoothAddress();
-					const auto address_args = static_cast<int64_t>(address);
-					// Remember the address type so ConnectAsync can resolve
-					// peripherals that use random addressing (macOS/iOS).
-					const auto address_type = event_args.BluetoothAddressType();
-					const auto peripheral_args = PeripheralArgs(address_args);
-					const auto rssi = event_args.RawSignalStrengthInDBm();
-					const auto rssi_args = static_cast<int64_t>(rssi);
-					const auto &file_timestamp = event_args.Timestamp();
-					const auto timestamp = std::chrono::clock_cast<std::chrono::system_clock>(file_timestamp).time_since_epoch();
-					const auto timestamp_args = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp).count();
-					const auto type = event_args.AdvertisementType();
-					const auto type_args = AdvertisementTypeToArgs(type);
-					const auto advertisement = event_args.Advertisement();
-					const auto advertisement_args = AdvertisementToArgs(advertisement);
-					RunOnApartment(m_ui_context, [this, address_args, address_type, peripheral_args, rssi_args, timestamp_args, type_args, advertisement_args]
+					if (++m_adverts_received == 1)
 					{
-						m_address_types[address_args] = address_type;
-						auto &api = m_api.value();
-						api.OnDiscovered(peripheral_args, rssi_args, timestamp_args, type_args, advertisement_args, [] {}, [](auto error) {});
-					});
+						std::cerr << "[bluetooth_low_energy_windows] scan: Windows delivered its first advertisement" << std::endl;
+					}
+					try
+					{
+						const auto address = event_args.BluetoothAddress();
+						const auto address_args = static_cast<int64_t>(address);
+						// Remember the address type so ConnectAsync can resolve
+						// peripherals that use random addressing (macOS/iOS).
+						const auto address_type = event_args.BluetoothAddressType();
+						const auto peripheral_args = PeripheralArgs(address_args);
+						const auto rssi = event_args.RawSignalStrengthInDBm();
+						const auto rssi_args = static_cast<int64_t>(rssi);
+						const auto &file_timestamp = event_args.Timestamp();
+						const auto timestamp = std::chrono::clock_cast<std::chrono::system_clock>(file_timestamp).time_since_epoch();
+						const auto timestamp_args = std::chrono::duration_cast<std::chrono::milliseconds>(timestamp).count();
+						const auto type = event_args.AdvertisementType();
+						const auto type_args = AdvertisementTypeToArgs(type);
+						const auto advertisement = event_args.Advertisement();
+						const auto advertisement_args = AdvertisementToArgs(advertisement);
+						RunOnApartment(m_ui_context, [this, address_args, address_type, peripheral_args, rssi_args, timestamp_args, type_args, advertisement_args]
+						{
+							m_address_types[address_args] = address_type;
+							auto &api = m_api.value();
+							api.OnDiscovered(peripheral_args, rssi_args, timestamp_args, type_args, advertisement_args, [] {}, [](const FlutterError &error)
+							{
+								ReportDroppedCallback(("the app rejected an advertisement: " + error.code() + " " + error.message()).c_str());
+							});
+							if (!m_reported_first_delivery.exchange(true))
+							{
+								std::cerr << "[bluetooth_low_energy_windows] scan: first advertisement passed to the app" << std::endl;
+							}
+						});
+					}
+					catch (const winrt::hresult_error &ex)
+					{
+						ReportDroppedCallback(("reading an advertisement: " + winrt::to_string(ex.message())).c_str());
+					}
+					catch (const std::exception &ex)
+					{
+						ReportDroppedCallback((std::string("reading an advertisement: ") + ex.what()).c_str());
+					}
 				});
 			m_watcher_stopped_revoker = watcher.Stopped(
 				winrt::auto_revoke,

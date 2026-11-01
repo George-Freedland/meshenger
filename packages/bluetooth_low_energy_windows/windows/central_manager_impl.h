@@ -70,6 +70,10 @@ namespace bluetooth_low_energy_windows
 		// asking; while this is set it gets started again.
 		std::atomic<bool> m_discovering{false};
 		std::optional<winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher::Stopped_revoker> m_watcher_stopped_revoker;
+		// Tells "Windows hears nothing" apart from "the app never gets what
+		// Windows hears" in the log.
+		std::atomic<int64_t> m_adverts_received{0};
+		std::atomic<bool> m_reported_first_delivery{false};
 		std::optional<winrt::Windows::Devices::Radios::Radio::StateChanged_revoker> m_radio_state_changed_revoker;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::ConnectionStatusChanged_revoker>> m_device_connection_status_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession::MaxPduSizeChanged_revoker>> m_session_max_pdu_size_changed_revokers;
