@@ -57,6 +57,7 @@ try {
     $stopped = @(Get-Event -SourceIdentifier MeshengerBleStopped -ErrorAction SilentlyContinue)
 } catch {
     Write-Host "  the scan failed: $($_.Exception.Message)" -ForegroundColor Red
+    $status = 'failed'
 } finally {
     foreach ($id in 'MeshengerBleReceived', 'MeshengerBleStopped') {
         try {
@@ -99,6 +100,12 @@ $devices.Values | Sort-Object Rssi -Descending | Select-Object -First 20 | ForEa
 }
 
 Write-Host ''
+if ($status -eq 'failed') {
+    Write-Host "This check couldn't run a scan here (Windows PowerShell can't always subscribe to Bluetooth events), so it says nothing about Bluetooth. Use the cross-platform check instead:" -ForegroundColor Yellow
+    Write-Host '  python -m pip install bleak'
+    Write-Host '  python tool\ble_scan.py'
+    exit 1
+}
 if ($received.Count -eq 0) {
     Write-Host "This PC's Bluetooth heard nothing at all, with no app involved, so the problem is Windows or its Bluetooth driver, not Meshenger." -ForegroundColor Red
     Write-Host 'Try these, running this check again after each one:'
