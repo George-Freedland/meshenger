@@ -200,13 +200,19 @@ You need the Apple Developer Program membership from 2.1 (the same $99 covers iP
 - [ ] **Register the app.** In [App Store Connect](https://appstoreconnect.apple.com), go to **Apps → + → New App**. Choose iOS, name **Meshenger**, primary language English, bundle ID `com.georgefreedland.meshenger`, SKU `meshenger`. If the bundle ID isn't in the list, register it under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) first (**+ → App IDs → App**, explicit ID, no extra capabilities).
 - [ ] **Signing.** Open `ios/Runner.xcworkspace` in Xcode → **Runner** target → **Signing & Capabilities**. Set **Team** to your account and keep **Automatically manage signing** on.
 - [ ] **Try it on your iPhone first.** Plug it in and tap **Trust**. When iOS asks, turn on **Settings → Privacy & Security → Developer Mode** and restart the phone. Then run `flutter run -d ios --release` and confirm it chats with your Mac over Bluetooth and plays a song before you involve Apple.
-- [ ] **Bump the build number** in `pubspec.yaml`: every upload needs a higher number after the `+` (step 1.9), for example `version: 1.0.0+2`.
+- [ ] **Bump the build number** in `pubspec.yaml`: every upload needs a higher number after the `+` (step 1.9). Build 2 (`1.0.0+2`) is uploaded, so the next one is `1.0.0+3`.
 - [ ] Build:
   ```bash
   flutter build ipa --release        # produces build/ios/ipa/*.ipa
   ```
   If it can't find a signing certificate or profile, do the Signing step once in Xcode and run it again. If only the export step fails, run `open build/ios/archive/Runner.xcarchive`. Xcode's Organizer opens; click **Distribute App → App Store Connect → Upload** and skip Transporter.
-- [ ] Upload with Apple's **Transporter** app (free on the Mac App Store): drag the `.ipa` in and click **Deliver**. Processing takes 5–30 minutes, and Apple emails you when the build is ready, or if something is wrong with it.
+- [ ] Upload. Quickest is from Terminal, using the Apple account signed in to Xcode. It skips the symbol upload, which only produces warnings for the video player's libraries:
+  ```bash
+  xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
+    -exportOptionsPlist tool/ios_upload_options.plist -exportPath build/ios/upload \
+    -allowProvisioningUpdates
+  ```
+  It ends with `Upload succeeded`. Alternatively, drag the `.ipa` into Apple's **Transporter** app (free on the Mac App Store) and click **Deliver**. Processing takes 5–30 minutes, and Apple emails you when the build is ready, or if something is wrong with it.
 - [ ] **Encryption.** Each processed build shows **Missing Compliance** in TestFlight. Click **Manage** and choose **Standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system** (the app encrypts messages itself), then answer **No** for France. No documents are needed **unless you distribute in France**, which needs a French encryption declaration. Simplest: leave France out of availability until you've filed one. [Apple's guide](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption/).
   - `Info.plist` deliberately has no `ITSAppUsesNonExemptEncryption` key. Setting it to true makes Apple reject the upload (ITMS-90592) unless it comes with the compliance code Apple issues for filed documentation, and false would be wrong for this app. Once Apple gives you a code, add both keys and the question stops appearing.
 - [ ] **TestFlight → Internal Testing → +**: add yourself, install the **TestFlight** app on your iPhone and test.
