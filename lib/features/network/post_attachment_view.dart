@@ -4,13 +4,16 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/media/playback.dart';
 import '../../core/media/post_file.dart';
 import '../../core/models/post_attachment.dart';
 import '../../core/services/blob_service.dart';
 import '../../core/services/media_store.dart';
+import '../../core/services/transfer_meter.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/video_player_card.dart';
 
 /// The file attached to a post being written: cover (or icon), title,
 /// size, and a remove button. [file] is null while it is being read.
@@ -106,9 +109,10 @@ class AttachedFilePreview extends StatelessWidget {
   }
 }
 
-/// A file attached to a Network post: a music card for audio, a file card
-/// for anything else. The bytes come from [BlobService] — already here,
-/// or fetched from a device nearby when tapped.
+/// A file attached to a Network post: a music card for audio, a video
+/// player for video, a file card for anything else. The bytes come from
+/// [BlobService] — already here, or fetched from a device nearby when
+/// tapped; songs and videos can start while they download.
 class PostAttachmentView extends StatefulWidget {
   const PostAttachmentView({
     super.key,
@@ -130,7 +134,14 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
   late BlobProgress _progress = _progressNow();
   StreamSubscription<String>? _sub;
 
+  /// Whether the format can play from its first bytes (null: not checked
+  /// yet, or it can't tell).
+  bool? _streamable;
+  bool _checkingStreamable = false;
+
   PostAttachment get _file => widget.attachment;
+
+  bool get _media => _file.isAudio || _file.isVideo;
 
   BlobProgress _progressNow() =>
       BlobService.instance.progressOf(_file.sha256, size: _file.size);
@@ -147,14 +158,22 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
   @override
   void didUpdateWidget(covariant PostAttachmentView old) {
     super.didUpdateWidget(old);
-    if (old.attachment.sha256 != _file.sha256) _refresh();
+    if (old.attachment.sha256 != _file.sha256) {
+      _streamable = null;
+      _refresh();
+    }
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _ticker?.cancel();
     super.dispose();
   }
+
+  /// Keeps the speed and time left current between chunks (and shows a
+  /// stall as one).
+  Timer? _ticker;
 
   Future<void> _refresh() async {
     final path = await BlobService.instance.pathFor(_file.sha256);
@@ -163,10 +182,53 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
       _path = path;
       _progress = _progressNow();
     });
+    _checkStreamable();
+    if (_busy) {
+      _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _progress = _progressNow());
+        if (!_busy) {
+          _ticker?.cancel();
+          _ticker = null;
+        }
+      });
+    }
   }
 
-  void _fetch() => unawaited(BlobService.instance
-      .fetch(sha: _file.sha256, size: _file.size, name: _file.name));
+  /// Once the first chunks are here, look at how the file is laid out.
+  void _checkStreamable() {
+    final part = _progress.partPath;
+    if (!_media || _streamable != null || _checkingStreamable) return;
+    if (part == null || _progress.receivedBytes < 64 * 1024) return;
+    _checkingStreamable = true;
+    unawaited(fileSupportsStreaming(part).then((value) {
+      _checkingStreamable = false;
+      if (mounted) setState(() => _streamable = value ?? true);
+    }));
+  }
+
+  /// The download, while it can play early: every piece checked as it
+  /// landed, and a format that plays from its first bytes.
+  GrowingFile? get _partial {
+    final part = _progress.partPath;
+    if (!_media || _path != null || part == null) return null;
+    if (!_progress.verifiedPieces || _streamable != true) return null;
+    final length = _file.durationMs;
+    return GrowingFile(
+      path: part,
+      totalBytes: _file.size,
+      availableBytes: _progress.receivedBytes,
+      bytesPerSecond: _progress.meter?.bytesPerSecond ?? 0,
+      duration: length == null ? null : Duration(milliseconds: length),
+    );
+  }
+
+  void _fetch() => unawaited(BlobService.instance.fetch(
+        sha: _file.sha256,
+        size: _file.size,
+        name: _file.name,
+        pieces: _file.pieces,
+      ));
 
   bool get _busy => switch (_progress.state) {
         BlobState.searching ||
@@ -176,13 +238,21 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
         _ => false,
       };
 
-  String? get _status => switch (_progress.state) {
-        BlobState.searching => 'Looking for it nearby…',
-        BlobState.downloading =>
-          '${(_progress.fraction * 100).round()}% of ${formatBytes(_file.size)}',
-        BlobState.verifying => 'Checking…',
-        _ => null,
-      };
+  String? get _status {
+    switch (_progress.state) {
+      case BlobState.searching:
+        return 'Looking for it nearby…';
+      case BlobState.downloading:
+        final done = '${(_progress.fraction * 100).round()}% of '
+            '${formatBytes(_file.size)}';
+        final speed = speedLine(_progress.meter, _progress.remainingBytes);
+        return speed == null ? done : '$done · $speed';
+      case BlobState.verifying:
+        return 'Checking…';
+      default:
+        return null;
+    }
+  }
 
   Future<void> _save() async {
     final path = _path;
@@ -220,32 +290,49 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
 
   @override
   Widget build(BuildContext context) {
+    final length = _file.durationMs;
+    final duration = length == null ? null : Duration(milliseconds: length);
+    final fraction =
+        _progress.state == BlobState.downloading ? _progress.fraction : null;
+    final actions = [
+      if (_path != null)
+        IconButton(
+          tooltip: 'Save to Storage',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.save_alt_rounded, color: Colors.white70),
+          onPressed: _save,
+        ),
+    ];
     if (_file.isAudio) {
       final (title, artist) = trackNameFromFile(_file.name);
       final art = widget.artPath;
-      final length = _file.durationMs;
       return AudioTrackCard(
         path: _path,
+        partial: _partial,
         title: _file.title ?? title,
         artist: _file.artist ?? artist,
         album: _file.album,
-        duration: length == null ? null : Duration(milliseconds: length),
+        duration: duration,
         art: art == null ? null : FileImage(File(art)),
         onFetch: _fetch,
         busy: _busy,
-        downloadFraction: _progress.state == BlobState.downloading
-            ? _progress.fraction
-            : null,
+        downloadFraction: fraction,
         status: _status,
-        actions: [
-          if (_path != null)
-            IconButton(
-              tooltip: 'Save to Storage',
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.save_alt_rounded, color: Colors.white70),
-              onPressed: _save,
-            ),
-        ],
+        actions: actions,
+      );
+    }
+    if (_file.isVideo) {
+      return VideoPlayerCard(
+        title: _file.name,
+        path: _path,
+        partial: _partial,
+        duration: duration,
+        onFetch: _fetch,
+        busy: _busy,
+        downloadFraction: fraction,
+        status: _status ??
+            (_path == null ? formatBytes(_file.size) : null),
+        actions: actions,
       );
     }
     return _fileCard(context);

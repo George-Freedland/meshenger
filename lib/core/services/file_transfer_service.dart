@@ -9,9 +9,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import '../transport/envelope_codec.dart';
+import '../transport/mesh_transport.dart';
 import 'identity_scope.dart';
 import 'media_store.dart';
 import 'peer_directory.dart';
+import 'transfer_meter.dart';
 import 'transport_log.dart';
 
 /// Lifecycle of a peer-to-peer file transfer.
@@ -63,6 +65,9 @@ class FileTransfer {
   /// Receiver only: Storage-app media id once complete.
   String? mediaId;
 
+  /// Playing time of a song or video, so it can start while it arrives.
+  final int? durationMs;
+
   final int createdMs;
 
   FileTransfer({
@@ -78,6 +83,7 @@ class FileTransfer {
     required this.status,
     this.path,
     this.mediaId,
+    this.durationMs,
     required this.createdMs,
   });
 
@@ -93,6 +99,8 @@ class FileTransfer {
   int get transferredBytes =>
       confirmed >= totalChunks ? size : confirmed * chunkSize;
 
+  int get remainingBytes => size - transferredBytes;
+
   Map<String, Object?> toJson() => <String, Object?>{
         'tid': tid,
         'peer': peer,
@@ -106,6 +114,7 @@ class FileTransfer {
         'status': status.name,
         if (path != null) 'path': path,
         if (mediaId != null) 'mediaId': mediaId,
+        if (durationMs != null) 'dur': durationMs,
         'ts': createdMs,
       };
 
@@ -125,8 +134,12 @@ class FileTransfer {
         ),
         path: json['path'] as String?,
         mediaId: json['mediaId'] as String?,
+        durationMs: _positiveInt(json['dur']),
         createdMs: (json['ts'] as num?)?.toInt() ?? 0,
       );
+
+  static int? _positiveInt(Object? value) =>
+      value is num && value > 0 ? value.toInt() : null;
 
   static const int defaultBleChunk = 24 * 1024;
 }
@@ -162,8 +175,13 @@ class FileTransferService {
   /// confirmation before it waits (bounds pass-through relay buffering).
   static const int window = 64;
 
-  /// Receiver confirms progress every this many chunks.
+  /// Receiver saves progress every this many chunks…
   static const int progressEvery = 16;
+
+  /// …and tells the sender after this many, or this long, whichever comes
+  /// first, so the sender's bar and speed stay current.
+  static const int reportEvery = 4;
+  static const Duration reportInterval = Duration(seconds: 1);
 
   /// How long the sender waits for confirmations to advance before it
   /// parks the transfer as paused.
@@ -193,6 +211,26 @@ class FileTransferService {
   /// Throttle for automatic resume attempts per transfer.
   final Map<String, int> _lastResumeMs = <String, int>{};
 
+  /// Speed of each running transfer, as delivered bytes per second.
+  final Map<String, TransferMeter> _meters = <String, TransferMeter>{};
+
+  /// Receiver: the watermark last reported to the sender, and when.
+  final Map<String, (int, int)> _lastReport = <String, (int, int)>{};
+
+  /// When this session's bytes started moving, and from which chunk: the
+  /// average speed goes in the log when the transfer completes.
+  final Map<String, (int, int)> _sessionStart = <String, (int, int)>{};
+
+  String _averageOf(FileTransfer t) {
+    final (startMs, startChunk) = _sessionStart.remove(t.tid) ??
+        (DateTime.now().millisecondsSinceEpoch, 0);
+    return formatAverage(_bytesBetween(t, startChunk, t.totalChunks),
+        DateTime.now().millisecondsSinceEpoch - startMs);
+  }
+
+  /// Null until the transfer has moved some bytes this session.
+  TransferMeter? meterFor(String tid) => _meters[tid];
+
   bool _loaded = false;
 
   final _changed = StreamController<String>.broadcast();
@@ -208,7 +246,7 @@ class FileTransferService {
     String? meta, {
     bool unique,
   })? _sendControl;
-  Future<bool> Function(String peer, Map<String, Object?> packet)? _sendPacket;
+  PacketSender? _sendPacket;
   Set<String> Function()? _onlinePeers;
   void Function(FileTransfer transfer)? _onIncomingOffer;
   void Function(FileTransfer transfer)? _onCompleted;
@@ -221,8 +259,7 @@ class FileTransferService {
       String? meta, {
       bool unique,
     }) sendControl,
-    required Future<bool> Function(String peer, Map<String, Object?> packet)
-        sendPacket,
+    required PacketSender sendPacket,
     required Set<String> Function() onlinePeers,
     void Function(FileTransfer transfer)? onIncomingOffer,
     void Function(FileTransfer transfer)? onCompleted,
@@ -251,6 +288,9 @@ class FileTransferService {
     _writeQueues.clear();
     _lastChunkMs.clear();
     _lastResumeMs.clear();
+    _meters.clear();
+    _lastReport.clear();
+    _sessionStart.clear();
     _loaded = false;
   }
 
@@ -260,6 +300,11 @@ class FileTransferService {
 
   static int chunkCountFor(int size, int chunkSize) =>
       size == 0 ? 0 : (size + chunkSize - 1) ~/ chunkSize;
+
+  /// File bytes in chunks [from] up to (not including) [to].
+  static int _bytesBetween(FileTransfer t, int from, int to) =>
+      (to * t.chunkSize).clamp(0, t.size) -
+      (from * t.chunkSize).clamp(0, t.size);
 
   /// 12-byte GCM nonce for chunk [i]: zero-padded big-endian counter. The
   /// key is unique per (pair, transfer, direction), so a plain counter can
@@ -310,6 +355,28 @@ class FileTransferService {
     } catch (_) {
       _byId.clear();
     }
+    unawaited(_sweepParts());
+  }
+
+  /// Deletes partial files no transfer writes to any more: ones a player
+  /// still held open when their transfer finished (Windows can't move an
+  /// open file, so it got copied), or ones a crash left behind.
+  Future<void> _sweepParts() async {
+    try {
+      await for (final entity in (await _partDir()).list()) {
+        final name = entity.uri.pathSegments.last;
+        if (entity is! File || !name.endsWith('.part')) continue;
+        final transfer = _byId[name.substring(0, name.length - 5)];
+        if (transfer != null && !transfer.outgoing && !transfer.isTerminal) {
+          continue;
+        }
+        try {
+          await entity.delete();
+        } on FileSystemException {
+          // Still open; next time.
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _persist() async {
@@ -364,8 +431,7 @@ class FileTransferService {
   Future<String?> _x25519For(String peer) async =>
       (await PeerDirectory.instance.get(peer))?.x25519Base64;
 
-  bool _isOnline(String peer) =>
-      _onlinePeers?.call().contains(peer) ?? false;
+  bool _isOnline(String peer) => _onlinePeers?.call().contains(peer) ?? false;
 
   // ---------------------------------------------------------------------
   // Sender side
@@ -378,6 +444,7 @@ class FileTransferService {
     required String path,
     required String name,
     required String mime,
+    int? durationMs,
   }) async {
     await _ensureLoaded();
     final size = await File(path).length();
@@ -396,6 +463,7 @@ class FileTransferService {
       confirmed: 0,
       status: FtStatus.offered,
       path: path,
+      durationMs: durationMs,
       createdMs: DateTime.now().millisecondsSinceEpoch,
     );
     _byId[transfer.tid] = transfer;
@@ -412,12 +480,13 @@ class FileTransferService {
         'size': size,
         'chunk': chunkSize,
         'total': transfer.totalChunks,
+        if (durationMs != null) 'dur': durationMs,
       }),
       unique: false,
     );
-    TransportLog.instance.log(
-        'FT: offered "$name" (${transfer.totalChunks} chunks of '
-        '$chunkSize B) to ${_short(peer)}');
+    TransportLog.instance
+        .log('FT: offered "$name" (${transfer.totalChunks} chunks of '
+            '$chunkSize B) to ${_short(peer)}');
     _ping(transfer.tid);
     return transfer;
   }
@@ -514,7 +583,7 @@ class FileTransferService {
 
           var delivered = false;
           for (var attempt = 0; attempt < _chunkRetries; attempt++) {
-            if (await send(transfer.peer, packet)) {
+            if (await send(transfer.peer, packet, bulk: true)) {
               delivered = true;
               break;
             }
@@ -524,9 +593,9 @@ class FileTransferService {
             transfer.status = FtStatus.paused;
             await _persist();
             _ping(tid);
-            TransportLog.instance.log(
-                'FT: link to ${_short(transfer.peer)} dropped at chunk '
-                '$cursor/${transfer.totalChunks} — paused, will resume');
+            TransportLog.instance
+                .log('FT: link to ${_short(transfer.peer)} dropped at chunk '
+                    '$cursor/${transfer.totalChunks} — paused, will resume');
             return;
           }
           cursor++;
@@ -576,14 +645,19 @@ class FileTransferService {
     // Genuine rollbacks (receiver restarted and truncated its part file)
     // arrive through the reliable re-accept path instead (handleAccept).
     if (have > transfer.confirmed) {
-      transfer.confirmed = have.clamp(0, transfer.totalChunks);
+      _sessionStart.putIfAbsent(tid,
+          () => (DateTime.now().millisecondsSinceEpoch, transfer.confirmed));
+      final now = have.clamp(0, transfer.totalChunks);
+      _meters
+          .putIfAbsent(tid, TransferMeter.new)
+          .add(_bytesBetween(transfer, transfer.confirmed, now));
+      transfer.confirmed = now;
     }
     if (packet['ok'] == true || transfer.confirmed >= transfer.totalChunks) {
       transfer.confirmed = transfer.totalChunks;
       transfer.status = FtStatus.done;
-      TransportLog.instance
-          .log('FT: "${transfer.name}" fully delivered to '
-              '${_short(transfer.peer)}');
+      TransportLog.instance.log('FT: "${transfer.name}" fully delivered to '
+          '${_short(transfer.peer)} ${_averageOf(transfer)}');
     }
     await _persist();
     _ping(tid);
@@ -630,6 +704,7 @@ class FileTransferService {
         totalChunks: chunkCountFor(size, chunkSize),
         confirmed: 0,
         status: FtStatus.offered,
+        durationMs: FileTransfer._positiveInt(meta['dur']),
         createdMs: DateTime.now().millisecondsSinceEpoch,
       );
       _byId[tid] = transfer;
@@ -724,6 +799,8 @@ class FileTransferService {
       return;
     }
 
+    _sessionStart.putIfAbsent(
+        tid, () => (DateTime.now().millisecondsSinceEpoch, transfer.confirmed));
     try {
       final key = await _keyFor(transfer);
       final plain = await AesGcm.with256bits().decrypt(
@@ -735,13 +812,15 @@ class FileTransferService {
         secretKey: key,
       );
 
-      final raf = _rafs[tid] ??=
-          await File(transfer.path!).open(mode: FileMode.append);
+      final raf =
+          _rafs[tid] ??= await File(transfer.path!).open(mode: FileMode.append);
       await raf.writeFrom(plain);
 
       transfer.confirmed = i + 1;
       transfer.status = FtStatus.active;
-      _lastChunkMs[tid] = DateTime.now().millisecondsSinceEpoch;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      _lastChunkMs[tid] = nowMs;
+      _meters.putIfAbsent(tid, TransferMeter.new).add(plain.length);
 
       final finished = transfer.confirmed >= transfer.totalChunks;
       if (finished) {
@@ -749,9 +828,14 @@ class FileTransferService {
         await raf.close();
         _rafs.remove(tid);
         await _finalize(transfer);
-      } else if (transfer.confirmed % progressEvery == 0) {
-        await _persist();
-        unawaited(_sendProgress(transfer));
+      } else {
+        if (transfer.confirmed % progressEvery == 0) await _persist();
+        final (reported, reportedMs) = _lastReport[tid] ?? (0, 0);
+        if (transfer.confirmed - reported >= reportEvery ||
+            nowMs - reportedMs >= reportInterval.inMilliseconds) {
+          _lastReport[tid] = (transfer.confirmed, nowMs);
+          unawaited(_sendProgress(transfer));
+        }
         _ping(tid);
       }
     } catch (e) {
@@ -796,7 +880,7 @@ class FileTransferService {
           unique: true);
       TransportLog.instance.log(
           'FT: "${transfer.name}" complete (${transfer.totalChunks} chunks) '
-          '— saved to Storage');
+          '${_averageOf(transfer)} — saved to Storage');
       _onCompleted?.call(transfer);
     } catch (e) {
       transfer.status = FtStatus.failed;

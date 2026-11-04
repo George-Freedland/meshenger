@@ -242,14 +242,22 @@ namespace bluetooth_low_energy_windows
 
 	std::optional<FlutterError> PeripheralManagerImpl::RespondWriteRequest(int64_t id_args)
 	{
+		const auto deferral_iterator = m_deferrals.find(id_args);
+		const auto request_iterator = m_write_requests.find(id_args);
+		if (deferral_iterator == m_deferrals.end() || request_iterator == m_write_requests.end() ||
+			!deferral_iterator->second.has_value() || !request_iterator->second.has_value())
+		{
+			// A write without response: already completed, nothing to answer.
+			return std::nullopt;
+		}
 		try
 		{
-			const auto &deferal = m_deferrals[id_args].value();
-			const auto &request = m_write_requests[id_args].value();
+			const auto deferal = deferral_iterator->second.value();
+			const auto request = request_iterator->second.value();
+			m_deferrals.erase(deferral_iterator);
+			m_write_requests.erase(request_iterator);
 			request.Respond();
 			deferal.Complete();
-			m_deferrals.erase(id_args);
-			m_write_requests.erase(id_args);
 			return std::nullopt;
 		}
 		catch (const winrt::hresult_error &ex)
@@ -263,15 +271,22 @@ namespace bluetooth_low_energy_windows
 
 	std::optional<FlutterError> PeripheralManagerImpl::RespondWriteRequestWithProtocolError(int64_t id_args, const GATTProtocolErrorArgs &error_args)
 	{
+		const auto deferral_iterator = m_deferrals.find(id_args);
+		const auto request_iterator = m_write_requests.find(id_args);
+		if (deferral_iterator == m_deferrals.end() || request_iterator == m_write_requests.end() ||
+			!deferral_iterator->second.has_value() || !request_iterator->second.has_value())
+		{
+			return std::nullopt;
+		}
 		try
 		{
-			const auto &deferal = m_deferrals[id_args].value();
-			const auto &request = m_write_requests[id_args].value();
+			const auto deferal = deferral_iterator->second.value();
+			const auto request = request_iterator->second.value();
+			m_deferrals.erase(deferral_iterator);
+			m_write_requests.erase(request_iterator);
 			const auto error = ArgsToProtocolError(error_args);
 			request.RespondWithProtocolError(error);
 			deferal.Complete();
-			m_deferrals.erase(id_args);
-			m_write_requests.erase(id_args);
 			return std::nullopt;
 		}
 		catch (const winrt::hresult_error &ex)
@@ -695,45 +710,134 @@ namespace bluetooth_low_energy_windows
 
 	winrt::fire_and_forget PeripheralManagerImpl::OnCharacteristicWriteRequestedAsync(const int64_t hash_code_args, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteRequestedEventArgs event_args)
 	{
+		// Everything before the first co_await runs inside the event
+		// handler, in the order Windows raised the writes.
+		const auto ticket = m_next_write_ticket++;
 		const auto deferral = event_args.GetDeferral();
-		const auto session = event_args.Session();
-		const auto device_id = session.DeviceId().Id();
-		const auto &device = co_await winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::FromIdAsync(device_id);
-		const auto address = device.BluetoothAddress();
-		const auto address_args = static_cast<int64_t>(address);
-		const auto central_args = CentralArgs(address_args);
-		const auto &request = co_await event_args.GetRequestAsync();
-		const auto id = std::addressof(request);
-		const auto id_args = reinterpret_cast<int64_t>(id);
-		const auto offset = request.Offset();
-		const auto offset_args = static_cast<int64_t>(offset);
-		const auto value = request.Value();
-		const auto value_length = value.Length();
-		auto value_args = std::vector<uint8_t>(value_length);
-		const auto value_reader = winrt::Windows::Storage::Streams::DataReader::FromBuffer(value);
-		value_reader.ReadBytes(value_args);
-		const auto option = request.Option();
-		const auto type_args = WriteOptionToArgs(option);
-		RunOnApartment(m_ui_context, [this, central_args, address_args, hash_code_args, session, deferral, request, id_args, offset_args, value_args, type_args]
+		auto queued = false;
+		try
 		{
-			m_session_max_pdu_size_changed_revokers[address_args] = session.MaxPduSizeChanged(
-				winrt::auto_revoke,
-				[this, central_args](winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession session, auto obj)
+			const auto session = event_args.Session();
+			const auto device_id = session.DeviceId().Id();
+			int64_t address_args = 0;
+			{
+				std::lock_guard<std::mutex> lock(m_addresses_mutex);
+				const auto cached = m_addresses.find(device_id);
+				if (cached != m_addresses.end())
 				{
-					const auto mtu = session.MaxPduSize();
-					const auto mtu_args = static_cast<int64_t>(mtu);
-					RunOnApartment(m_ui_context, [this, central_args, mtu_args]
-					{
-						auto &api = m_api.value();
-						api.OnMTUChanged(central_args, mtu_args, [] {}, [](auto error) {});
-					});
+					address_args = cached->second;
+				}
+			}
+			if (address_args == 0)
+			{
+				const auto device = co_await winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::FromIdAsync(device_id);
+				if (device == nullptr)
+				{
+					throw BluetoothLowEnergyException("Write from an unknown device");
+				}
+				address_args = static_cast<int64_t>(device.BluetoothAddress());
+				std::lock_guard<std::mutex> lock(m_addresses_mutex);
+				m_addresses[device_id] = address_args;
+			}
+			const auto central_args = CentralArgs(address_args);
+			const auto request = co_await event_args.GetRequestAsync();
+			const auto id_args = m_next_write_id++;
+			const auto offset_args = static_cast<int64_t>(request.Offset());
+			const auto value = request.Value();
+			auto value_args = std::vector<uint8_t>(value.Length());
+			const auto value_reader = winrt::Windows::Storage::Streams::DataReader::FromBuffer(value);
+			value_reader.ReadBytes(value_args);
+			const auto option = request.Option();
+			const auto type_args = WriteOptionToArgs(option);
+			// A write without response has nothing to answer: let Windows go
+			// on to the next one right away.
+			const auto respond = option == winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption::WriteWithResponse;
+			if (!respond)
+			{
+				deferral.Complete();
+			}
+			queued = true;
+			RunOnApartment(m_ui_context, [this, ticket, central_args, address_args, hash_code_args, session, deferral, request, id_args, offset_args, value_args, type_args, respond]
+			{
+				WatchMtu(address_args, central_args, session);
+				if (respond)
+				{
+					m_deferrals[id_args] = deferral;
+					m_write_requests[id_args] = request;
+				}
+				const auto request_args = GATTWriteRequestArgs(id_args, offset_args, value_args, type_args);
+				DeliverWriteInOrder(ticket, [this, central_args, hash_code_args, request_args]
+				{
+					auto &api = m_api.value();
+					api.OnCharacteristicWriteRequest(central_args, hash_code_args, request_args, []() {}, [](const auto &error) {});
 				});
-			m_deferrals[id_args] = deferral;
-			m_write_requests[id_args] = request;
-			const auto request_args = GATTWriteRequestArgs(id_args, offset_args, value_args, type_args);
-			auto &api = m_api.value();
-			api.OnCharacteristicWriteRequest(central_args, hash_code_args, request_args, []() {}, [](const auto &error) {});
-		});
+			});
+		}
+		catch (const winrt::hresult_error &ex)
+		{
+			ReportDroppedCallback(("reading a write: " + winrt::to_string(ex.message())).c_str());
+		}
+		catch (const std::exception &ex)
+		{
+			ReportDroppedCallback((std::string("reading a write: ") + ex.what()).c_str());
+		}
+		if (!queued)
+		{
+			// Keep later writes flowing past the one that failed.
+			try
+			{
+				deferral.Complete();
+			}
+			catch (const winrt::hresult_error &)
+			{
+			}
+			RunOnApartment(m_ui_context, [this, ticket]
+			{
+				DeliverWriteInOrder(ticket, nullptr);
+			});
+		}
+	}
+
+	void PeripheralManagerImpl::DeliverWriteInOrder(uint64_t ticket, std::function<void()> deliver)
+	{
+		m_pending_writes[ticket] = std::move(deliver);
+		while (true)
+		{
+			const auto next = m_pending_writes.find(m_next_write_delivery);
+			if (next == m_pending_writes.end())
+			{
+				break;
+			}
+			const auto run = std::move(next->second);
+			m_pending_writes.erase(next);
+			m_next_write_delivery++;
+			if (run)
+			{
+				run();
+			}
+		}
+	}
+
+	void PeripheralManagerImpl::WatchMtu(int64_t address_args, const CentralArgs &central_args, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession &session)
+	{
+		const auto watched = m_watched_sessions.find(address_args);
+		if (watched != m_watched_sessions.end() && watched->second.has_value() && watched->second.value() == session)
+		{
+			return;
+		}
+		m_watched_sessions[address_args] = session;
+		m_session_max_pdu_size_changed_revokers[address_args] = session.MaxPduSizeChanged(
+			winrt::auto_revoke,
+			[this, central_args](winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession changed, auto obj)
+			{
+				const auto mtu = changed.MaxPduSize();
+				const auto mtu_args = static_cast<int64_t>(mtu);
+				RunOnApartment(m_ui_context, [this, central_args, mtu_args]
+				{
+					auto &api = m_api.value();
+					api.OnMTUChanged(central_args, mtu_args, [] {}, [](auto error) {});
+				});
+			});
 	}
 
 	winrt::fire_and_forget PeripheralManagerImpl::OnCharacteristicSubscribedClientsChangedAsync(const int64_t hash_code_args, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalCharacteristic &characteristic)

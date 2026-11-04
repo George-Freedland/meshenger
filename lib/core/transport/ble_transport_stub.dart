@@ -48,8 +48,9 @@ class _StubBleTransport implements MeshTransport {
   @override
   Future<bool> sendPacket(
     String peerAddress,
-    Map<String, Object?> packet,
-  ) async {
+    Map<String, Object?> packet, {
+    bool bulk = false,
+  }) async {
     return false;
   }
 }

@@ -1,14 +1,13 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:ui' as ui;
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 
 import '../media/audio_metadata.dart';
+import '../media/playback.dart';
+import '../media/progressive_player.dart';
 import 'media_widgets.dart';
-
-/// Only one track plays at a time: starting one pauses whichever was on.
-final ValueNotifier<Object?> _nowPlaying = ValueNotifier<Object?>(null);
 
 /// "Artist - Title.mp3" gives (title, artist); otherwise the name without
 /// its extension and no artist.
@@ -35,14 +34,16 @@ List<Color> _gradientFor(String seed) {
 /// A song with its cover art, played in place: play, pause, seek.
 ///
 /// [path] may be null while the file is still on someone else's device:
-/// tapping play calls [onFetch], and playback starts as soon as the file
-/// arrives. The audio player is only created on the first play, so a feed
-/// full of songs costs nothing until one is tapped.
+/// tapping play calls [onFetch]. Once [partial] shows the download, play
+/// starts as soon as the rest will arrive before it's needed, and seeking
+/// stays inside what has arrived. The player is only created on the first
+/// play, so a feed full of songs costs nothing until one is tapped.
 class AudioTrackCard extends StatefulWidget {
   const AudioTrackCard({
     super.key,
     required this.title,
     this.path,
+    this.partial,
     this.artist,
     this.album,
     this.duration,
@@ -55,7 +56,14 @@ class AudioTrackCard extends StatefulWidget {
   });
 
   final String title;
+
+  /// The complete file, once it's on this device.
   final String? path;
+
+  /// The file while it downloads, when its bytes are checked as they land
+  /// and its format can play from the start.
+  final GrowingFile? partial;
+
   final String? artist;
   final String? album;
   final Duration? duration;
@@ -75,109 +83,52 @@ class AudioTrackCard extends StatefulWidget {
 }
 
 class _AudioTrackCardState extends State<AudioTrackCard> {
-  AudioPlayer? _player;
-  final List<StreamSubscription<dynamic>> _subs = [];
-  PlayerState _state = PlayerState.stopped;
-  Duration _position = Duration.zero;
-  Duration? _length;
+  final ProgressivePlayer _player = ProgressivePlayer();
   double? _dragging;
-  bool _playWhenReady = false;
+  String? _shownFailure;
 
   @override
   void initState() {
     super.initState();
-    _length = widget.duration;
-    _nowPlaying.addListener(_onNowPlaying);
+    _sync();
+    _player.addListener(_onPlayer);
   }
 
   @override
   void didUpdateWidget(covariant AudioTrackCard old) {
     super.didUpdateWidget(old);
-    _length ??= widget.duration;
-    if (old.path != widget.path) {
-      if (old.path != null) unawaited(_player?.stop());
-      if (widget.path != null && _playWhenReady) {
-        _playWhenReady = false;
-        unawaited(_play());
-      }
+    _sync();
+  }
+
+  void _sync() => _player.update(
+        path: widget.path,
+        partial: widget.partial,
+        length: widget.duration,
+      );
+
+  void _onPlayer() {
+    if (!mounted) return;
+    final failure = _player.failed;
+    if (failure != null && failure != _shownFailure) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(failure)));
     }
+    _shownFailure = failure;
+    setState(() {});
   }
 
   @override
   void dispose() {
-    _nowPlaying.removeListener(_onNowPlaying);
-    if (_nowPlaying.value == this) _nowPlaying.value = null;
-    for (final sub in _subs) {
-      sub.cancel();
-    }
-    _player?.dispose();
+    _player.removeListener(_onPlayer);
+    _player.dispose();
     super.dispose();
   }
 
-  void _onNowPlaying() {
-    if (_nowPlaying.value != this && _state == PlayerState.playing) {
-      unawaited(_player?.pause());
-    }
-  }
-
-  AudioPlayer _ensurePlayer() {
-    final existing = _player;
-    if (existing != null) return existing;
-    final player = AudioPlayer();
-    _subs
-      ..add(player.onPlayerStateChanged.listen((state) {
-        if (mounted) setState(() => _state = state);
-      }))
-      ..add(player.onPositionChanged.listen((position) {
-        if (mounted) setState(() => _position = position);
-      }))
-      ..add(player.onDurationChanged.listen((length) {
-        if (mounted && length > Duration.zero) {
-          setState(() => _length = length);
-        }
-      }))
-      ..add(player.onPlayerComplete.listen((_) {
-        if (mounted) setState(() => _position = Duration.zero);
-      }));
-    return _player = player;
-  }
-
-  Future<void> _play() async {
-    final path = widget.path;
-    if (path == null) return;
-    _nowPlaying.value = this;
-    final player = _ensurePlayer();
-    try {
-      if (_state == PlayerState.paused) {
-        await player.resume();
-      } else {
-        await player.play(DeviceFileSource(path));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("This device can't play that file")));
-      }
-    }
-  }
-
-  Future<void> _toggle() async {
-    if (_state == PlayerState.playing) {
-      await _player?.pause();
-    } else if (widget.path == null) {
-      setState(() => _playWhenReady = true);
-      widget.onFetch?.call();
-    } else {
-      await _play();
-    }
-  }
+  Future<void> _toggle() => _player.toggle(fetch: widget.onFetch);
 
   Future<void> _seek(double fraction) async {
-    final length = _length;
     setState(() => _dragging = null);
-    if (length == null) return;
-    await _player
-        ?.seek(Duration(milliseconds: (fraction * length.inMilliseconds).round()));
+    await _player.seekFraction(fraction);
   }
 
   @override
@@ -186,13 +137,19 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
     const fg = Colors.white;
     final muted = fg.withValues(alpha: 0.72);
     final art = widget.art;
-    final length = _length;
+    final player = _player;
+    final length = player.length;
+    final position = player.position;
     final progress = length == null || length.inMilliseconds == 0
         ? 0.0
-        : (_position.inMilliseconds / length.inMilliseconds).clamp(0.0, 1.0);
+        : (position.inMilliseconds / length.inMilliseconds).clamp(0.0, 1.0);
     final subtitle =
         [widget.artist, widget.album].whereType<String>().join(' — ');
-    final canSeek = _player != null && length != null;
+    final canSeek = player.opened && length != null;
+    final joined =
+        [player.waitLabel, widget.status].whereType<String>().join(' · ');
+    final status = joined.isEmpty ? null : joined;
+    final partial = widget.path == null ? widget.partial : null;
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 420),
@@ -218,7 +175,8 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
             ),
             Positioned.fill(
               child: ColoredBox(
-                color: Colors.black.withValues(alpha: art == null ? 0.15 : 0.42),
+                color:
+                    Colors.black.withValues(alpha: art == null ? 0.15 : 0.42),
               ),
             ),
             Padding(
@@ -267,8 +225,8 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
                   Row(
                     children: [
                       _PlayButton(
-                        playing: _state == PlayerState.playing,
-                        busy: widget.busy,
+                        playing: player.playing,
+                        busy: widget.busy || player.waitLabel != null,
                         fraction: widget.downloadFraction,
                         onPressed: _toggle,
                       ),
@@ -295,11 +253,16 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
                                     fg.withValues(alpha: 0.6),
                                 disabledInactiveTrackColor:
                                     fg.withValues(alpha: 0.2),
+                                // How much of the song has downloaded.
+                                secondaryActiveTrackColor:
+                                    fg.withValues(alpha: 0.45),
                               ),
                               child: Slider(
                                 value: _dragging ?? progress,
+                                secondaryTrackValue: partial?.fraction,
                                 onChanged: canSeek
-                                    ? (v) => setState(() => _dragging = v)
+                                    ? (v) => setState(() =>
+                                        _dragging = min(v, player.seekLimit))
                                     : null,
                                 onChangeEnd: canSeek ? _seek : null,
                               ),
@@ -309,9 +272,9 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
                                   const EdgeInsets.symmetric(horizontal: 10),
                               child: Row(
                                 children: [
-                                  if (widget.status == null) ...[
+                                  if (status == null || player.opened) ...[
                                     Text(
-                                      formatDuration(_position),
+                                      formatDuration(position),
                                       style: theme.textTheme.labelSmall
                                           ?.copyWith(color: muted),
                                     ),
@@ -319,11 +282,11 @@ class _AudioTrackCardState extends State<AudioTrackCard> {
                                   ],
                                   Expanded(
                                     child: Text(
-                                      widget.status ??
+                                      status ??
                                           (length == null
                                               ? ''
                                               : formatDuration(length)),
-                                      textAlign: widget.status == null
+                                      textAlign: status == null
                                           ? TextAlign.end
                                           : TextAlign.start,
                                       maxLines: 1,
@@ -375,7 +338,8 @@ class _Cover extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(10),
         boxShadow: const [
-          BoxShadow(color: Colors.black45, blurRadius: 10, offset: Offset(0, 3)),
+          BoxShadow(
+              color: Colors.black45, blurRadius: 10, offset: Offset(0, 3)),
         ],
       ),
       child: ClipRRect(

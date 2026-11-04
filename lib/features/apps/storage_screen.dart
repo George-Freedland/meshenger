@@ -10,6 +10,7 @@ import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/video_player_card.dart';
 
 /// Local file library: import anything, preview images and audio, send
 /// items to any contact over the mesh, and track space used. Media received
@@ -115,8 +116,8 @@ class _StorageScreenState extends State<StorageScreen>
     if (target == null || !mounted) return;
 
     final name = target.nickname ?? 'contact';
-    if (item.sizeBytes > MediaStore.maxTransferBytes) {
-      // Too big for the mesh path: stream it peer-to-peer instead.
+    if (item.sizeBytes > MessengerService.inlineChatFileBytes) {
+      // Streams peer-to-peer: much faster than the mesh path, resumable.
       final path = await MediaStore.instance.pathFor(item.id);
       if (path == null) return;
       try {
@@ -124,7 +125,7 @@ class _StorageScreenState extends State<StorageScreen>
             path: path, name: item.name, mime: item.mime);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Offered to $name — it streams straight to '
+              content: Text('Sending to $name — it streams straight to '
                   'them when you are near each other.')));
         }
       } on StateError catch (e) {
@@ -190,6 +191,17 @@ class _StorageScreenState extends State<StorageScreen>
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
                 child: AudioFileCard(path: path, fileName: item.name),
+              ),
+            if (item.mime.startsWith('video/') && path != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: VideoPlayerCard(
+                  title: item.name,
+                  path: path,
+                  duration: item.durationMs == null
+                      ? null
+                      : Duration(milliseconds: item.durationMs!),
+                ),
               ),
             ListTile(
               title: Text(item.name,
@@ -315,7 +327,9 @@ class _StorageScreenState extends State<StorageScreen>
                                     ? Icons.audiotrack
                                     : item.isImage
                                         ? Icons.image_outlined
-                                        : Icons.insert_drive_file_outlined,
+                                        : item.mime.startsWith('video/')
+                                            ? Icons.movie_outlined
+                                            : Icons.insert_drive_file_outlined,
                                 size: 32,
                               ),
                         title: Text(item.name,

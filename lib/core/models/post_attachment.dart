@@ -14,6 +14,7 @@ class PostAttachment {
     this.artist,
     this.album,
     this.durationMs,
+    this.pieces,
   });
 
   final String name;
@@ -28,12 +29,23 @@ class PostAttachment {
   final String? title;
   final String? artist;
   final String? album;
+
+  /// Playing time of a song or video.
   final int? durationMs;
+
+  /// Hash of the file's piece list (see BlobService), which lets every
+  /// chunk be checked on arrival and the file play while it downloads.
+  /// Older apps ignore it.
+  final String? pieces;
 
   static final RegExp shaPattern = RegExp(r'^[0-9a-f]{64}$');
 
   bool get isAudio => mime.startsWith('audio/');
   bool get isImage => mime.startsWith('image/');
+  bool get isVideo => mime.startsWith('video/');
+
+  /// Everything this attachment keeps in BlobService.
+  List<String> get blobs => [sha256, if (pieces != null) pieces!];
 
   Map<String, Object?> toJson() => <String, Object?>{
         'name': name,
@@ -44,6 +56,7 @@ class PostAttachment {
         if (artist != null) 'artist': artist,
         if (album != null) 'album': album,
         if (durationMs != null) 'dur': durationMs,
+        if (pieces != null) 'pcs': pieces,
       };
 
   /// Null for anything malformed (it may have come from a stranger).
@@ -66,6 +79,7 @@ class PostAttachment {
             ? value.trim()
             : null;
     final dur = json['dur'];
+    final pieces = json['pcs'];
     return PostAttachment(
       name: name.trim(),
       mime: mime,
@@ -75,6 +89,7 @@ class PostAttachment {
       artist: text(json['artist']),
       album: text(json['album']),
       durationMs: dur is int && dur > 0 ? dur : null,
+      pieces: pieces is String && shaPattern.hasMatch(pieces) ? pieces : null,
     );
   }
 

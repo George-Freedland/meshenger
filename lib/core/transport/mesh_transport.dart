@@ -1,5 +1,13 @@
 import 'dart:async';
 
+/// What services send through: [MeshTransport.sendPacket], wired in by
+/// MessengerService.
+typedef PacketSender = Future<bool> Function(
+  String peer,
+  Map<String, Object?> packet, {
+  bool bulk,
+});
+
 /// A local, serverless transport that discovers nearby peers and moves
 /// packets (JSON maps) between directly-reachable devices.
 ///
@@ -60,5 +68,13 @@ abstract class MeshTransport {
   /// Delivers [packet] to a directly-reachable peer. Returns true when the
   /// peer's device acknowledged accepting the packet (transport-level ack;
   /// end-to-end delivery is confirmed separately with encrypted acks).
-  Future<bool> sendPacket(String peerAddress, Map<String, Object?> packet);
+  ///
+  /// [bulk] packets (file chunks) skip that ack and return once the radio
+  /// has taken them: the transfer protocols above confirm and re-request on
+  /// their own, and waiting on every packet would halve their speed.
+  Future<bool> sendPacket(
+    String peerAddress,
+    Map<String, Object?> packet, {
+    bool bulk = false,
+  });
 }

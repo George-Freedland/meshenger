@@ -682,6 +682,10 @@ namespace bluetooth_low_energy_windows
 
 	winrt::fire_and_forget CentralManagerImpl::WriteCharacteristicAsync(int64_t address_args, int64_t handle_args, const std::vector<uint8_t> &value_args, const GATTCharacteristicWriteTypeArgs &type_args, std::function<void(std::optional<FlutterError> reply)> result)
 	{
+		if (type_args == GATTCharacteristicWriteTypeArgs::kWithoutResponse)
+		{
+			RequestThroughput(address_args);
+		}
 		try
 		{
 			const auto &characteristic = RetrieveCharacteristic(address_args, handle_args);
@@ -865,8 +869,82 @@ namespace bluetooth_low_energy_windows
 		}
 	}
 
+	void CentralManagerImpl::RequestThroughput(int64_t address_args)
+	{
+		m_last_bulk_write[address_args] = std::chrono::steady_clock::now();
+#ifdef BLE_HAS_CONNECTION_PARAMETERS
+		if (m_throughput_requests.find(address_args) != m_throughput_requests.end())
+		{
+			return;
+		}
+		// Windows 11 only; Windows 10 keeps its default timing.
+		static const bool supported = winrt::Windows::Foundation::Metadata::ApiInformation::IsMethodPresent(
+			L"Windows.Devices.Bluetooth.BluetoothLEDevice", L"RequestPreferredConnectionParameters");
+		if (!supported)
+		{
+			return;
+		}
+		const auto device_iterator = m_devices.find(address_args);
+		if (device_iterator == m_devices.end() || !device_iterator->second.has_value())
+		{
+			return;
+		}
+		try
+		{
+			const auto request = device_iterator->second->RequestPreferredConnectionParameters(
+				winrt::Windows::Devices::Bluetooth::BluetoothLEPreferredConnectionParameters::ThroughputOptimized());
+			m_throughput_requests.emplace(address_args, request.as<winrt::Windows::Foundation::IClosable>());
+			ReleaseThroughputWhenIdleAsync(address_args);
+		}
+		catch (const winrt::hresult_error &ex)
+		{
+			std::cerr << "[bluetooth_low_energy_windows] fast connection request failed: "
+					  << winrt::to_string(ex.message()) << std::endl;
+		}
+#endif
+	}
+
+	winrt::fire_and_forget CentralManagerImpl::ReleaseThroughputWhenIdleAsync(int64_t address_args)
+	{
+		const auto idle = std::chrono::seconds(5);
+		while (true)
+		{
+			co_await winrt::resume_after(std::chrono::seconds(2));
+			co_await m_ui_context;
+			if (m_throughput_requests.find(address_args) == m_throughput_requests.end())
+			{
+				co_return;
+			}
+			const auto last = m_last_bulk_write.find(address_args);
+			if (last == m_last_bulk_write.end() || std::chrono::steady_clock::now() - last->second >= idle)
+			{
+				ReleaseThroughput(address_args);
+				co_return;
+			}
+		}
+	}
+
+	void CentralManagerImpl::ReleaseThroughput(int64_t address_args)
+	{
+		const auto request = m_throughput_requests.find(address_args);
+		if (request == m_throughput_requests.end())
+		{
+			return;
+		}
+		try
+		{
+			request->second.Close();
+		}
+		catch (const winrt::hresult_error &)
+		{
+		}
+		m_throughput_requests.erase(request);
+	}
+
 	void CentralManagerImpl::OnDisconnected(int64_t address_args)
 	{
+		ReleaseThroughput(address_args);
+		m_last_bulk_write.erase(address_args);
 		m_device_connection_status_changed_revokers.erase(address_args);
 		m_session_max_pdu_size_changed_revokers.erase(address_args);
 		m_characteristic_value_changed_revokers.erase(address_args);

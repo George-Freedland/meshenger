@@ -17,6 +17,7 @@ class PreparedPostFile {
     required this.attachment,
     this.inlineBytes,
     this.cover,
+    this.pieceList,
   });
 
   final String path;
@@ -27,10 +28,18 @@ class PreparedPostFile {
 
   /// Cover art small enough to embed (JPEG or PNG).
   final Uint8List? cover;
+
+  /// Every chunk's hash (see BlobService); its own hash goes in the post.
+  final Uint8List? pieceList;
 }
 
-/// Hashes [path], reads an audio file's tags and cover, and keeps small
-/// files' bytes for embedding. Streams the file, so any size works.
+/// MP4-family videos keep their playing time where the audio tag reader
+/// looks; other containers it would misread.
+const Set<String> _mp4Videos = {'video/mp4', 'video/quicktime', 'video/x-m4v'};
+
+/// Hashes [path], reads an audio file's tags and cover (or a video's
+/// length), and keeps small files' bytes for embedding. Streams the file,
+/// so any size works.
 Future<PreparedPostFile> preparePostFile({
   required String path,
   required String name,
@@ -38,13 +47,18 @@ Future<PreparedPostFile> preparePostFile({
 }) async {
   final size = await File(path).length();
   if (size == 0) throw StateError('That file is empty');
-  final sha = await BlobService.sha256OfFile(path);
+  final (sha, pieceList) = await BlobService.hashFile(path);
+  final inline = size <= EnvelopeCodec.maxInlineFileBytes;
+  final withPieces = !inline && size <= BlobService.maxPiecesFileBytes;
   var meta = AudioMetadata.empty;
   Uint8List? cover;
   if (mime.startsWith('audio/')) {
     meta = await readAudioMetadata(path);
     final art = meta.art;
     if (art != null) cover = await coverForPost(art);
+  } else if (_mp4Videos.contains(mime)) {
+    final length = (await readAudioMetadata(path)).duration;
+    meta = AudioMetadata(duration: length);
   }
   return PreparedPostFile(
     path: path,
@@ -57,11 +71,11 @@ Future<PreparedPostFile> preparePostFile({
       artist: meta.artist,
       album: meta.album,
       durationMs: meta.duration?.inMilliseconds,
+      pieces: withPieces ? await BlobService.sha256OfBytes(pieceList) : null,
     ),
-    inlineBytes: size <= EnvelopeCodec.maxInlineFileBytes
-        ? await File(path).readAsBytes()
-        : null,
+    inlineBytes: inline ? await File(path).readAsBytes() : null,
     cover: cover,
+    pieceList: withPieces ? pieceList : null,
   );
 }
 
@@ -79,8 +93,7 @@ Future<Uint8List?> coverForPost(
   try {
     final buffer = await ui.ImmutableBuffer.fromUint8List(art);
     final descriptor = await ui.ImageDescriptor.encoded(buffer);
-    final scale =
-        min(1.0, maxSide / max(descriptor.width, descriptor.height));
+    final scale = min(1.0, maxSide / max(descriptor.width, descriptor.height));
     final width = max(1, (descriptor.width * scale).round());
     final height = max(1, (descriptor.height * scale).round());
     final codec = await descriptor.instantiateCodec(

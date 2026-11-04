@@ -2,6 +2,7 @@
 #define FLUTTER_PLUGIN_CENTRAL_MANAGER_H_
 
 #include <atomic>
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -11,6 +12,7 @@
 #include "winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h"
 #include "winrt/Windows.Devices.Radios.h"
 #include "winrt/Windows.Foundation.h"
+#include "winrt/Windows.Foundation.Metadata.h"
 #include "winrt/Windows.Foundation.Collections.h"
 #include "winrt/Windows.Storage.Streams.h"
 
@@ -74,6 +76,11 @@ namespace bluetooth_low_energy_windows
 		// Windows hears" in the log.
 		std::atomic<int64_t> m_adverts_received{0};
 		std::atomic<bool> m_reported_first_delivery{false};
+		// Writes without response mean a bulk transfer: ask Windows 11 for
+		// its fast connection timing, and let go after a few idle seconds
+		// (it costs both devices power).
+		std::map<int64_t, winrt::Windows::Foundation::IClosable> m_throughput_requests;
+		std::map<int64_t, std::chrono::steady_clock::time_point> m_last_bulk_write;
 		std::optional<winrt::Windows::Devices::Radios::Radio::StateChanged_revoker> m_radio_state_changed_revoker;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::ConnectionStatusChanged_revoker>> m_device_connection_status_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession::MaxPduSizeChanged_revoker>> m_session_max_pdu_size_changed_revokers;
@@ -94,6 +101,9 @@ namespace bluetooth_low_energy_windows
 
 		void OnDisconnected(int64_t address_args);
 		void CloseConnection(int64_t address_args);
+		void RequestThroughput(int64_t address_args);
+		void ReleaseThroughput(int64_t address_args);
+		winrt::fire_and_forget ReleaseThroughputWhenIdleAsync(int64_t address_args);
 
 		winrt::Windows::Devices::Bluetooth::BluetoothLEDevice &RetrieveDevice(int64_t address_args);
 		winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattDeviceService &RetrieveService(int64_t address_args, int64_t handle_args);

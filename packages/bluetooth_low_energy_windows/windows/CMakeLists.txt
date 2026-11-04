@@ -54,6 +54,19 @@ endif()
 
 include_directories(BEFORE SYSTEM ${CMAKE_BINARY_DIR}/include)
 
+# Faster connection timing for bulk transfers needs the Windows 11 SDK's
+# BluetoothLEPreferredConnectionParameters; older SDKs build without it.
+set(BLE_PROJECTION_HEADER "${CMAKE_BINARY_DIR}/include/winrt/impl/Windows.Devices.Bluetooth.0.h")
+set(BLE_HAS_CONNECTION_PARAMETERS OFF)
+if(EXISTS "${BLE_PROJECTION_HEADER}")
+  file(STRINGS "${BLE_PROJECTION_HEADER}" BLE_CONNECTION_PARAMETERS_LINE
+    REGEX "BluetoothLEPreferredConnectionParameters" LIMIT_COUNT 1)
+  if(BLE_CONNECTION_PARAMETERS_LINE)
+    set(BLE_HAS_CONNECTION_PARAMETERS ON)
+  endif()
+endif()
+message(STATUS "Bluetooth LE connection parameters API: ${BLE_HAS_CONNECTION_PARAMETERS}")
+
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
   "bluetooth_low_energy_windows_plugin.h"
@@ -89,6 +102,9 @@ apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
+if(BLE_HAS_CONNECTION_PARAMETERS)
+  target_compile_definitions(${PLUGIN_NAME} PRIVATE BLE_HAS_CONNECTION_PARAMETERS=1)
+endif()
 
 # Enable compiler support for coroutines
 target_compile_features(${PLUGIN_NAME} PRIVATE cxx_std_20)

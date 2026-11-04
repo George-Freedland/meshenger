@@ -1,6 +1,11 @@
 #ifndef FLUTTER_PLUGIN_PERIPHERAL_MANAGER_H_
 #define FLUTTER_PLUGIN_PERIPHERAL_MANAGER_H_
 
+#include <atomic>
+#include <functional>
+#include <map>
+#include <mutex>
+
 #include "winrt/Windows.Devices.Bluetooth.h"
 #include "winrt/Windows.Devices.Bluetooth.Advertisement.h"
 #include "winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h"
@@ -62,6 +67,23 @@ namespace bluetooth_low_energy_windows
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalCharacteristic::SubscribedClientsChanged_revoker>> m_characteristic_subscribed_clients_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalDescriptor::ReadRequested_revoker>> m_descriptor_read_requested_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattLocalDescriptor::WriteRequested_revoker>> m_descriptor_write_requested_revokers;
+
+		// Writes without response arrive back to back, and the lookups each
+		// one needs can finish out of order. Every characteristic write takes
+		// a ticket in the order Windows raised it, and reaches the app
+		// strictly in ticket order.
+		std::atomic<uint64_t> m_next_write_ticket{0};
+		uint64_t m_next_write_delivery = 0;
+		std::map<uint64_t, std::function<void()>> m_pending_writes;
+		std::atomic<int64_t> m_next_write_id{1};
+		// Device id -> Bluetooth address; looking it up for every write
+		// costs a round trip through the Bluetooth stack.
+		std::mutex m_addresses_mutex;
+		std::map<winrt::hstring, int64_t> m_addresses;
+		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession>> m_watched_sessions;
+
+		void DeliverWriteInOrder(uint64_t ticket, std::function<void()> deliver);
+		void WatchMtu(int64_t address_args, const CentralArgs &central_args, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession &session);
 
 		winrt::fire_and_forget InitializeAsync(std::function<void(std::optional<FlutterError> reply)> result);
 		winrt::fire_and_forget AddServiceAsync(const MutableGATTServiceArgs &service_args, std::function<void(std::optional<FlutterError> reply)> result);

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/media/playback.dart';
 import '../../core/models/contact.dart';
 import '../../core/models/group_info.dart';
 import '../../core/models/message.dart';
@@ -16,8 +17,10 @@ import '../../core/services/identity_service.dart';
 import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/safety_service.dart';
+import '../../core/services/transfer_meter.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/video_player_card.dart';
 import '../shared/peer_info_sheet.dart';
 import '../shared/safety_actions.dart';
 
@@ -255,36 +258,12 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Big files stream straight to the other person, resumably, whenever
-  /// the two devices are near each other.
+  /// Streams a file straight to the other person in encrypted chunks,
+  /// resumably, whenever the two devices are near each other. The bubble
+  /// shows the speed and time left, and can cancel.
   Future<void> _offerTransfer(PickedFileHandle picked) async {
     final key = _chatKey;
     if (key == null) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Send file peer-to-peer?'),
-        content: Text(
-          '"${picked.name}" (${formatBytes(picked.size)})\n\n'
-          'Streams directly to this contact in encrypted chunks once they '
-          'accept. Survives drops — it resumes where it left off. Large '
-          'files take a while over Bluetooth.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.pop(ctx, true),
-            icon: const Icon(Icons.send, size: 18),
-            label: const Text('Offer file'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-
     try {
       await MessengerService.instance.sendFileTransfer(
         key,
@@ -359,20 +338,22 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Any file. Up to 8 MB it travels through the mesh like a message
-  /// (relays carry it); bigger ones go peer-to-peer.
+  /// Any file. In a 1:1 chat anything but a tiny file streams device to
+  /// device (fast, resumable, with a speed meter); tiny ones and group
+  /// files up to 8 MB travel through the mesh like a message, so relays
+  /// can carry them.
   Future<void> _sendFile() async {
     final picked = await pickFileForTransfer();
     if (picked == null || !mounted) return;
-    if (picked.size > MediaStore.maxTransferBytes) {
-      if (_isGroup) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Files over 8 MB go to one person at a time — '
-              'send it in a private chat.'),
-        ));
-        return;
-      }
+    if (!_isGroup && picked.size > MessengerService.inlineChatFileBytes) {
       await _offerTransfer(picked);
+      return;
+    }
+    if (picked.size > MediaStore.maxTransferBytes) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Files over 8 MB go to one person at a time — '
+            'send it in a private chat.'),
+      ));
       return;
     }
     final bytes = await File(picked.path).readAsBytes();
@@ -1045,6 +1026,16 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     }
 
+    if (path != null && (message.mediaMime?.startsWith('video/') ?? false)) {
+      return VideoPlayerCard(
+        title: message.mediaName ?? 'Video',
+        path: path,
+        duration: message.durationMs == null
+            ? null
+            : Duration(milliseconds: message.durationMs!),
+      );
+    }
+
     if (message.kind == 'audio') {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1645,9 +1636,18 @@ class TransferBubble extends StatefulWidget {
 class _TransferBubbleState extends State<TransferBubble> {
   FileTransfer? _transfer;
 
-  /// A finished song, playable in place.
-  String? _audioPath;
+  /// The song, video or image itself once it's on this device (sending:
+  /// the original).
+  String? _mediaPath;
+
+  /// Whether the incoming file's format can play from its first bytes.
+  bool? _streamable;
+  bool _checkingStreamable = false;
+
   StreamSubscription<String>? _sub;
+
+  /// Keeps the speed and time left current between chunks.
+  Timer? _ticker;
 
   @override
   void initState() {
@@ -1661,42 +1661,96 @@ class _TransferBubbleState extends State<TransferBubble> {
   @override
   void dispose() {
     _sub?.cancel();
+    _ticker?.cancel();
     super.dispose();
   }
 
+  static bool _isPlayable(String mime) =>
+      mime.startsWith('audio/') || mime.startsWith('video/');
+
+  static bool _isMedia(String mime) =>
+      _isPlayable(mime) || mime.startsWith('image/');
+
+  static bool _running(FileTransfer t) =>
+      t.status == FtStatus.active ||
+      t.status == FtStatus.accepted ||
+      t.status == FtStatus.paused;
+
   Future<void> _reload() async {
     final transfer = await FileTransferService.instance.get(widget.tid);
-    String? audioPath;
-    if (transfer != null &&
-        transfer.status == FtStatus.done &&
-        transfer.mime.startsWith('audio/')) {
+    String? mediaPath;
+    if (transfer != null && _isMedia(transfer.mime)) {
       final mediaId = transfer.mediaId;
-      audioPath = transfer.outgoing
-          ? transfer.path
-          : mediaId == null
-              ? null
-              : await MediaStore.instance.pathFor(mediaId);
-      if (audioPath != null && !await File(audioPath).exists()) {
-        audioPath = null;
+      if (transfer.outgoing) {
+        mediaPath = transfer.path;
+      } else if (transfer.status == FtStatus.done && mediaId != null) {
+        mediaPath = await MediaStore.instance.pathFor(mediaId);
+      }
+      if (mediaPath != null && !await File(mediaPath).exists()) {
+        mediaPath = null;
       }
     }
-    if (mounted) {
-      setState(() {
-        _transfer = transfer;
-        _audioPath = audioPath;
+    if (!mounted) return;
+    setState(() {
+      _transfer = transfer;
+      _mediaPath = mediaPath;
+    });
+    if (transfer == null) return;
+    _checkStreamable(transfer);
+    if (_running(transfer)) {
+      _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        final t = _transfer;
+        if (!mounted || t == null || !_running(t)) {
+          _ticker?.cancel();
+          _ticker = null;
+          return;
+        }
+        setState(() {});
       });
     }
+  }
+
+  void _checkStreamable(FileTransfer t) {
+    final part = t.path;
+    if (t.outgoing || !_isPlayable(t.mime) || part == null) return;
+    if (_streamable != null || _checkingStreamable) return;
+    if (t.transferredBytes < 64 * 1024) return;
+    _checkingStreamable = true;
+    unawaited(fileSupportsStreaming(part).then((value) {
+      _checkingStreamable = false;
+      if (mounted) setState(() => _streamable = value ?? true);
+    }));
+  }
+
+  /// The incoming song or video while it arrives, when it can play early
+  /// (every chunk is authenticated before it's written).
+  GrowingFile? _partial(FileTransfer t) {
+    final part = t.path;
+    if (t.outgoing || !_running(t) || part == null) return null;
+    if (!_isPlayable(t.mime) || _streamable != true) return null;
+    final length = t.durationMs;
+    return GrowingFile(
+      path: part,
+      totalBytes: t.size,
+      availableBytes: t.transferredBytes,
+      bytesPerSecond:
+          FileTransferService.instance.meterFor(t.tid)?.bytesPerSecond ?? 0,
+      duration: length == null ? null : Duration(milliseconds: length),
+    );
   }
 
   String _statusLine(FileTransfer t) {
     final done = formatBytes(t.transferredBytes);
     final total = formatBytes(t.size);
+    final speed =
+        speedLine(FileTransferService.instance.meterFor(t.tid), t.remainingBytes);
     return switch (t.status) {
       FtStatus.offered => t.outgoing
           ? 'Waiting for them to accept ($total)'
           : 'Incoming file — $total',
       FtStatus.accepted => 'Starting… ($total)',
-      FtStatus.active => '$done of $total',
+      FtStatus.active =>
+        speed == null ? '$done of $total' : '$done of $total · $speed',
       FtStatus.paused =>
         'Paused at $done of $total — resumes when you meet again',
       FtStatus.done => t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
@@ -1724,26 +1778,27 @@ class _TransferBubbleState extends State<TransferBubble> {
       );
     }
 
-    final audioPath = _audioPath;
-    if (audioPath != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AudioFileCard(path: audioPath, fileName: t.name),
-          const SizedBox(height: 4),
-          Text(
-            _statusLine(t),
-            style: theme.textTheme.labelSmall
-                ?.copyWith(color: color.withValues(alpha: 0.75)),
-          ),
-        ],
+    final running = _running(t);
+    final media = _mediaCard(context, t);
+    if (media != null) {
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            media,
+            const SizedBox(height: 4),
+            Text(
+              _statusLine(t),
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: color.withValues(alpha: 0.75)),
+            ),
+            if (running) _cancelButton(t, color),
+          ],
+        ),
       );
     }
-
-    final running = t.status == FtStatus.active ||
-        t.status == FtStatus.accepted ||
-        t.status == FtStatus.paused;
 
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 300),
@@ -1810,20 +1865,67 @@ class _TransferBubbleState extends State<TransferBubble> {
               ],
             ),
           ] else if (running || (t.outgoing && t.status == FtStatus.offered))
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  foregroundColor: color.withValues(alpha: 0.7),
-                ),
-                onPressed: () => FileTransferService.instance.cancel(t.tid),
-                icon: const Icon(Icons.close, size: 14),
-                label: const Text('Cancel transfer'),
-              ),
-            ),
+            _cancelButton(t, color),
         ],
       ),
+    );
+  }
+
+  Widget _cancelButton(FileTransfer t, Color color) => Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            foregroundColor: color.withValues(alpha: 0.7),
+          ),
+          onPressed: () => FileTransferService.instance.cancel(t.tid),
+          icon: const Icon(Icons.close, size: 14),
+          label: const Text('Cancel transfer'),
+        ),
+      );
+
+  /// Songs and videos play in place (incoming ones while they arrive, when
+  /// they can); images show once here. Null keeps the plain file card,
+  /// which also carries Accept/Decline for an offer.
+  Widget? _mediaCard(BuildContext context, FileTransfer t) {
+    final path = _mediaPath;
+    if (!_isMedia(t.mime)) return null;
+    if (!t.outgoing && (t.status == FtStatus.offered || t.isTerminal) &&
+        t.status != FtStatus.done) {
+      return null;
+    }
+    if (t.mime.startsWith('image/')) {
+      if (path == null) return null;
+      return InkWell(
+        onTap: () => showImageViewer(context, path, caption: t.name),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.file(File(path), width: 260, fit: BoxFit.cover),
+        ),
+      );
+    }
+    final incoming = !t.outgoing && _running(t);
+    final ms = t.durationMs;
+    final length = ms == null ? null : Duration(milliseconds: ms);
+    if (t.mime.startsWith('audio/')) {
+      if (path != null) return AudioFileCard(path: path, fileName: t.name);
+      final (title, artist) = trackNameFromFile(t.name);
+      return AudioTrackCard(
+        title: title,
+        artist: artist,
+        partial: _partial(t),
+        duration: length,
+        busy: incoming,
+        downloadFraction: incoming ? t.progress : null,
+      );
+    }
+    return VideoPlayerCard(
+      title: t.name,
+      path: path,
+      partial: _partial(t),
+      duration: length,
+      busy: incoming && path == null,
+      downloadFraction: incoming ? t.progress : null,
     );
   }
 }

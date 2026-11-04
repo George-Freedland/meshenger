@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import '../media/audio_metadata.dart';
 import '../media/post_file.dart';
 import '../models/group_info.dart';
 import '../models/incoming_message.dart';
@@ -184,8 +185,8 @@ class MessengerService {
         text: meta,
         unique: unique,
       ),
-      sendPacket: (peer, packet) async =>
-          await _transport?.sendPacket(peer, packet) ?? false,
+      sendPacket: (peer, packet, {bool bulk = false}) async =>
+          await _transport?.sendPacket(peer, packet, bulk: bulk) ?? false,
       onlinePeers: () => onlinePeers,
       onCompleted: (transfer) {
         _changed.add(transfer.peer);
@@ -197,8 +198,8 @@ class MessengerService {
       },
     );
     BlobService.instance.attach(
-      send: (peer, packet) async =>
-          await _transport?.sendPacket(peer, packet) ?? false,
+      send: (peer, packet, {bool bulk = false}) async =>
+          await _transport?.sendPacket(peer, packet, bulk: bulk) ?? false,
       onlinePeers: () => onlinePeers,
       myAddress: IdentityService.instance.getPublicAddressBase64,
     );
@@ -509,7 +510,8 @@ class MessengerService {
 
     if (to != me) {
       if (onlinePeers.contains(to)) {
-        unawaited(_transport?.sendPacket(to, packet));
+        unawaited(
+            _transport?.sendPacket(to, packet, bulk: packet['t'] == 'ftc'));
       }
       return;
     }
@@ -1201,12 +1203,26 @@ class MessengerService {
     );
     await ChatStorage.instance.markUnread(chatKey);
     _changed.add(chatKey);
+    final auto = transfer.size <= autoAcceptFileBytes &&
+        await ContactsService.instance.getContact(chatKey) != null;
+    if (auto) unawaited(FileTransferService.instance.accept(transfer.tid));
     unawaited(_notifyIncoming(
       chatKey: chatKey,
       fromAddress: chatKey,
-      body: 'Wants to send you "${transfer.name}"',
+      body: auto
+          ? 'Sending you "${transfer.name}"'
+          : 'Wants to send you "${transfer.name}"',
     ));
   }
+
+  /// Files from contacts up to this size download without asking; bigger
+  /// ones, and anything from strangers, wait for Accept.
+  static const int autoAcceptFileBytes = 100 * 1024 * 1024;
+
+  /// Chat files up to this size travel like a message, so relays can carry
+  /// them to someone out of range; bigger ones stream device to device,
+  /// much faster and with a live progress bar.
+  static const int inlineChatFileBytes = 64 * 1024;
 
   /// Offers a large file to a 1:1 peer over the P2P transfer engine and
   /// drops the live progress bubble into the chat.
@@ -1224,6 +1240,7 @@ class MessengerService {
       path: path,
       name: name,
       mime: mime,
+      durationMs: await _playingTimeOf(path, mime),
     );
     await ChatStorage.instance.ensureChatExists(chatKey);
     await ChatStorage.instance.appendMessage(
@@ -1241,6 +1258,19 @@ class MessengerService {
       ),
     );
     _changed.add(chatKey);
+  }
+
+  /// A song's or MP4-family video's length, so the other side can start
+  /// playing before the transfer finishes.
+  static Future<int?> _playingTimeOf(String path, String mime) async {
+    final media = mime.startsWith('audio/') ||
+        const {'video/mp4', 'video/quicktime', 'video/x-m4v'}.contains(mime);
+    if (!media) return null;
+    try {
+      return (await readAudioMetadata(path)).duration?.inMilliseconds;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// The peer deleted our whole conversation for everyone. Scope is
@@ -1804,6 +1834,10 @@ class MessengerService {
         sha: attachment.sha256,
         name: attachment.name,
       );
+      final pieceList = file.pieceList;
+      if (pieceList != null) {
+        await BlobService.instance.addPieceList(pieceList);
+      }
       final cover = file.cover;
       if (cover != null) {
         artMediaId = (await MediaStore.instance.saveBytes(

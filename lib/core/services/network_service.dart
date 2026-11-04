@@ -272,8 +272,7 @@ class NetworkService {
     }
     if (gone.any((p) => p.attachment != null)) {
       await BlobService.instance.retain({
-        for (final p in remaining)
-          if (p.attachment != null) p.attachment!.sha256,
+        for (final p in remaining) ...?p.attachment?.blobs,
       });
     }
   }

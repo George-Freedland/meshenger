@@ -11,15 +11,19 @@ import 'package:meshenger/core/services/blob_service.dart';
 class _Mesh {
   final Map<String, BlobService> devices = <String, BlobService>{};
   final Map<String, Duration> delayFrom = <String, Duration>{};
+  final Map<String, int> dataFrom = <String, int>{};
   int dataPackets = 0;
 
   BlobService join(String name, Directory dir, Set<String> neighbors) {
     final service = BlobService()..directoryForTesting = dir;
     service.attach(
-      send: (peer, packet) async {
+      send: (peer, packet, {bool bulk = false}) async {
         final target = devices[peer];
         if (target == null) return false;
-        if (packet['t'] == 'bdat') dataPackets++;
+        if (packet['t'] == 'bdat') {
+          dataPackets++;
+          dataFrom[name] = (dataFrom[name] ?? 0) + 1;
+        }
         final delay = delayFrom[name] ?? Duration.zero;
         unawaited(Future<void>.delayed(delay, () => target.handlePacket(packet)));
         return true;
@@ -146,6 +150,48 @@ void main() {
     await solo.retain(<String>{});
     expect(await solo.pathFor(sha), isNull);
     expect(dir.listSync(), isEmpty);
+  });
+
+  test('one pass gives the file hash and a hash per chunk', () async {
+    final (fileSha, pieces) = await BlobService.hashFile(song.path);
+    expect(fileSha, sha);
+    expect(pieces.length, 32 * BlobService.chunkCountFor(song.lengthSync()));
+  });
+
+  test('with a piece list, a bad source is caught at its first chunk',
+      () async {
+    final m = _Mesh();
+    mesh.add(m);
+    // 40 chunks: without per-chunk checks the liar would serve all of it
+    // before the whole-file hash caught it.
+    final bytes = Uint8List.fromList(List.generate(
+        BlobService.chunkSize * 40, (i) => (i * 7 + 3) % 253));
+    final big = File('${root.path}/big.mp3')..writeAsBytesSync(bytes);
+    final bigSha = await BlobService.sha256OfFile(big.path);
+    final fake = File('${root.path}/fake-big.mp3')
+      ..writeAsBytesSync(List.filled(bytes.length, 9));
+    final (_, list) = await BlobService.hashFile(big.path);
+
+    final liar = m.join('liar', dirFor('liar'), {'bob'});
+    final honest = m.join('honest', dirFor('honest'), {'bob'});
+    final bob = m.join('bob', dirFor('bob'), {'liar', 'honest'});
+    await liar.addLocalFile(fake.path, sha: bigSha, name: 'big.mp3');
+    await honest.addLocalFile(big.path, sha: bigSha, name: 'big.mp3');
+    final pieces = await honest.addPieceList(list);
+    m.delayFrom['honest'] = const Duration(milliseconds: 40);
+
+    await bob.fetch(
+        sha: bigSha, size: bytes.length, name: 'big.mp3', pieces: pieces);
+    String? got;
+    await _until(() {
+      unawaited(bob.pathFor(bigSha).then((p) => got = p));
+      return got != null;
+    });
+    expect(File(got!).readAsBytesSync(), bytes);
+    expect(m.dataFrom['liar'] ?? 0, lessThanOrEqualTo(BlobService.window),
+        reason: 'dropped after one window at most, not after 40 chunks');
+    expect(await bob.pathFor(pieces), isNotNull,
+        reason: 'bob keeps the list, so he can serve it too');
   });
 
   test('bytes inside a post are kept only when they match the hash',

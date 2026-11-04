@@ -187,9 +187,15 @@ class MediaStore {
     try {
       await sourceFile.rename(dest.path);
     } on FileSystemException {
-      // Cross-device move: fall back to copy + delete.
+      // Cross-device move, or (Windows) a player still has the file open
+      // because it streamed it: copy instead. The leftover goes with the
+      // next sweep of its folder.
       await sourceFile.copy(dest.path);
-      await sourceFile.delete();
+      try {
+        await sourceFile.delete();
+      } on FileSystemException {
+        // Still open; harmless until then.
+      }
     }
 
     final items = await _readAll();

@@ -181,10 +181,12 @@ Every release:
 
 - [ ] On the Mac:
   ```bash
-  flutter build apk --release
+  flutter build apk --release --target-platform android-arm64
   mkdir -p build/dist && cp build/app/outputs/flutter-apk/app-release.apk build/dist/Meshenger-Android.apk
   flutter build appbundle --release   # for Google Play: build/app/outputs/bundle/release/app-release.aab
   ```
+  The video player bundles its own decoders for each kind of phone CPU, so an APK with all of them would be huge. The download APK is the arm64 one, which runs on practically every phone from the last seven years. Google Play's App Bundle carries them all but gives each phone only its own.
+- [ ] The patched Bluetooth plugin (`packages/bluetooth_low_energy_android`, which asks for a fast connection during transfers) and the video player haven't been compiled for Android yet, because the Mac had no Android SDK. If the first build fails, send me the error.
 - [ ] Confirm the APK is signed with your key. It should print your name, not "Android Debug":
   ```bash
   "$(ls -d ~/Library/Android/sdk/build-tools/* | tail -1)/apksigner" verify --print-certs build/dist/Meshenger-Android.apk
@@ -229,6 +231,10 @@ Every release:
 - [ ] Hop test: devices A and C out of range of each other, with B in the middle. A's message reaches C.
 - [ ] Network: a Global post, a site, a page and a bookmark all work.
 - [ ] The Pi relay shows up on the Mesh Map and forwards messages.
+- [ ] **Transfer speed.** In a 1:1 chat, send a 2 MB file Mac → PC, then PC → Mac. The card shows the speed and time left while it runs. When it's done, the connection log (Messages → the receipt icon at the top) has a line like `FT: "song.mp3" complete … in 41 s at 49 KB/s`. Note both directions' numbers.
+- [ ] **Songs stream.** Post an MP3 on Global. On the other device, tap play straight away: it plays while the bar fills, or says "Starts in 0:20" and starts by itself.
+- [ ] **Videos play in the app.** Send an MP4 in a chat and post one on Global. Both play inside Meshenger (try full screen), without opening QuickTime, VLC or Media Player.
+- [ ] **Mixed versions.** A device still on the previous build can chat with an updated one and receive files (more slowly).
 
 ---
 
@@ -286,26 +292,21 @@ The Store signs your app itself, so Store installs show no SmartScreen warning a
 
 - [ ] Register at <https://storedeveloper.microsoft.com> → **Individual developer**. It's free and needs ID and selfie verification.
 - [ ] In Partner Center: **Apps and games → New product → MSIX or PWA app** → reserve **Meshenger**.
-- [ ] Open **Product identity** and copy its three values.
-- [ ] On Windows, run `flutter pub add dev:msix`, then add this to `pubspec.yaml` using those values:
+- [ ] Open **Product identity** and copy **Package/Identity/Name** and **Package/Identity/Publisher** (it starts with `CN=`).
+- [ ] `msix` is already a dev dependency, and `pubspec.yaml` already has an `msix_config` block. Replace its two placeholders with those values:
   ```yaml
-  msix_config:
-    display_name: Meshenger
-    publisher_display_name: George Freedland
-    identity_name: PACKAGE_IDENTITY_NAME
-    publisher: PACKAGE_IDENTITY_PUBLISHER
-    msix_version: 1.0.0.0
-    logo_path: assets/branding/icon.png
-    capabilities: bluetooth,microphone,webcam
-    store: true
+  identity_name: PARTNER_CENTER_PACKAGE_IDENTITY_NAME       # e.g. 12345GeorgeFreedland.Meshenger
+  publisher: PARTNER_CENTER_PACKAGE_IDENTITY_PUBLISHER      # e.g. CN=1A2B3C4D-…
   ```
-- [ ] Build the package:
+  Its capabilities are `bluetooth,microphone,webcam` and nothing else, so the Store listing shows no internet access. Packaged Windows apps need the `bluetooth` capability declared, or Bluetooth silently does nothing.
+- [ ] Every release, bump `msix_version` with the app version: `1.0.1.0` for `1.0.1`. The last number must stay 0 for the Store.
+- [ ] Build the package on the Windows laptop:
   ```powershell
-  flutter build windows --release
   dart run msix:create
   ```
-  It's written to `build\windows\x64\runner\Release\meshenger.msix`.
-- [ ] Create a submission: free, category **Social**, age rating questionnaire, privacy policy URL, screenshots (1366×768 or larger) and description. Upload the `.msix` and submit. Certification usually takes 1–3 business days.
+  It builds the Windows release itself, bundles the video player's DLLs, and writes `build\windows\x64\runner\Release\meshenger.msix`.
+- [ ] Before uploading, install it locally to check: double-click the `.msix` (Windows may ask to allow sideloading; Settings → System → For developers). Chat with the Mac once, since a packaged app runs with different permissions than the zip.
+- [ ] Create a submission: free, category **Social**, age rating questionnaire, privacy policy URL, screenshots (1366×768 or larger) and description. Under **Packages**, upload the `.msix`. Under **Submission options → Restricted capabilities**, explain `runFullTrust`: "Desktop app built with Flutter; full trust is required for its native Bluetooth stack." Submit. Certification usually takes 1–3 business days.
 - [ ] If `msix:create` errors, send me the message.
 
 ### 3.6 App Store
@@ -317,6 +318,20 @@ The Store signs your app itself, so Store installs show no SmartScreen warning a
   - Age rating questionnaire. Messaging and user content usually rate 13+ or higher.
   - iPhone 6.9" screenshots, and iPad 13" screenshots because the app runs on iPad. Simulator screenshots (**Cmd+S**) are fine.
 - [ ] Select your TestFlight build and submit. Review usually takes 1–2 days.
+
+### 3.7 Mac App Store (optional; the DMG keeps working alongside it)
+
+The Mac app is already sandboxed with only the permissions it uses (Bluetooth, microphone, camera, files you pick), and its `Info.plist` has the app category and the encryption declaration that uploads require.
+
+- [ ] In App Store Connect → your Meshenger app → **App Information**, add the **macOS** platform. Using the same bundle ID `com.georgefreedland.meshenger` on both makes it one purchase across iPhone, iPad and Mac.
+- [ ] Certificates (one time): Xcode → **Settings → Accounts** → your team → **Manage Certificates… → +** → add **Apple Distribution** and **Mac Installer Distribution**.
+- [ ] Open `macos/Runner.xcworkspace` in Xcode → **Runner** target → **Signing & Capabilities**: Team = your account, **Automatically manage signing** on. Xcode creates the Mac App Store profile. The sandbox and Bluetooth boxes are already ticked from the entitlements file.
+- [ ] Build and upload:
+  ```bash
+  flutter build macos --release
+  ```
+  Then in Xcode: **Product → Archive** (scheme Runner, destination "Any Mac"). When the Organizer opens: **Distribute App → App Store Connect → Upload**. Xcode signs the player's libraries inside the app for you.
+- [ ] In App Store Connect → **macOS App → version 1.0**: Mac screenshots (1280×800 or larger), description, privacy (**Data Not Collected**), the same encryption answer as iPhone, and the same review notes as TestFlight. Select the build and submit.
 
 ---
 
@@ -526,3 +541,7 @@ There's no server, so you can't delete anything from other people's phones. What
 | Android: "App not installed" | A build signed with a different key is installed. Uninstall it first |
 | iPhone: "This beta has expired" | The TestFlight build is over 90 days old. Upload a new one |
 | Play: can't apply for production | You need 12+ testers opted in for 14 days in a row. Check the closed test's tester count |
+| Mac/iPhone build suggests removing CocoaPods | Don't. The video player's libraries (media_kit) only come as CocoaPods, so `pod deintegrate` would break the build |
+| Windows: first build stops while downloading mpv | The video player downloads its libmpv DLLs on the first Windows build, so the build PC needs internet once. Rerun `flutter build windows` |
+| Microsoft Store: "package identity doesn't match" | `identity_name` or `publisher` in `msix_config` still has the placeholder, or a typo. Copy both again from Partner Center → Product identity |
+| A file transfer crawls (a few KB/s) | One of the two devices runs an older build, which falls back to the slow format. Update both |

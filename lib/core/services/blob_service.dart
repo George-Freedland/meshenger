@@ -9,7 +9,9 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/post_attachment.dart';
+import '../transport/mesh_transport.dart';
 import 'identity_scope.dart';
+import 'transfer_meter.dart';
 import 'transport_log.dart';
 
 enum BlobState {
@@ -26,11 +28,32 @@ enum BlobState {
 }
 
 class BlobProgress {
-  const BlobProgress(this.state, {this.receivedBytes = 0, this.totalBytes = 0});
+  const BlobProgress(
+    this.state, {
+    this.receivedBytes = 0,
+    this.totalBytes = 0,
+    this.meter,
+    this.partPath,
+    this.verifiedPieces = false,
+  });
 
   final BlobState state;
+
+  /// The first [receivedBytes] of the file are on disk, in order.
   final int receivedBytes;
   final int totalBytes;
+
+  /// Download speed, while downloading.
+  final TransferMeter? meter;
+
+  /// The partial file growing on disk, while downloading.
+  final String? partPath;
+
+  /// Every piece on disk was checked against the post's piece list as it
+  /// arrived, so the partial file is safe to play.
+  final bool verifiedPieces;
+
+  int get remainingBytes => totalBytes - receivedBytes;
 
   double get fraction =>
       totalBytes == 0 ? 0 : (receivedBytes / totalBytes).clamp(0.0, 1.0);
@@ -48,6 +71,12 @@ class BlobProgress {
 ///
 /// Downloads resume from their partial file and survive sources leaving;
 /// a source that sends bytes not matching the hash is never asked again.
+///
+/// Newer posts also name a piece list: the SHA-256 of every chunk, stored
+/// as a blob of its own (so anyone can serve it) whose hash the post signs.
+/// With it, every chunk is checked the moment it lands: a bad source is
+/// caught after one chunk instead of after the whole file, and the partial
+/// file holds only verified bytes, so it can play while it downloads.
 class BlobService {
   BlobService({Future<Directory> Function()? directory})
       : _directory = directory ?? _identityDirectory;
@@ -59,7 +88,8 @@ class BlobService {
   /// Chunks requested at once; the source sends them back to back.
   static const int window = 16;
 
-  /// A download with no new chunk for this long re-asks its source…
+  /// A download with no new chunk for this long (or for four chunks' worth
+  /// of its average speed, on a slow link) re-asks its source…
   static const Duration stallAfter = Duration(seconds: 8);
 
   /// …and gives up on it after this many stalls in a row.
@@ -67,6 +97,16 @@ class BlobService {
 
   /// How often a search re-asks the devices in range.
   static const Duration askEvery = Duration(seconds: 12);
+
+  /// How long a download waits for its piece list before going ahead
+  /// without (whole-file check only, no playing while downloading).
+  static const Duration piecesWait = Duration(seconds: 15);
+
+  /// Posts give larger files no piece list: past this, the list itself
+  /// would take a while to fetch, and the file is too big to stream.
+  static const int maxPiecesFileBytes = 256 * 1024 * 1024;
+
+  static const int _pieceHashBytes = 32;
 
   Future<Directory> Function() _directory;
 
@@ -84,13 +124,12 @@ class BlobService {
   }
 
   // --- Wired by MessengerService -----------------------------------------
-  Future<bool> Function(String peer, Map<String, Object?> packet)? _send;
+  PacketSender? _send;
   Set<String> Function()? _peers;
   Future<String?> Function()? _me;
 
   void attach({
-    required Future<bool> Function(String peer, Map<String, Object?> packet)
-        send,
+    required PacketSender send,
     required Set<String> Function() onlinePeers,
     required Future<String?> Function() myAddress,
   }) {
@@ -148,6 +187,7 @@ class BlobService {
     final existing = _index;
     if (existing != null) return existing;
     final index = <String, String>{};
+    final parts = <String, File>{};
     await for (final entity in (await _dir()).list()) {
       if (entity is! File) continue;
       final base = entity.uri.pathSegments.last;
@@ -155,8 +195,21 @@ class BlobService {
       if (dot != 64) continue;
       final sha = base.substring(0, 64);
       if (!PostAttachment.shaPattern.hasMatch(sha)) continue;
-      if (base.endsWith('.part')) continue;
+      if (base.endsWith('.part')) {
+        parts[sha] = entity;
+        continue;
+      }
       index[sha] = entity.path;
+    }
+    // A finished download's partial file outlives it when a player held it
+    // open (Windows can't move an open file, so it was copied).
+    for (final entry in parts.entries) {
+      if (!index.containsKey(entry.key)) continue;
+      try {
+        await entry.value.delete();
+      } on FileSystemException {
+        // Still open; next time.
+      }
     }
     return _index = index;
   }
@@ -177,10 +230,14 @@ class BlobService {
         download.state,
         receivedBytes: min(download.have * chunkSize, download.size),
         totalBytes: download.size,
+        meter: download.meter,
+        partPath: download.partPath,
+        verifiedPieces: download.pieceHashes != null,
       );
     }
     if (_index?.containsKey(sha) == true) {
-      return BlobProgress(BlobState.done, receivedBytes: size, totalBytes: size);
+      return BlobProgress(BlobState.done,
+          receivedBytes: size, totalBytes: size);
     }
     return BlobProgress(BlobState.missing, totalBytes: size);
   }
@@ -209,10 +266,26 @@ class BlobService {
     required String name,
   }) async {
     if (await sha256OfBytes(bytes) != sha) return null;
+    return _store(bytes, sha: sha, ext: extensionFor(name));
+  }
+
+  /// Keeps the piece list of one of my files, so devices downloading it
+  /// can check every chunk. Returns the list's own hash.
+  Future<String> addPieceList(Uint8List list) async {
+    final sha = await sha256OfBytes(list);
+    await _store(list, sha: sha, ext: 'pieces');
+    return sha;
+  }
+
+  Future<String> _store(
+    Uint8List bytes, {
+    required String sha,
+    required String ext,
+  }) async {
     final index = await _ensureIndex();
     final existing = index[sha];
     if (existing != null) return existing;
-    final dest = '${(await _dir()).path}/$sha.${extensionFor(name)}';
+    final dest = '${(await _dir()).path}/$sha.$ext';
     await File(dest).writeAsBytes(bytes, flush: true);
     index[sha] = dest;
     _changed.add(sha);
@@ -262,15 +335,55 @@ class BlobService {
 
   static int chunkCountFor(int size) => (size + chunkSize - 1) ~/ chunkSize;
 
+  /// One pass over the file: its SHA-256, and its piece list (every
+  /// chunk's SHA-256, back to back).
+  static Future<(String, Uint8List)> hashFile(String path) async {
+    final whole = Sha256().newHashSink();
+    final pieces = BytesBuilder(copy: false);
+    final buffer = Uint8List(chunkSize);
+    final raf = await File(path).open();
+    try {
+      while (true) {
+        var filled = 0;
+        while (filled < chunkSize) {
+          final read = await raf.readInto(buffer, filled, chunkSize);
+          if (read == 0) break;
+          filled += read;
+        }
+        if (filled == 0) break;
+        final piece =
+            Uint8List.fromList(Uint8List.sublistView(buffer, 0, filled));
+        whole.add(piece);
+        pieces.add((await Sha256().hash(piece)).bytes);
+        if (filled < chunkSize) break;
+      }
+    } finally {
+      await raf.close();
+    }
+    whole.close();
+    return (_hex((await whole.hash()).bytes), pieces.takeBytes());
+  }
+
+  static bool _pieceMatches(Uint8List list, int index, List<int> digest) {
+    final start = index * _pieceHashBytes;
+    if (start + _pieceHashBytes > list.length) return false;
+    for (var i = 0; i < _pieceHashBytes; i++) {
+      if (list[start + i] != digest[i]) return false;
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------------
   // Downloading
   // ---------------------------------------------------------------------
 
   /// Starts (or nudges) the download of [sha]. Safe to call repeatedly.
+  /// [pieces] is the hash of the file's piece list, when its post has one.
   Future<void> fetch({
     required String sha,
     required int size,
     required String name,
+    String? pieces,
   }) async {
     if (!PostAttachment.shaPattern.hasMatch(sha) || size <= 0) return;
     if (await pathFor(sha) != null) return;
@@ -280,6 +393,19 @@ class BlobService {
       return;
     }
     final download = _Download(sha: sha, size: size, ext: extensionFor(name));
+    if (pieces != null && PostAttachment.shaPattern.hasMatch(pieces)) {
+      download.piecesSha = pieces;
+      download.pieceHashes = await _loadPieces(pieces, download.total);
+      if (download.pieceHashes == null) {
+        download.piecesDeadlineMs =
+            DateTime.now().millisecondsSinceEpoch + piecesWait.inMilliseconds;
+        unawaited(fetch(
+          sha: pieces,
+          size: download.total * _pieceHashBytes,
+          name: 'list.pieces',
+        ));
+      }
+    }
     _downloads[sha] = download;
     await _openPart(download);
     _changed.add(sha);
@@ -288,6 +414,23 @@ class BlobService {
     await _ask(download, force: true);
     _ticker ??= Timer.periodic(const Duration(seconds: 2), (_) => _tick());
   }
+
+  Future<Uint8List?> _loadPieces(String sha, int chunks) async {
+    final path = await pathFor(sha);
+    if (path == null) return null;
+    try {
+      final list = await File(path).readAsBytes();
+      return list.length == chunks * _pieceHashBytes ? list : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Still giving the piece list time to arrive before downloading.
+  static bool _waitingForPieces(_Download d) =>
+      d.piecesSha != null &&
+      d.pieceHashes == null &&
+      DateTime.now().millisecondsSinceEpoch < d.piecesDeadlineMs;
 
   /// Stops downloading; the partial file stays so a later fetch resumes.
   Future<void> cancel(String sha) async {
@@ -309,6 +452,7 @@ class BlobService {
     await raf.truncate(whole * chunkSize);
     d
       ..raf = raf
+      ..partPath = part.path
       ..have = whole;
   }
 
@@ -333,6 +477,7 @@ class BlobService {
     final d = _downloads[sha];
     if (d == null || d.bad.contains(from)) return;
     d.sources.add(from);
+    if (_waitingForPieces(d)) return;
     if (d.source == null && d.state == BlobState.searching) {
       d.source = from;
       d.stalls = 0;
@@ -377,6 +522,15 @@ class BlobService {
     }
     final expected = i == d.total - 1 ? d.size - i * chunkSize : chunkSize;
     if (bytes.length != expected) return;
+    final pieces = d.pieceHashes;
+    if (pieces != null &&
+        !_pieceMatches(pieces, i, (await Sha256().hash(bytes)).bytes)) {
+      TransportLog.instance.log('Files: chunk $i of ${sha.substring(0, 8)}… '
+          'failed its check — switching to another device');
+      d.bad.add(from);
+      await _dropSource(d);
+      return;
+    }
     d.pending[i] = bytes;
     d.lastActivityMs = DateTime.now().millisecondsSinceEpoch;
     d.stalls = 0;
@@ -391,9 +545,15 @@ class BlobService {
     if (raf == null || !identical(_downloads[d.sha], d)) return;
     var moved = false;
     while (d.pending.containsKey(d.have)) {
+      final bytes = d.pending.remove(d.have)!;
       await raf.setPosition(d.have * chunkSize);
-      await raf.writeFrom(d.pending.remove(d.have)!);
+      await raf.writeFrom(bytes);
       d.have++;
+      d.meter.add(bytes.length);
+      if (d.sessionBytes == 0) {
+        d.firstDataMs = DateTime.now().millisecondsSinceEpoch;
+      }
+      d.sessionBytes += bytes.length;
       moved = true;
     }
     if (!moved) return;
@@ -413,13 +573,27 @@ class BlobService {
     final actual = await sha256OfFile(part.path);
     if (actual == d.sha) {
       final dest = '${(await _dir()).path}/${d.sha}.${d.ext}';
-      await part.rename(dest);
+      try {
+        await part.rename(dest);
+      } on FileSystemException {
+        // Windows: a player streaming the partial file still has it open.
+        await part.copy(dest);
+        try {
+          await part.delete();
+        } on FileSystemException {
+          // Swept on a later start.
+        }
+      }
       (await _ensureIndex())[d.sha] = dest;
       _downloads.remove(d.sha);
       d.state = BlobState.done;
       _changed.add(d.sha);
+      final speed = d.sessionBytes > 0
+          ? ' ${formatAverage(d.sessionBytes, DateTime.now().millisecondsSinceEpoch - d.firstDataMs)}'
+          : '';
       TransportLog.instance.log('Files: got ${d.sha.substring(0, 8)}… '
-          '(${(d.size / 1024).ceil()} KB) — sharing it from now on');
+          '(${(d.size / 1024).ceil()} KB)$speed — sharing it from now on');
+      await _onDownloaded(d, dest);
       return;
     }
     // Someone sent bytes that don't match: start over from someone else.
@@ -438,6 +612,29 @@ class BlobService {
     await _openPart(d);
     _changed.add(d.sha);
     await _useNextSource(d);
+  }
+
+  /// A piece list that arrived unblocks the downloads waiting on it. A file
+  /// that downloaded without its list (only older devices had it) gets one
+  /// built here, so devices asking this one can check every chunk.
+  Future<void> _onDownloaded(_Download d, String path) async {
+    for (final waiting in _downloads.values.toList()) {
+      if (waiting.piecesSha != d.sha || waiting.pieceHashes != null) continue;
+      waiting.pieceHashes = await _loadPieces(d.sha, waiting.total);
+      if (waiting.pieceHashes != null &&
+          waiting.source == null &&
+          waiting.state == BlobState.searching) {
+        await _useNextSource(waiting);
+      }
+    }
+    final pieces = d.piecesSha;
+    if (pieces == null || await pathFor(pieces) != null) return;
+    try {
+      final (_, list) = await hashFile(path);
+      if (await sha256OfBytes(list) == pieces) {
+        await _store(list, sha: pieces, ext: 'pieces');
+      }
+    } catch (_) {}
   }
 
   Future<void> _dropSource(_Download d) async {
@@ -473,7 +670,7 @@ class BlobService {
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final d in _downloads.values.toList()) {
       if (d.state == BlobState.downloading &&
-          now - d.lastActivityMs > stallAfter.inMilliseconds) {
+          now - d.lastActivityMs > _stallLimitMs(d, now)) {
         d.stalls++;
         if (d.stalls >= maxStalls) {
           await _dropSource(d);
@@ -481,9 +678,28 @@ class BlobService {
           await _request(d); // re-ask from the last chunk on disk
         }
       } else if (d.state == BlobState.searching) {
-        await _ask(d);
+        if (d.piecesSha != null &&
+            d.pieceHashes == null &&
+            d.piecesDeadlineMs > 0 &&
+            now >= d.piecesDeadlineMs) {
+          // Nobody in range has the list: download with the whole-file
+          // check only.
+          d.piecesDeadlineMs = 0;
+          await _useNextSource(d);
+        } else {
+          await _ask(d);
+        }
       }
     }
+  }
+
+  /// [stallAfter], or four chunks' worth of the download's average speed
+  /// when the link is slower than that: a slow link isn't a stalled one.
+  int _stallLimitMs(_Download d, int now) {
+    final elapsed = now - d.startedMs;
+    if (d.sessionBytes <= 0 || elapsed <= 0) return stallAfter.inMilliseconds;
+    final perChunkMs = chunkSize * elapsed / d.sessionBytes;
+    return max(stallAfter.inMilliseconds, (perChunkMs * 4).round());
   }
 
   /// New devices in range may have what a search is waiting for; a source
@@ -525,14 +741,18 @@ class BlobService {
         if (_serving[key] != generation) return;
         await raf.setPosition(i * chunkSize);
         final bytes = await raf.read(min(chunkSize, size - i * chunkSize));
-        final sent = await send(to, <String, Object?>{
-          't': 'bdat',
-          'h': sha,
-          'to': to,
-          'from': me,
-          'i': i,
-          'data': base64Encode(bytes),
-        });
+        final sent = await send(
+          to,
+          <String, Object?>{
+            't': 'bdat',
+            'h': sha,
+            'to': to,
+            'from': me,
+            'i': i,
+            'data': base64Encode(bytes),
+          },
+          bulk: true,
+        );
         if (!sent) return;
       }
     } finally {
@@ -596,6 +816,22 @@ class _Download {
   final Map<int, Uint8List> pending = <int, Uint8List>{};
   Future<void> writes = Future<void>.value();
   RandomAccessFile? raf;
+  String? partPath;
+
+  /// The post's piece list: its hash, then (once here) the list itself.
+  String? piecesSha;
+  Uint8List? pieceHashes;
+
+  /// When to stop waiting for the list; 0 once given up.
+  int piecesDeadlineMs = 0;
+
+  final TransferMeter meter = TransferMeter();
+  final int startedMs = DateTime.now().millisecondsSinceEpoch;
+
+  /// Bytes downloaded since [startedMs] (not counting a resumed prefix),
+  /// the first of them at [firstDataMs].
+  int sessionBytes = 0;
+  int firstDataMs = 0;
 
   int lastActivityMs = 0;
   int lastAskMs = 0;
