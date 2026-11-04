@@ -1,14 +1,14 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 
 import '../../core/services/call_service.dart';
-import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
-import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/ui/media_widgets.dart';
 import '../../routing/app_router.dart';
@@ -91,7 +91,7 @@ class _CallOverlayState extends State<CallOverlay> {
       builder: (ctx) => AlertDialog(
         title: Text(reason),
         content: const Text('Leave a voicemail? It is delivered over the '
-            'mesh and appears in their Phone app.'),
+            'mesh and appears in your chat with them.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -164,10 +164,19 @@ class _CallScreenState extends State<_CallScreen> {
   bool _sendingClip = false;
   String? _recPath;
 
-  // Auto-play of incoming call audio.
-  StreamSubscription<String>? _chatSub;
-  final Set<String> _playedIds = <String>{};
-  Future<void> Function()? _stopActive;
+  // Their voice: clips play in order, each from a temp file that goes once
+  // it has played. One player for the whole call.
+  StreamSubscription<Uint8List>? _audioSub;
+  Player? _player;
+  StreamSubscription<bool>? _completedSub;
+  final List<File> _queued = <File>[];
+
+  /// The clip the player has open, playing or finished. The player keeps
+  /// it open until it opens another (Windows won't delete an open file),
+  /// so it's deleted then, or when the call ends.
+  File? _held;
+  bool _heldDone = true;
+  bool _starting = false;
 
   @override
   void initState() {
@@ -179,8 +188,8 @@ class _CallScreenState extends State<_CallScreen> {
         setState(() => _elapsed = DateTime.now().difference(connectedAt));
       }
     });
-    _chatSub =
-        MessengerService.instance.onChanged.listen(_maybePlayIncomingAudio);
+    _audioSub = CallService.instance.onAudio.listen(_onClip);
+    unawaited(_sweepOldClips());
   }
 
   @override
@@ -192,9 +201,19 @@ class _CallScreenState extends State<_CallScreen> {
   @override
   void dispose() {
     _ticker?.cancel();
-    _chatSub?.cancel();
+    _audioSub?.cancel();
+    _completedSub?.cancel();
     _recorder.dispose();
-    unawaited(_stopActive?.call());
+    final player = _player;
+    final leftover = [if (_held != null) _held!, ..._queued];
+    _queued.clear();
+    _held = null;
+    unawaited(() async {
+      await player?.dispose();
+      for (final file in leftover) {
+        await _deleteQuietly(file);
+      }
+    }());
     super.dispose();
   }
 
@@ -212,28 +231,77 @@ class _CallScreenState extends State<_CallScreen> {
     }
   }
 
-  /// While the call is active, incoming audio messages from the peer play
-  /// out loud immediately — this is the "live" half of push-to-talk.
-  Future<void> _maybePlayIncomingAudio(String chatKey) async {
-    final call = widget.call;
-    if (call.phase != CallPhase.active || chatKey != call.peer) return;
-    final connectedAt = call.connectedAt;
-    if (connectedAt == null) return;
-
-    final messages = await ChatStorage.instance.listMessages(chatKey);
-    for (final message in messages.reversed) {
-      if (message.isMe || message.kind != 'audio') continue;
-      if (message.timestamp.isBefore(connectedAt)) break;
-      if (!_playedIds.add(message.id)) continue;
-      final path = message.mediaId == null
-          ? null
-          : await MediaStore.instance.pathFor(message.mediaId!);
-      if (path != null) {
-        await _stopActive?.call();
-        _stopActive = await playOnce(path);
-      }
-      break;
+  /// The "live" half of push-to-talk: their clip plays out loud as soon as
+  /// it lands, after any still playing.
+  Future<void> _onClip(Uint8List bytes) async {
+    final dir = await getTemporaryDirectory();
+    final file = File(
+        '${dir.path}/call_in_${DateTime.now().microsecondsSinceEpoch}.m4a');
+    await file.writeAsBytes(bytes, flush: true);
+    if (!mounted) {
+      await _deleteQuietly(file);
+      return;
     }
+    _queued.add(file);
+    if (_heldDone) await _advance();
+  }
+
+  /// Plays queued clips one after another while the last one has finished.
+  Future<void> _advance() async {
+    if (_starting) return;
+    _starting = true;
+    try {
+      while (mounted && _heldDone && _queued.isNotEmpty) {
+        final previous = _held;
+        final next = _queued.removeAt(0);
+        try {
+          await (_player ??= _newPlayer()).open(Media(next.path));
+        } catch (_) {
+          await _deleteQuietly(next); // unplayable: skip it
+          continue;
+        }
+        _held = next;
+        _heldDone = false;
+        if (previous != null) await _deleteQuietly(previous);
+        // A very short clip can end while we were switching to it.
+        if (_player?.state.completed ?? false) _heldDone = true;
+      }
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Player _newPlayer() {
+    final player = Player();
+    _completedSub = player.stream.completed.listen((done) {
+      // While switching clips, a "completed" is the old clip's.
+      if (!done || _starting) return;
+      _heldDone = true;
+      unawaited(_advance());
+    });
+    return player;
+  }
+
+  static Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+  }
+
+  /// Clips a previous call couldn't delete (the app quit mid-call).
+  static Future<void> _sweepOldClips() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final started = DateTime.now().subtract(const Duration(minutes: 1));
+      await for (final entity in dir.list()) {
+        final name = entity.uri.pathSegments.last;
+        if (entity is File &&
+            (name.startsWith('call_in_') || name.startsWith('ptt_')) &&
+            (await entity.lastModified()).isBefore(started)) {
+          await _deleteQuietly(entity);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _startTalking() async {
@@ -262,20 +330,12 @@ class _CallScreenState extends State<_CallScreen> {
     try {
       await _recorder.stop();
       final path = _recPath;
-      final peer = widget.call.peer;
-      if (path != null && peer != null) {
+      if (path != null) {
         final file = File(path);
         final bytes = await file.readAsBytes();
         await file.delete();
         if (bytes.length > 500) {
-          await MessengerService.instance.sendMedia(
-            peer,
-            bytes: bytes,
-            name: 'call.m4a',
-            mime: 'audio/mp4',
-            kind: 'audio',
-            durationMs: null,
-          );
+          await CallService.instance.sendAudio(bytes);
         }
       }
     } catch (_) {
@@ -332,7 +392,8 @@ class _CallScreenState extends State<_CallScreen> {
                       ? 'Live video needs more bandwidth than the mesh radio '
                           'provides. Voice works: hold the mic to talk.'
                       : 'Half-duplex mesh voice: hold the mic, talk, release. '
-                          'Your clip plays on their device seconds later.',
+                          'It plays on their device seconds later. Like a '
+                          'phone call, nothing is saved.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurface.withValues(alpha: 0.5),

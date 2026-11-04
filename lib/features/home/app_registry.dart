@@ -16,9 +16,6 @@ class AppDefinition {
 const List<AppDefinition> kAppRegistry = [
   AppDefinition(
       'messages', 'Messages', Icons.chat_bubble, Color(0xFF26A69A), '/chats'),
-  AppDefinition('phone', 'Phone', Icons.phone, Color(0xFF66BB6A), '/app/phone'),
-  AppDefinition('videochat', 'Video Chat', Icons.videocam, Color(0xFF29B6F6),
-      '/app/videochat'),
   AppDefinition('contacts', 'Contacts', Icons.contacts, Color(0xFF3949AB),
       '/app/contacts'),
   AppDefinition('network', 'Network', Icons.public, Color(0xFFEC407A),

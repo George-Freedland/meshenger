@@ -9,7 +9,6 @@ import '../../core/media/playback.dart';
 import '../../core/models/contact.dart';
 import '../../core/models/group_info.dart';
 import '../../core/models/message.dart';
-import '../../core/services/call_service.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/file_transfer_service.dart';
@@ -23,6 +22,7 @@ import '../../core/ui/media_widgets.dart';
 import '../../core/ui/save_file.dart';
 import '../../core/ui/video_player_card.dart';
 import '../shared/peer_info_sheet.dart';
+import 'call_history_screen.dart';
 import '../shared/safety_actions.dart';
 
 const _monthNames = [
@@ -1155,16 +1155,41 @@ class _ChatScreenState extends State<ChatScreen> {
     final theme = Theme.of(context);
 
     if (message.isSystem) {
+      final muted = theme.colorScheme.onSurface.withValues(alpha: 0.55);
+      final call = ChatStorage.isCallLine(message);
+      final missed = call && message.id.endsWith(':missed');
+      final color = missed ? Colors.redAccent : muted;
+      final text = message.text.replaceAll(
+          '{time}', TimeOfDay.fromDateTime(message.timestamp).format(context));
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Text(
-            message.text,
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
-              fontStyle: FontStyle.italic,
-            ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (call) ...[
+                Icon(
+                  message.kind == ChatStorage.videoCallLineKind
+                      ? (missed
+                          ? Icons.missed_video_call_outlined
+                          : Icons.videocam_outlined)
+                      : (missed ? Icons.call_missed : Icons.call_outlined),
+                  size: 14,
+                  color: color,
+                ),
+                const SizedBox(width: 6),
+              ],
+              Flexible(
+                child: Text(
+                  text,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: color,
+                    fontStyle: call ? null : FontStyle.italic,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -1403,15 +1428,21 @@ class _ChatScreenState extends State<ChatScreen> {
         actions: [
           if (key != null && !_isGroup) ...[
             IconButton(
-              tooltip: 'Voice call',
+              tooltip: 'Phone call',
               icon: const Icon(Icons.call_outlined),
               onPressed: () => _placeCall(video: false),
             ),
             IconButton(
-              tooltip: 'Video call',
+              tooltip: 'Video chat',
               icon: const Icon(Icons.videocam_outlined),
               onPressed: () => _placeCall(video: true),
             ),
+            if (!narrow)
+              IconButton(
+                tooltip: 'Call history',
+                icon: const Icon(Icons.history),
+                onPressed: _openCallHistory,
+              ),
           ],
           if (_isGroup)
             IconButton(
@@ -1431,6 +1462,8 @@ class _ChatScreenState extends State<ChatScreen> {
               switch (value) {
                 case 'contact':
                   _addAsContact();
+                case 'calls':
+                  _openCallHistory();
                 case 'copy':
                   copyFullAddress(context, key!);
                 case 'block':
@@ -1452,6 +1485,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Text('Add as contact'),
                 ),
               if (key != null && !_isGroup) ...[
+                if (narrow)
+                  const PopupMenuItem(
+                    value: 'calls',
+                    child: Text('Call history'),
+                  ),
                 const PopupMenuItem(
                   value: 'copy',
                   child: Text('Copy public address'),
@@ -1647,15 +1685,13 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _placeCall({required bool video}) async {
     final key = _chatKey;
     if (key == null || _isGroup) return;
-    final started = await CallService.instance.placeCall(key, video: video);
-    if (!started && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:
-              Text('No mesh route to this contact right now. Try later.'),
-        ),
-      );
-    }
+    await startCall(context, key, video: video);
+  }
+
+  void _openCallHistory() {
+    final key = _chatKey;
+    if (key == null) return;
+    context.push('/calls?peer=${Uri.encodeComponent(key)}');
   }
 }
 

@@ -15,6 +15,14 @@ class ChatStorage {
   static const _chatsKey = 'chats_v1'; // list of chat keys
   static const groupPrefix = 'group:';
 
+  /// Kinds of the system lines calls leave in a chat ("Phone call started
+  /// at …"). Their text has a `{time}` placeholder for the line's time.
+  static const callLineKind = 'call';
+  static const videoCallLineKind = 'video-call';
+
+  static bool isCallLine(ChatMessage m) =>
+      m.isSystem && (m.kind == callLineKind || m.kind == videoCallLineKind);
+
   static bool isGroupChat(String chatKey) => chatKey.startsWith(groupPrefix);
 
   static String groupChatKey(String groupId) => '$groupPrefix$groupId';
@@ -338,6 +346,24 @@ class ChatStorage {
     if (!_mayModify(chatKey, messages[idx], requireSender)) return false;
     messages.removeAt(idx);
     await _writeMessages(chatKey, messages);
+    return true;
+  }
+
+  /// Removes call lines: only video or only phone ones when [video] is set,
+  /// only one call's when [callId] is. Returns whether any went.
+  Future<bool> removeCallLines(
+    String chatKey, {
+    bool? video,
+    String? callId,
+  }) async {
+    final messages = await _rawMessages(chatKey);
+    bool matches(ChatMessage m) =>
+        isCallLine(m) &&
+        (video == null || (m.kind == videoCallLineKind) == video) &&
+        (callId == null || m.id.startsWith('call:$callId:'));
+    final kept = messages.where((m) => !matches(m)).toList();
+    if (kept.length == messages.length) return false;
+    await _writeMessages(chatKey, kept);
     return true;
   }
 

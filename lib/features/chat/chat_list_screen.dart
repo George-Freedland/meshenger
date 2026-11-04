@@ -539,6 +539,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
         title: const Text('Chats'),
         actions: [
           IconButton(
+            tooltip: 'Call history',
+            icon: const Icon(Icons.history),
+            onPressed: () => context.push('/calls'),
+          ),
+          IconButton(
             tooltip: 'My QR',
             icon: const Icon(Icons.qr_code),
             onPressed: _showMyQrModal,

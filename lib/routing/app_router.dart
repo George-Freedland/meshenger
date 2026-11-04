@@ -8,10 +8,9 @@ import '../features/apps/contacts_screen.dart';
 import '../features/apps/meshmap_screen.dart';
 import '../features/apps/memos_screen.dart';
 import '../features/apps/network_screen.dart';
-import '../features/apps/phone_screen.dart';
 import '../features/apps/settings_screen.dart';
 import '../features/apps/storage_screen.dart';
-import '../features/apps/video_chat_screen.dart';
+import '../features/chat/call_history_screen.dart';
 import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/home/home_screen.dart';
@@ -59,12 +58,9 @@ final GoRouter appRouter = GoRouter(
       },
     ),
     GoRoute(
-      path: '/app/phone',
-      builder: (context, state) => const PhoneScreen(),
-    ),
-    GoRoute(
-      path: '/app/videochat',
-      builder: (context, state) => const VideoChatScreen(),
+      path: '/calls',
+      builder: (context, state) =>
+          CallHistoryScreen(peer: state.uri.queryParameters['peer']),
     ),
     GoRoute(
       path: '/app/contacts',

@@ -1596,8 +1596,11 @@ class MessengerService {
   }
 
   // ---------------------------------------------------------------------
-  // Calls (signaling; audio clips ride the normal media pipeline)
+  // Calls (signaling, and the call's voice as push-to-talk clips)
   // ---------------------------------------------------------------------
+
+  /// A clip that hasn't arrived by then is no use to anyone.
+  static const int _callAudioLifetimeSeconds = 60;
 
   Future<bool> sendCallSignal(
     String peerAddress, {
@@ -1615,6 +1618,80 @@ class MessengerService {
         targetId: callId,
       ),
     );
+  }
+
+  /// One push-to-talk clip of a running call. It travels like the call's
+  /// signals, so neither side stores it: the other side plays it and
+  /// throws it away, and relays drop it after a minute.
+  Future<bool> sendCallAudio(
+    String peerAddress, {
+    required String callId,
+    required Uint8List bytes,
+  }) {
+    return _deliverBody(
+      peerAddress,
+      MessageBody(
+        messageId: _uuid.v4(),
+        text: 'voice',
+        timestamp: DateTime.now(),
+        action: 'call-audio',
+        targetId: callId,
+        ttlSeconds: _callAudioLifetimeSeconds,
+        kind: 'audio',
+        mediaB64: base64Encode(bytes),
+        mediaName: 'call.m4a',
+        mediaMime: 'audio/mp4',
+      ),
+    );
+  }
+
+  /// Adds a call's line to the chat with [peer]. [text] has a `{time}`
+  /// placeholder that the chat fills in with [at].
+  Future<void> noteCall(
+    String peer, {
+    required String id,
+    required String text,
+    required DateTime at,
+    required bool video,
+    bool unread = false,
+  }) async {
+    if (ChatStorage.isGroupChat(peer)) return;
+    await ChatStorage.instance.ensureChatExists(peer);
+    await ChatStorage.instance.appendMessage(
+      peer,
+      ChatMessage(
+        id: id,
+        text: text,
+        isMe: false,
+        timestamp: at,
+        status: MessageStatus.sent,
+        isSystem: true,
+        kind: video
+            ? ChatStorage.videoCallLineKind
+            : ChatStorage.callLineKind,
+      ),
+    );
+    if (unread) await ChatStorage.instance.markUnread(peer);
+    _changed.add(peer);
+  }
+
+  /// Removes call lines from one chat ([peer]) or from every 1:1 chat;
+  /// see [ChatStorage.removeCallLines] for [video] and [callId].
+  Future<void> removeCallLines({
+    String? peer,
+    bool? video,
+    String? callId,
+  }) async {
+    final chats = peer != null
+        ? [peer]
+        : (await ChatStorage.instance.listChats())
+            .where((c) => !ChatStorage.isGroupChat(c));
+    for (final chatKey in chats) {
+      if (await ChatStorage.instance
+          .removeCallLines(chatKey, video: video, callId: callId)) {
+        _changed.add(chatKey);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------

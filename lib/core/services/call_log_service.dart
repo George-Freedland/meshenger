@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity_scope.dart';
 
-enum CallOutcome { completed, missed, declined, noAnswer, failed }
+enum CallOutcome { completed, missed, declined, noAnswer, failed, busy, canceled }
 
 class CallLogEntry {
   final String peer; // base64 address
@@ -15,6 +15,9 @@ class CallLogEntry {
   final CallOutcome outcome;
   final int durationSeconds;
 
+  /// Ties the entry to its lines in the chat. Missing on older entries.
+  final String? callId;
+
   const CallLogEntry({
     required this.peer,
     required this.video,
@@ -22,6 +25,7 @@ class CallLogEntry {
     required this.tsMs,
     required this.outcome,
     this.durationSeconds = 0,
+    this.callId,
   });
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -31,6 +35,7 @@ class CallLogEntry {
         'ts': tsMs,
         'outcome': outcome.name,
         'dur': durationSeconds,
+        if (callId != null) 'id': callId,
       };
 
   static CallLogEntry fromJson(Map<String, Object?> json) => CallLogEntry(
@@ -43,10 +48,18 @@ class CallLogEntry {
           orElse: () => CallOutcome.failed,
         ),
         durationSeconds: (json['dur'] as num?)?.toInt() ?? 0,
+        callId: json['id'] as String?,
       );
+
+  bool _sameAs(CallLogEntry other) =>
+      peer == other.peer &&
+      tsMs == other.tsMs &&
+      outcome == other.outcome &&
+      video == other.video &&
+      outgoing == other.outgoing;
 }
 
-/// Recents list for the Phone and Video Chat apps (identity-scoped).
+/// Call history (Messages → Calls), identity-scoped.
 class CallLogService {
   CallLogService._();
   static final CallLogService instance = CallLogService._();
@@ -57,10 +70,14 @@ class CallLogService {
   final _changed = StreamController<void>.broadcast();
   Stream<void> get onChanged => _changed.stream;
 
-  Future<List<CallLogEntry>> list({bool? video}) async {
+  /// Newest first; only [peer]'s calls, or only video ([video] true) or
+  /// phone ([video] false) calls, when given.
+  Future<List<CallLogEntry>> list({bool? video, String? peer}) async {
     final entries = await _readAll();
     return entries
-        .where((e) => video == null || e.video == video)
+        .where((e) =>
+            (video == null || e.video == video) &&
+            (peer == null || e.peer == peer))
         .toList()
       ..sort((a, b) => b.tsMs.compareTo(a.tsMs));
   }
@@ -72,6 +89,31 @@ class CallLogService {
     if (entries.length > _maxEntries) {
       entries.removeRange(_maxEntries, entries.length);
     }
+    await _writeAll(entries);
+  }
+
+  Future<void> remove(CallLogEntry entry) async {
+    final entries = await _readAll();
+    final index = entries.indexWhere((e) => e._sameAs(entry));
+    if (index < 0) return;
+    entries.removeAt(index);
+    await _writeAll(entries);
+  }
+
+  /// Deletes the entries [list] would return for the same filters, and
+  /// returns them.
+  Future<List<CallLogEntry>> clear({bool? video, String? peer}) async {
+    final entries = await _readAll();
+    bool matches(CallLogEntry e) =>
+        (video == null || e.video == video) &&
+        (peer == null || e.peer == peer);
+    final removed = entries.where(matches).toList();
+    if (removed.isEmpty) return removed;
+    await _writeAll(entries.where((e) => !matches(e)).toList());
+    return removed;
+  }
+
+  Future<void> _writeAll(List<CallLogEntry> entries) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
       IdentityScope.key(_logKey),
