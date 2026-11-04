@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -44,15 +46,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _shareApproximate = false;
   bool _shareExact = false;
   GeoPoint? _pin;
+  StreamSubscription<void>? _locationSub;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _locationSub = LocationService.instance.onChanged.listen((_) async {
+      final pin = await LocationService.instance.getPin();
+      if (mounted) setState(() => _pin = pin);
+    });
   }
 
   @override
   void dispose() {
+    _locationSub?.cancel();
     _nicknameController.dispose();
     super.dispose();
   }
@@ -87,15 +95,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  /// Turning sharing on: ask for access, and say what to do if this device
-  /// can't tell where it is.
+  /// Turning sharing on asks for access; the outcome shows under My spot.
   Future<void> _askForLocation() async {
-    final problem = await LocationService.instance.requestAccess();
-    if (problem == null || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(problem),
-      duration: const Duration(seconds: 8),
-    ));
+    await LocationService.instance.requestAccess();
+  }
+
+  /// Where this device's spot on the globe comes from, or what's in the way.
+  String _spotStatus() {
+    final pin = _pin;
+    if (pin != null) {
+      return 'Pinned at ${pin.lat.toStringAsFixed(3)}, '
+          '${pin.lon.toStringAsFixed(3)}. Long-press the globe on the Mesh '
+          'Map to move it.';
+    }
+    if (!_shareApproximate && !_shareExact) {
+      return "When sharing is on, this device's own location is used. If it "
+          "can't tell (most laptops offline), long-press your spot on the "
+          'Mesh Map globe to pin it.';
+    }
+    final location = LocationService.instance;
+    final fix = location.lastReading;
+    if (fix != null && !location.isLooking) {
+      final at = TimeOfDay.fromDateTime(
+              DateTime.fromMillisecondsSinceEpoch(fix.tsMs))
+          .format(context);
+      return "This device's location, to within about ${fix.accuracyM} m "
+          '(read at $at).';
+    }
+    final problem = location.problem;
+    if (problem != null && !location.isLooking) {
+      return LocationService.describe(problem);
+    }
+    return "Finding this device's location…";
   }
 
   Future<void> _unhidePosts() async {
@@ -420,22 +451,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('My spot'),
-                  subtitle: Text(_pin == null
-                      ? "This device's own location. If it can't tell (most "
-                          'laptops offline), long-press your spot on the '
-                          'Mesh Map globe to pin it.'
-                      : 'Pinned at ${_pin!.lat.toStringAsFixed(3)}, '
-                          '${_pin!.lon.toStringAsFixed(3)}. Long-press the '
-                          'globe to move it.'),
-                  trailing: _pin == null
-                      ? null
-                      : TextButton(
-                          onPressed: () async {
-                            await LocationService.instance.setPin(null);
-                            if (mounted) setState(() => _pin = null);
-                          },
-                          child: const Text('Remove pin'),
+                  subtitle: Text(_spotStatus()),
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    if (_pin != null)
+                      OutlinedButton(
+                        onPressed: () async {
+                          await LocationService.instance.setPin(null);
+                          if (mounted) setState(() => _pin = null);
+                        },
+                        child: const Text('Remove pin'),
+                      ),
+                    if (_pin == null &&
+                        (_shareApproximate || _shareExact) &&
+                        !LocationService.instance.isLooking &&
+                        LocationService.instance.problem != null) ...[
+                      OutlinedButton(
+                        onPressed: _askForLocation,
+                        child: const Text('Try again'),
+                      ),
+                      if (LocationService.instance.problem ==
+                              LocationProblem.notAllowed ||
+                          LocationService.instance.problem ==
+                              LocationProblem.servicesOff)
+                        OutlinedButton(
+                          onPressed: LocationService.instance.openDeviceSettings,
+                          child: const Text('Open location settings'),
                         ),
+                    ],
+                  ],
                 ),
                 const SizedBox(height: 24),
                 Text('Sounds', style: theme.textTheme.titleSmall),

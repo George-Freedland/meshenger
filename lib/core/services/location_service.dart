@@ -68,6 +68,21 @@ class GeoPoint {
   }
 }
 
+/// Why this device has no position of its own.
+enum LocationProblem {
+  /// Location services are switched off for the whole device.
+  servicesOff,
+
+  /// The person refused Meshenger access, now or earlier.
+  notAllowed,
+
+  /// Nobody has been asked yet (access is only requested from Settings).
+  notAsked,
+
+  /// Access is fine, but the device couldn't work out where it is.
+  notFound,
+}
+
 /// Where this device is, for the Mesh Map globe, and how much of that it
 /// shares. Both sharing settings are off until the person turns one on;
 /// until then the device's location is never even read.
@@ -92,6 +107,17 @@ class LocationService {
 
   GeoPoint? _fix;
   Future<GeoPoint?>? _reading;
+  LocationProblem? _problem;
+  bool _looking = false;
+
+  /// The latest reading of this device's own location.
+  GeoPoint? get lastReading => _fix;
+
+  /// Why the last attempt to read it failed, if it did.
+  LocationProblem? get problem => _problem;
+
+  /// A reading is under way.
+  bool get isLooking => _looking;
 
   Future<bool> getShareApproximate() async =>
       (await SharedPreferences.getInstance())
@@ -146,11 +172,18 @@ class LocationService {
     if (!await isSharing) return null;
     final fix = _fix;
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (fix == null || now - fix.tsMs >= refreshEvery.inMilliseconds) {
+    final stale = fix == null || now - fix.tsMs >= refreshEvery.inMilliseconds;
+    if (stale && now - _lastAttemptMs >= retryEvery.inMilliseconds) {
+      _lastAttemptMs = now;
       unawaited(_read(askPermission: false));
     }
     return fix;
   }
+
+  /// Background attempts are at least this far apart (every attempt tells
+  /// listeners, which may ask again).
+  static const Duration retryEvery = Duration(seconds: 30);
+  int _lastAttemptMs = 0;
 
   /// What this device puts in its gossip: nothing, its about-1 km cell, or
   /// its exact spot.
@@ -169,39 +202,75 @@ class LocationService {
     return exact ? current : current.approximate();
   }
 
-  /// Asks for location access (when a sharing setting is turned on) and
-  /// takes a first reading. Returns what went wrong, for the person.
-  Future<String?> requestAccess() async {
+  /// Asks for location access (when a sharing setting is turned on, or the
+  /// person taps Try again) and takes a reading. Returns what's in the
+  /// way, if anything.
+  Future<LocationProblem?> requestAccess() async {
     if (await getPin() != null) return null;
-    try {
-      if (!await Geolocator.isLocationServiceEnabled()) {
-        return 'Location services are off on this device. Turn them on, '
-            'or long-press the globe on the Mesh Map to pin your spot.';
-      }
-    } catch (_) {
-      return "This device can't report its location. Long-press the globe "
-          'on the Mesh Map to pin your spot.';
-    }
-    final position = await _read(askPermission: true);
-    if (position != null) return null;
-    return "Couldn't find this device's location (laptops often can't "
-        'without internet). Long-press the globe on the Mesh Map to pin '
-        'your spot.';
+    return await _read(askPermission: true) == null ? _problem : null;
   }
 
-  Future<GeoPoint?> _read({required bool askPermission}) =>
-      _reading ??= _readNow(askPermission).whenComplete(() => _reading = null);
+  /// What the person can do about [problem].
+  static String describe(LocationProblem problem) => switch (problem) {
+        LocationProblem.servicesOff =>
+          'Location services are off on this device. Turn them on in its '
+              'settings, or pin your spot on the globe.',
+        LocationProblem.notAllowed =>
+          "Meshenger isn't allowed to use this device's location. Allow it "
+              "in the device's settings (Privacy & Security → Location "
+              'Services), or pin your spot on the globe.',
+        LocationProblem.notAsked =>
+          'Meshenger still needs your OK to read this location: tap Try '
+              'again and allow it.',
+        LocationProblem.notFound =>
+          "This device couldn't work out where it is (laptops often can't "
+              'without Wi-Fi and internet). Pin your spot on the globe '
+              'instead: long-press it on the Mesh Map.',
+      };
+
+  /// Opens the device's location settings, where access is allowed.
+  Future<void> openDeviceSettings() async {
+    try {
+      if (_problem == LocationProblem.servicesOff) {
+        await Geolocator.openLocationSettings();
+      } else {
+        await Geolocator.openAppSettings();
+      }
+    } catch (_) {}
+  }
+
+  /// A person asking must always reach the system's prompt, so their
+  /// request never piggybacks on a background reading that won't ask.
+  Future<GeoPoint?> _read({required bool askPermission}) => askPermission
+      ? _readNow(true)
+      : _reading ??= _readNow(false).whenComplete(() => _reading = null);
 
   Future<GeoPoint?> _readNow(bool askPermission) async {
+    _looking = true;
+    _changed.add(null);
     try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        _problem = LocationProblem.servicesOff;
+        return null;
+      }
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied && askPermission) {
         permission = await Geolocator.requestPermission();
       }
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever ||
-          permission == LocationPermission.unableToDetermine) {
-        return null;
+      switch (permission) {
+        case LocationPermission.deniedForever:
+          _problem = LocationProblem.notAllowed;
+          return null;
+        case LocationPermission.denied:
+          _problem =
+              askPermission ? LocationProblem.notAllowed : LocationProblem.notAsked;
+          return null;
+        case LocationPermission.unableToDetermine:
+          _problem = LocationProblem.notFound;
+          return null;
+        case LocationPermission.whileInUse:
+        case LocationPermission.always:
+          break;
       }
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -216,13 +285,21 @@ class LocationService {
         tsMs: DateTime.now().millisecondsSinceEpoch,
       );
       _fix = fix;
-      _changed.add(null);
+      _problem = null;
       return fix;
     } catch (_) {
+      _problem = LocationProblem.notFound;
       return null;
+    } finally {
+      _looking = false;
+      _changed.add(null);
     }
   }
 
   /// Forgets the in-memory reading (on identity switch or log out).
-  void reset() => _fix = null;
+  void reset() {
+    _fix = null;
+    _problem = null;
+    _lastAttemptMs = 0;
+  }
 }

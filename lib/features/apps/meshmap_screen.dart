@@ -50,6 +50,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   bool _globe = false;
   String? _myAddress;
   GeoPoint? _myPosition;
+  bool _sharing = false;
   List<MessageRoute> _routes = const <MessageRoute>[];
   final GlobalKey<MeshGlobeState> _globeKey = GlobalKey<MeshGlobeState>();
 
@@ -85,6 +86,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     final known = await PeerDirectory.instance.listRecent();
     final me = await IdentityService.instance.getPublicAddressBase64();
     final position = await LocationService.instance.myPosition();
+    final sharing = await LocationService.instance.isSharing;
     if (!mounted) return;
     setState(() {
       _direct = MessengerService.instance.visiblePeers;
@@ -93,6 +95,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
       _contacts = contacts;
       _myAddress = me;
       _myPosition = position;
+      _sharing = sharing;
       _routes = RouteLog.instance.recent();
       if (_selected != null &&
           !_direct.contains(_selected) &&
@@ -529,8 +532,17 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
               child: Text(
                 [
                   if (mine == null)
-                    "You're not on the globe: turn on location sharing in "
-                        'Settings, or long-press your spot to pin it.',
+                    _sharing
+                        ? switch (LocationService.instance.problem) {
+                            null =>
+                              "Finding this device's location… or long-press "
+                                  'your spot to pin it.',
+                            final problem =>
+                              "You're not on the globe yet. "
+                                  '${LocationService.describe(problem)}',
+                          }
+                        : "You're not on the globe: turn on location sharing "
+                            'in Settings, or long-press your spot to pin it.',
                   if (unplaced > 0)
                     '$unplaced device${unplaced == 1 ? " doesn't" : "s don't"} '
                         'share a location, so ${unplaced == 1 ? "it's" : "they're"} '
