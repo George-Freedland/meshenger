@@ -101,3 +101,49 @@ abstract final class PacketFrame {
     return offset == payload.length ? packet : null;
   }
 }
+
+/// A packet crosses a Bluetooth link as chunks, each led by a flag byte.
+abstract final class ChunkFlags {
+  static const int last = 0x01;
+
+  /// Older builds don't set it and only look at [last].
+  static const int first = 0x02;
+
+  /// Flags for the chunk holding bytes [offset] to [end] of [length].
+  static int of(int offset, int end, int length) =>
+      (offset == 0 ? first : 0) | (end == length ? last : 0);
+}
+
+/// Puts chunked packets back together, per sender. A packet that broke off
+/// mid-way is dropped when the sender's next one starts, instead of being
+/// glued onto it (which would lose that one as well).
+class ChunkAssembler {
+  ChunkAssembler({this.onDropped});
+
+  /// Told how many bytes of an unfinished packet were thrown away.
+  final void Function(String sender, int bytes)? onDropped;
+
+  final Map<String, BytesBuilder> _buffers = <String, BytesBuilder>{};
+
+  /// Adds [chunk] (flag byte first) from [sender]; returns the packet once
+  /// its last chunk is in.
+  Uint8List? add(String sender, Uint8List chunk) {
+    if (chunk.isEmpty) return null;
+    final flags = chunk[0];
+    if ((flags & ChunkFlags.first) != 0) {
+      final stale = _buffers.remove(sender);
+      if (stale != null && stale.isNotEmpty) {
+        onDropped?.call(sender, stale.length);
+      }
+    }
+    final buffer = _buffers.putIfAbsent(sender, BytesBuilder.new);
+    buffer.add(Uint8List.sublistView(chunk, 1));
+    if ((flags & ChunkFlags.last) == 0) return null;
+    _buffers.remove(sender);
+    return buffer.takeBytes();
+  }
+
+  void forget(String sender) => _buffers.remove(sender);
+
+  void clear() => _buffers.clear();
+}

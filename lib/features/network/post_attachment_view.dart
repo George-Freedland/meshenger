@@ -13,6 +13,7 @@ import '../../core/services/transfer_meter.dart';
 import '../../core/transport/envelope_codec.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/save_file.dart';
 import '../../core/ui/video_player_card.dart';
 
 /// The file attached to a post being written: cover (or icon), title,
@@ -301,14 +302,25 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
     final duration = length == null ? null : Duration(milliseconds: length);
     final fraction =
         _progress.state == BlobState.downloading ? _progress.fraction : null;
+    final path = _path;
     final actions = [
-      if (_path != null)
+      if (path != null) ...[
         IconButton(
           tooltip: 'Save to Storage',
           visualDensity: VisualDensity.compact,
           icon: const Icon(Icons.save_alt_rounded, color: Colors.white70),
           onPressed: _save,
         ),
+        Builder(
+          builder: (buttonContext) => IconButton(
+            tooltip: saveActionLabel,
+            visualDensity: VisualDensity.compact,
+            icon: Icon(saveActionIcon, color: Colors.white70),
+            onPressed: () => saveFileCopy(buttonContext,
+                path: path, name: _file.name, mime: _file.mime),
+          ),
+        ),
+      ],
     ];
     if (_file.isAudio) {
       final (title, artist) = trackNameFromFile(_file.name);
@@ -415,6 +427,15 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
                 tooltip: 'Save to Storage',
                 icon: const Icon(Icons.save_alt_rounded),
                 onPressed: _save,
+              ),
+            if (_path != null)
+              Builder(
+                builder: (buttonContext) => IconButton(
+                  tooltip: saveActionLabel,
+                  icon: Icon(saveActionIcon),
+                  onPressed: () => saveFileCopy(buttonContext,
+                      path: _path!, name: _file.name, mime: _file.mime),
+                ),
               ),
           ],
         ),

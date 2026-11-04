@@ -34,6 +34,8 @@
 	<string>Meshenger uses the camera to capture photos for chats and stories.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Meshenger uses the microphone for voice memos, voice messages, voicemail, and mesh calls.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Meshenger saves the photos and videos you choose to your library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Meshenger lets you attach photos from your library to chats and stories.</string>
 	<key>UIApplicationSceneManifest</key>

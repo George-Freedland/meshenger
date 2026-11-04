@@ -75,4 +75,57 @@ void main() {
     expect(PacketFrame.decode(Uint8List.fromList(utf8.encode('not json'))),
         isNull);
   });
+
+  group('chunks', () {
+    List<Uint8List> chunk(List<int> payload, int size, {bool flagFirst = true}) {
+      return [
+        for (var offset = 0; offset < payload.length; offset += size)
+          () {
+            final end = min(offset + size, payload.length);
+            var flags = ChunkFlags.of(offset, end, payload.length);
+            if (!flagFirst) flags &= ~ChunkFlags.first;
+            return Uint8List.fromList(
+                [flags, ...payload.sublist(offset, end)]);
+          }(),
+      ];
+    }
+
+    test('a packet comes back whole from its chunks', () {
+      final payload = List<int>.generate(1000, (i) => i % 256);
+      final assembler = ChunkAssembler();
+      final pieces = chunk(payload, 300);
+      expect(pieces.first[0], ChunkFlags.first);
+      expect(pieces.last[0], ChunkFlags.last);
+      for (final piece in pieces.take(pieces.length - 1)) {
+        expect(assembler.add('mac', piece), isNull);
+      }
+      expect(assembler.add('mac', pieces.last), payload);
+      expect(chunk([1, 2], 300).single[0], ChunkFlags.first | ChunkFlags.last);
+    });
+
+    test('a packet that broke off mid-way does not spoil the next one', () {
+      final dropped = <int>[];
+      final assembler =
+          ChunkAssembler(onDropped: (_, bytes) => dropped.add(bytes));
+      final broken = chunk(List<int>.filled(900, 7), 300);
+      assembler.add('pc', broken[0]);
+      assembler.add('pc', broken[1]);
+
+      final next = List<int>.generate(500, (i) => i % 251);
+      final pieces = chunk(next, 300);
+      expect(assembler.add('pc', pieces[0]), isNull);
+      expect(assembler.add('pc', pieces[1]), next);
+      expect(dropped, [600]);
+    });
+
+    test('senders are kept apart, and older senders still work', () {
+      final assembler = ChunkAssembler();
+      final a = chunk(List<int>.filled(400, 1), 300, flagFirst: false);
+      final b = chunk(List<int>.filled(400, 2), 300, flagFirst: false);
+      assembler.add('a', a[0]);
+      assembler.add('b', b[0]);
+      expect(assembler.add('a', a[1]), List<int>.filled(400, 1));
+      expect(assembler.add('b', b[1]), List<int>.filled(400, 2));
+    });
+  });
 }

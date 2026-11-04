@@ -70,7 +70,10 @@ class _IoBleTransport implements MeshTransport {
   /// Per-chunk GATT timeout; large media envelopes are many chunks, each
   /// with its own window, so big transfers still complete.
   static const Duration gattTimeout = Duration(seconds: 15);
-  static const int _finalChunkFlag = 0x01;
+
+  /// An unacknowledged write normally finishes within a connection event
+  /// or two; one stuck this long means the link is gone.
+  static const Duration unackedWriteTimeout = Duration(seconds: 8);
 
   /// Local name advertised by stacks whose GATT server reliably accepts
   /// incoming connections (Apple). Peers dial those right away, and give
@@ -140,11 +143,17 @@ class _IoBleTransport implements MeshTransport {
   /// The mutable outbox characteristic instance (needed to notify).
   GATTCharacteristic? _outboxChar;
 
-  /// Inbound chunk reassembly buffers, keyed by the writing central's UUID.
-  final Map<String, BytesBuilder> _inboxBuffers = <String, BytesBuilder>{};
+  /// Inbound chunk reassembly, keyed by the writing central's UUID.
+  final ChunkAssembler _inboxBuffers =
+      ChunkAssembler(onDropped: _logDroppedPartial);
 
-  /// Notification reassembly buffers, keyed by the notifying device's UUID.
-  final Map<String, BytesBuilder> _notifyBuffers = <String, BytesBuilder>{};
+  /// Notification reassembly, keyed by the notifying device's UUID.
+  final ChunkAssembler _notifyBuffers =
+      ChunkAssembler(onDropped: _logDroppedPartial);
+
+  static void _logDroppedPartial(String sender, int bytes) =>
+      TransportLog.instance.log('BLE: dropped $bytes bytes of a packet from '
+          '$sender that broke off mid-way');
 
   /// Addresses whose app reads binary frames, from the capabilities in
   /// their announcement or hello.
@@ -1022,7 +1031,7 @@ class _IoBleTransport implements MeshTransport {
   ) {
     if (event.state != ConnectionState.disconnected) return;
     final deviceUuid = event.peripheral.uuid.toString();
-    _notifyBuffers.remove(deviceUuid);
+    _notifyBuffers.forget(deviceUuid);
     final sub = _outSubs.remove(deviceUuid);
     if (sub != null) {
       TransportLog.instance.log(
@@ -1034,11 +1043,14 @@ class _IoBleTransport implements MeshTransport {
   void _dropSubscription(String deviceUuid) {
     final sub = _outSubs.remove(deviceUuid);
     if (sub == null) return;
+    _notifyBuffers.forget(deviceUuid);
     TransportLog.instance
         .log('BLE: push channel to ${_shortAddr(sub.address)} closed');
     final central = _central;
     if (central != null) {
-      unawaited(_safeDisconnect(central, sub.peripheral));
+      // Queued, so the next connect to this device finds it torn down
+      // rather than half-way through.
+      unawaited(_enqueueGatt(() => _safeDisconnect(central, sub.peripheral)));
     }
   }
 
@@ -1071,13 +1083,8 @@ class _IoBleTransport implements MeshTransport {
     if (event.value.isEmpty) return;
     final deviceUuid = event.peripheral.uuid.toString();
 
-    final flags = event.value[0];
-    final buffer = _notifyBuffers.putIfAbsent(deviceUuid, BytesBuilder.new);
-    buffer.add(event.value.sublist(1));
-    if ((flags & _finalChunkFlag) == 0) return;
-
-    final payload = buffer.takeBytes();
-    _notifyBuffers.remove(deviceUuid);
+    final payload = _notifyBuffers.add(deviceUuid, event.value);
+    if (payload == null) return;
 
     // A dropped chunk corrupts the reassembly (decode gives null); the
     // mesh's retry loops re-deliver.
@@ -1110,46 +1117,47 @@ class _IoBleTransport implements MeshTransport {
     // plugin could reorder a burst of unacknowledged writes.
     final current = _binaryPeers.contains(peerAddress);
 
-    // 1. Fast path: a push channel to this peer is already open — write
-    //    over the live connection, no connect/discover round trips.
-    if (central != null) {
-      final sub = _subByAddress(peerAddress);
-      if (sub != null) {
-        var ok = false;
-        await _enqueueGatt(() async {
-          if (_subByAddress(peerAddress) == null) return;
+    // 1. A push channel to this peer is open: write over the live
+    //    connection, no connect/discover round trips.
+    // 2. Otherwise a scan-resolved peer: connect, write, disconnect.
+    // Decided once the GATT queue gets to this packet: a channel that
+    // opened while it waited (the peer was just being resolved) is used,
+    // rather than discovering the same device again under it.
+    if (central != null &&
+        (_subByAddress(peerAddress) != null ||
+            _peersByAddress.containsKey(peerAddress))) {
+      var delivered = false;
+      await _enqueueGatt(() async {
+        final sub = _subByAddress(peerAddress);
+        if (sub != null) {
           try {
             await _writeChunks(central, sub.peripheral, sub.inboxChar, payload,
                 unacked: current, confirmLast: !bulk);
-            ok = true;
+            delivered = true;
+            if (!quiet) {
+              TransportLog.instance.log(
+                  'BLE: delivered ${payload.length} bytes to '
+                  '${_shortAddr(peerAddress)} (live channel)');
+            }
           } catch (e) {
             TransportLog.instance.log(
                 'BLE: live-channel write to ${_shortAddr(peerAddress)} '
                 'failed: $e');
             _dropSubscription(sub.peripheral.uuid.toString());
           }
-        });
-        if (ok) {
-          if (!quiet) {
-            TransportLog.instance.log(
-                'BLE: delivered ${payload.length} bytes to '
-                '${_shortAddr(peerAddress)} (live channel)');
-          }
-          _touchPeer(peerAddress);
-          return true;
+          // Right after a failure the link is still being torn down;
+          // dialing it again now would race that.
+          return;
         }
-      }
-    }
-
-    // 2. Scan-resolved peer: connect, write, disconnect.
-    final peer = _peersByAddress[peerAddress];
-    if (peer != null && central != null) {
-      var delivered = false;
-      await _enqueueGatt(() async {
+        final peer = _peersByAddress[peerAddress];
+        if (peer == null) return;
         delivered = await _deliverPayload(peer.peripheral, payload,
             unacked: current, confirmLast: !bulk);
       });
-      if (delivered) return true;
+      if (delivered) {
+        _touchPeer(peerAddress);
+        return true;
+      }
     }
 
     // 3. Push: the peer holds a channel to us (it subscribed to our
@@ -1233,23 +1241,25 @@ class _IoBleTransport implements MeshTransport {
       final end = (offset + chunkSize < payload.length)
           ? offset + chunkSize
           : payload.length;
-      final isLast = end == payload.length;
       final chunk = Uint8List(end - offset + 1);
-      chunk[0] = isLast ? _finalChunkFlag : 0x00;
+      chunk[0] = ChunkFlags.of(offset, end, payload.length);
       chunk.setRange(1, chunk.length, payload, offset);
+      final withoutResponse =
+          unacked && !(end == payload.length && confirmLast);
 
       await central
           .writeCharacteristic(
             device,
             characteristic,
             value: chunk,
-            type: unacked && !(isLast && confirmLast)
+            type: withoutResponse
                 ? GATTCharacteristicWriteType.withoutResponse
                 : GATTCharacteristicWriteType.withResponse,
           )
-          .timeout(gattTimeout);
+          .timeout(withoutResponse ? unackedWriteTimeout : gattTimeout);
     }
   }
+
 
   /// Pushes a packet to a peer that subscribed to our outbox, as chunked
   /// notifications. No per-chunk ack exists at this layer — end-to-end
@@ -1298,9 +1308,8 @@ class _IoBleTransport implements MeshTransport {
         final end = (offset + chunkSize < payload.length)
             ? offset + chunkSize
             : payload.length;
-        final isLast = end == payload.length;
         final chunk = Uint8List(end - offset + 1);
-        chunk[0] = isLast ? _finalChunkFlag : 0x00;
+        chunk[0] = ChunkFlags.of(offset, end, payload.length);
         chunk.setRange(1, chunk.length, payload, offset);
         await peripheral
             .notifyCharacteristic(inbound.central, outbox, value: chunk)
@@ -1344,12 +1353,37 @@ class _IoBleTransport implements MeshTransport {
 
   /// The Windows plugin fires GATT callbacks on a native thread; hop to the
   /// Dart event loop before touching platform channels again.
+  ///
+  /// A request that goes unanswered holds the asking device's whole link
+  /// until it times out, so a failure still gets an (error) answer.
   void _scheduleReadRequest(GATTCharacteristicReadRequestedEventArgs event) {
-    unawaited(Future<void>(() => _handleReadRequest(event)));
+    unawaited(Future<void>(() async {
+      try {
+        await _handleReadRequest(event);
+      } catch (e) {
+        TransportLog.instance
+            .log('BLE: read from ${event.central.uuid} failed: $e');
+        try {
+          await _peripheral?.respondReadRequestWithError(event.request,
+              error: GATTError.unlikelyError);
+        } catch (_) {}
+      }
+    }));
   }
 
   void _scheduleWriteRequest(GATTCharacteristicWriteRequestedEventArgs event) {
-    unawaited(Future<void>(() => _handleWriteRequest(event)));
+    unawaited(Future<void>(() async {
+      try {
+        await _handleWriteRequest(event);
+      } catch (e) {
+        TransportLog.instance
+            .log('BLE: write from ${event.central.uuid} failed: $e');
+        try {
+          await _peripheral?.respondWriteRequestWithError(event.request,
+              error: GATTError.unlikelyError);
+        } catch (_) {}
+      }
+    }));
   }
 
   void _handleNotifyStateChanged(
@@ -1363,6 +1397,7 @@ class _IoBleTransport implements MeshTransport {
           .log('BLE: device $centralUuid subscribed to our outbox');
     } else {
       _notifySubscribed.remove(centralUuid);
+      _inboxBuffers.forget(centralUuid);
       final inbound = _inboundPeers.remove(centralUuid);
       if (inbound != null) {
         _inboundByAddress.remove(inbound.address);
@@ -1418,20 +1453,12 @@ class _IoBleTransport implements MeshTransport {
     }
 
     final centralUuid = event.central.uuid.toString();
-    final flags = event.request.value[0];
-    final body = event.request.value.sublist(1);
-
-    final buffer = _inboxBuffers.putIfAbsent(centralUuid, BytesBuilder.new);
-    buffer.add(body);
-
-    final isLast = (flags & _finalChunkFlag) != 0;
-    if (!isLast) {
+    final payload =
+        _inboxBuffers.add(centralUuid, event.request.value);
+    if (payload == null) {
       await _acceptWrite(peripheral, event.request);
       return;
     }
-
-    final payload = buffer.takeBytes();
-    _inboxBuffers.remove(centralUuid);
 
     final packet = PacketFrame.decode(payload);
     if (packet == null) {

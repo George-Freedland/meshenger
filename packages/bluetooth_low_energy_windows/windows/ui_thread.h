@@ -56,8 +56,27 @@ namespace bluetooth_low_energy_windows
 			return thread_id != 0 && GetCurrentThreadId() == thread_id;
 		}
 
-		// WinRT calls on the platform thread need COM. When another
-		// component has shut it down there, start it again (and say so).
+		// COM stays up on a thread until its last CoUninitialize. libmpv (the
+		// media player) calls CoUninitialize on whichever thread destroys a
+		// player, without a matching CoInitializeEx there, and media_kit
+		// destroys players from Dart, which runs on this thread: each closed
+		// player takes one reference away. Spare references keep that from
+		// ever reaching zero.
+		inline constexpr int kComReserve = 256;
+
+		inline void AddComReserve()
+		{
+			for (auto i = 0; i < kComReserve; i++)
+			{
+				if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+				{
+					return; // multithreaded (RPC_E_CHANGED_MODE): nothing to keep alive
+				}
+			}
+		}
+
+		// WinRT calls on the platform thread need COM. If it went down after
+		// all, start it again (and say so).
 		inline void EnsureCom()
 		{
 			if (!IsCurrent())
@@ -74,6 +93,7 @@ namespace bluetooth_low_energy_windows
 				std::cerr << "[bluetooth_low_energy_windows] COM on the app's main thread had been shut down "
 							 "by another component; started it again"
 						  << std::endl;
+				AddComReserve();
 			}
 			// RPC_E_CHANGED_MODE: someone made it multithreaded; WinRT works there too.
 		}
@@ -126,6 +146,7 @@ namespace bluetooth_low_energy_windows
 				return;
 			}
 			thread_id = GetCurrentThreadId();
+			AddComReserve();
 			WNDCLASSEXW window_class = {};
 			window_class.cbSize = sizeof(window_class);
 			window_class.lpfnWndProc = WindowProc;

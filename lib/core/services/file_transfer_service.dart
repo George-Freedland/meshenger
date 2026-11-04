@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
@@ -13,6 +14,7 @@ import '../transport/mesh_transport.dart';
 import 'identity_scope.dart';
 import 'media_store.dart';
 import 'peer_directory.dart';
+import 'send_window.dart';
 import 'transfer_meter.dart';
 import 'transport_log.dart';
 
@@ -160,6 +162,9 @@ class FileTransfer {
 /// - **Flow-controlled**: the sender stays at most [window] chunks ahead
 ///   of the receiver's confirmations, so a fast sender cannot flood a slow
 ///   link (Bluetooth) or a pass-through relay.
+/// - **Loss-tolerant**: a chunk lost on the way sends the sender back to
+///   the receiver's watermark ([SendWindow]); a stuck transfer on either
+///   side gets going again by itself once the two can talk.
 ///
 /// Offers/accepts/cancels ride the normal encrypted store-and-forward
 /// message path (they are small and must be reliable); the bulk chunks go
@@ -172,8 +177,9 @@ class FileTransferService {
   static const _storeKey = 'file_transfers_v1';
 
   /// Sender may run at most this many chunks past the receiver's last
-  /// confirmation before it waits (bounds pass-through relay buffering).
-  static const int window = 64;
+  /// confirmation before it waits (bounds pass-through relay buffering,
+  /// and what a lost chunk costs to re-send).
+  static const int window = 16;
 
   /// Receiver saves progress every this many chunks…
   static const int progressEvery = 16;
@@ -186,6 +192,20 @@ class FileTransferService {
   /// How long the sender waits for confirmations to advance before it
   /// parks the transfer as paused.
   static const Duration progressTimeout = Duration(seconds: 60);
+
+  /// With chunks outstanding and no confirmation for this long, the sender
+  /// sends them again (the receiver's "missing" reports usually say so
+  /// much sooner).
+  static const Duration rewindAfter = Duration(seconds: 15);
+
+  /// The receiver answers chunks it can't use at most this often.
+  static const Duration nudgeEvery = Duration(seconds: 1);
+
+  /// How often stuck transfers are checked, and the first wait between
+  /// automatic resume attempts (it doubles up to [maxResumeWait]).
+  static const Duration watchdogEvery = Duration(seconds: 5);
+  static const Duration resumeEvery = Duration(seconds: 15);
+  static const Duration maxResumeWait = Duration(minutes: 2);
 
   static const Duration _chunkRetryDelay = Duration(milliseconds: 400);
   static const int _chunkRetries = 3;
@@ -208,8 +228,20 @@ class FileTransferService {
   /// stalled and re-announces its watermark when the sender reappears.
   static const Duration stallAfter = Duration(seconds: 10);
 
-  /// Throttle for automatic resume attempts per transfer.
+  /// Throttle for automatic resume attempts per transfer, and how many in
+  /// a row haven't moved it.
   final Map<String, int> _lastResumeMs = <String, int>{};
+  final Map<String, int> _resumeAttempts = <String, int>{};
+
+  /// Sender: the running pump's window, and when the receiver's watermark
+  /// last moved.
+  final Map<String, SendWindow> _windows = <String, SendWindow>{};
+  final Map<String, int> _lastProgressMs = <String, int>{};
+
+  /// Receiver: when it last told the sender about a chunk it couldn't use.
+  final Map<String, int> _lastNudgeMs = <String, int>{};
+
+  Timer? _watchdog;
 
   /// Speed of each running transfer, as delivered bytes per second.
   final Map<String, TransferMeter> _meters = <String, TransferMeter>{};
@@ -269,9 +301,15 @@ class FileTransferService {
     _onlinePeers = onlinePeers;
     _onIncomingOffer = onIncomingOffer;
     _onCompleted = onCompleted;
+    _watchdog?.cancel();
+    _watchdog = Timer.periodic(watchdogEvery, (_) {
+      if (_loaded) unawaited(_resumeWhereStuck());
+    });
   }
 
   Future<void> detach() async {
+    _watchdog?.cancel();
+    _watchdog = null;
     _sendControl = null;
     _sendPacket = null;
     _onlinePeers = null;
@@ -288,6 +326,10 @@ class FileTransferService {
     _writeQueues.clear();
     _lastChunkMs.clear();
     _lastResumeMs.clear();
+    _resumeAttempts.clear();
+    _windows.clear();
+    _lastProgressMs.clear();
+    _lastNudgeMs.clear();
     _meters.clear();
     _lastReport.clear();
     _sessionStart.clear();
@@ -433,6 +475,39 @@ class FileTransferService {
 
   bool _isOnline(String peer) => _onlinePeers?.call().contains(peer) ?? false;
 
+  static int _nowMs() => DateTime.now().millisecondsSinceEpoch;
+
+  /// Whether the other side of [tid] is in Bluetooth range right now.
+  bool peerInRange(String tid) {
+    final transfer = _byId[tid];
+    return transfer != null && _isOnline(transfer.peer);
+  }
+
+  /// Running, but nothing has moved for a while (a dropped link, or the
+  /// other side gave up); the chat offers Resume.
+  bool isStalled(String tid) {
+    final transfer = _byId[tid];
+    if (transfer == null ||
+        transfer.isTerminal ||
+        transfer.status == FtStatus.offered) {
+      return false;
+    }
+    if (transfer.status == FtStatus.paused) return true;
+    final last =
+        transfer.outgoing ? _lastProgressMs[tid] : _lastChunkMs[tid];
+    return last != null && _nowMs() - last > stallAfter.inMilliseconds;
+  }
+
+  Future<void> _park(FileTransfer transfer, String why) async {
+    if (transfer.isTerminal) return;
+    transfer.status = FtStatus.paused;
+    await _persist();
+    _ping(transfer.tid);
+    TransportLog.instance.log('FT: "${transfer.name}" paused at chunk '
+        '${transfer.confirmed}/${transfer.totalChunks}: $why. It resumes by '
+        'itself once the link is back; Resume in the chat retries now');
+  }
+
   // ---------------------------------------------------------------------
   // Sender side
   // ---------------------------------------------------------------------
@@ -501,7 +576,11 @@ class FileTransferService {
     }
     if (transfer.isTerminal) return;
     transfer.confirmed = have.clamp(0, transfer.totalChunks);
-    transfer.status = FtStatus.accepted;
+    // A re-accept can lower the watermark (the receiver cut its file back).
+    _windows[tid]?.restartFrom(transfer.confirmed);
+    _lastProgressMs[tid] = _nowMs();
+    transfer.status =
+        _pumping.contains(tid) ? FtStatus.active : FtStatus.accepted;
     await _persist();
     _ping(tid);
     unawaited(_pump(tid));
@@ -515,6 +594,7 @@ class FileTransferService {
       final path = transfer?.path;
       final send = _sendPacket;
       if (transfer == null || path == null || send == null) return;
+      if (transfer.isTerminal) return;
 
       final source = File(path);
       if (!await source.exists()) {
@@ -528,39 +608,60 @@ class FileTransferService {
 
       final key = await _keyFor(transfer);
       final raf = await source.open();
+      final sendWindow = SendWindow(
+        total: transfer.totalChunks,
+        size: window,
+        confirmed: transfer.confirmed,
+      );
+      _windows[tid] = sendWindow;
       transfer.status = FtStatus.active;
       _ping(tid);
-      var cursor = transfer.confirmed;
       final algorithm = AesGcm.with256bits();
+      var lastConfirmed = sendWindow.confirmed;
+      var lastProgressMs = _nowMs();
+      // Last progress or last time we went back on our own.
+      var lastMoveMs = lastProgressMs;
+      _lastProgressMs[tid] = lastProgressMs;
 
       try {
         while (true) {
-          if (transfer.isTerminal) return;
-          if (cursor >= transfer.totalChunks) {
-            // Everything sent; completion lands via the receiver's final
-            // confirmation (fta / ftdone).
-            return;
-          }
+          // Logged out: the next identity's transfers aren't ours to touch.
+          if (!identical(send, _sendPacket)) return;
+          // Completion lands via the receiver's final confirmation.
+          if (transfer.isTerminal || sendWindow.complete) return;
           if (!_isOnline(transfer.peer)) {
-            transfer.status = FtStatus.paused;
-            await _persist();
-            _ping(tid);
+            await _park(
+                transfer, '${_short(transfer.peer)} is out of Bluetooth range');
             return;
           }
-          if (cursor - transfer.confirmed >= window) {
-            // Too far ahead of the receiver — wait for confirmations.
-            if (!await _awaitProgress(transfer)) {
-              transfer.status = FtStatus.paused;
-              await _persist();
-              _ping(tid);
+          final nowMs = _nowMs();
+          if (sendWindow.confirmed != lastConfirmed) {
+            lastConfirmed = sendWindow.confirmed;
+            lastProgressMs = lastMoveMs = nowMs;
+          }
+          if (sendWindow.blocked) {
+            if (nowMs - lastProgressMs >= progressTimeout.inMilliseconds) {
+              await _park(
+                  transfer,
+                  '${_short(transfer.peer)} confirmed nothing for '
+                  '${progressTimeout.inSeconds} s');
               return;
             }
-            // The receiver may confirm past our cursor after a rewind.
-            if (transfer.confirmed > cursor) cursor = transfer.confirmed;
+            if (nowMs - lastMoveMs >= rewindAfter.inMilliseconds &&
+                sendWindow.rewind(nowMs: nowMs)) {
+              lastMoveMs = nowMs;
+              TransportLog.instance.log(
+                  'FT: no confirmation from ${_short(transfer.peer)} for '
+                  '${rewindAfter.inSeconds} s — re-sending "${transfer.name}" '
+                  'from chunk ${sendWindow.next}');
+              continue;
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 250));
             continue;
           }
 
-          final offset = cursor * transfer.chunkSize;
+          final i = sendWindow.next;
+          final offset = i * transfer.chunkSize;
           final length = (transfer.size - offset) < transfer.chunkSize
               ? transfer.size - offset
               : transfer.chunkSize;
@@ -570,13 +671,13 @@ class FileTransferService {
           final box = await algorithm.encrypt(
             plain,
             secretKey: key,
-            nonce: nonceForChunk(cursor),
+            nonce: nonceForChunk(i),
           );
           final packet = <String, Object?>{
             't': 'ftc',
             'tid': tid,
             'to': transfer.peer,
-            'i': cursor,
+            'i': i,
             'data': base64Encode(box.cipherText),
             'mac': base64Encode(box.mac.bytes),
           };
@@ -587,48 +688,29 @@ class FileTransferService {
               delivered = true;
               break;
             }
-            await Future<void>.delayed(_chunkRetryDelay);
+            await Future<void>.delayed(_chunkRetryDelay * (attempt + 1));
           }
           if (!delivered) {
-            transfer.status = FtStatus.paused;
-            await _persist();
-            _ping(tid);
-            TransportLog.instance
-                .log('FT: link to ${_short(transfer.peer)} dropped at chunk '
-                    '$cursor/${transfer.totalChunks} — paused, will resume');
+            await _park(
+                transfer,
+                'the Bluetooth link to ${_short(transfer.peer)} dropped at '
+                'chunk $i');
             return;
           }
-          cursor++;
-          if (transfer.confirmed > cursor) cursor = transfer.confirmed;
-          if (cursor % progressEvery == 0) _ping(tid);
+          // A report that arrived meanwhile may have moved the window.
+          if (sendWindow.next == i) sendWindow.sent();
+          if (i % progressEvery == 0) _ping(tid);
         }
       } finally {
         await raf.close();
+        if (identical(_windows[tid], sendWindow)) _windows.remove(tid);
       }
     } catch (e) {
       final transfer = _byId[tid];
-      if (transfer != null && !transfer.isTerminal) {
-        transfer.status = FtStatus.paused;
-        await _persist();
-        _ping(tid);
-      }
-      TransportLog.instance.log('FT: pump error, transfer paused: $e');
+      if (transfer != null) await _park(transfer, 'error: $e');
     } finally {
       _pumping.remove(tid);
     }
-  }
-
-  /// Waits until the receiver's watermark advances (or the transfer ends).
-  Future<bool> _awaitProgress(FileTransfer transfer) async {
-    final before = transfer.confirmed;
-    final deadline = DateTime.now().add(progressTimeout);
-    while (DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 500));
-      if (transfer.isTerminal) return false;
-      if (transfer.confirmed > before) return true;
-      if (!_isOnline(transfer.peer)) return false;
-    }
-    return false;
   }
 
   /// Progress/completion signal (`fta`) from the receiver.
@@ -639,25 +721,41 @@ class FileTransferService {
     if (tid == null || have == null) return;
     final transfer = _byId[tid];
     if (transfer == null || !transfer.outgoing || transfer.isTerminal) return;
+    final nowMs = _nowMs();
+    // The receiver got a chunk it couldn't use: the one at [have] is lost.
+    final missing = packet['miss'] == true;
 
     // Advance-only: fta packets each ride their own connection and can
     // arrive out of order, so an older (lower) watermark is just stale.
     // Genuine rollbacks (receiver restarted and truncated its part file)
     // arrive through the reliable re-accept path instead (handleAccept).
     if (have > transfer.confirmed) {
-      _sessionStart.putIfAbsent(tid,
-          () => (DateTime.now().millisecondsSinceEpoch, transfer.confirmed));
+      _sessionStart.putIfAbsent(tid, () => (nowMs, transfer.confirmed));
       final now = have.clamp(0, transfer.totalChunks);
       _meters
           .putIfAbsent(tid, TransferMeter.new)
           .add(_bytesBetween(transfer, transfer.confirmed, now));
       transfer.confirmed = now;
+      _lastProgressMs[tid] = nowMs;
+      _resumeAttempts.remove(tid);
+    }
+    if (_windows[tid]?.report(have, missing: missing, nowMs: nowMs) ??
+        false) {
+      TransportLog.instance.log('FT: ${_short(transfer.peer)} is missing '
+          'chunk $have of "${transfer.name}" — re-sending from there');
     }
     if (packet['ok'] == true || transfer.confirmed >= transfer.totalChunks) {
       transfer.confirmed = transfer.totalChunks;
       transfer.status = FtStatus.done;
       TransportLog.instance.log('FT: "${transfer.name}" fully delivered to '
           '${_short(transfer.peer)} ${_averageOf(transfer)}');
+    } else if (missing && !_pumping.contains(tid) && _isOnline(transfer.peer)) {
+      // The receiver is waiting on us, and our pump had given up.
+      _lastResumeMs[tid] = nowMs;
+      TransportLog.instance.log('FT: ${_short(transfer.peer)} is waiting for '
+          '"${transfer.name}" — resuming at chunk '
+          '${transfer.confirmed}/${transfer.totalChunks}');
+      unawaited(_pump(tid));
     }
     await _persist();
     _ping(tid);
@@ -724,31 +822,37 @@ class FileTransferService {
     final transfer = _byId[tid];
     if (transfer == null || transfer.outgoing || transfer.isTerminal) return;
 
-    // Close any open write handle before touching the file: accept can
-    // rerun on resume, and truncating under an open handle would corrupt.
-    final openRaf = _rafs.remove(tid);
-    if (openRaf != null) {
-      try {
-        await openRaf.close();
-      } catch (_) {}
-    }
-
-    // Truncate any partial file to the last durable watermark, so a chunk
-    // that hit the disk but missed persistence cannot desync the offsets.
-    final part = File('${(await _partDir()).path}/$tid.part');
-    if (await part.exists()) {
-      final wantBytes = transfer.confirmed * transfer.chunkSize;
-      if (await part.length() != wantBytes) {
-        final raf = await part.open(mode: FileMode.append);
-        await raf.truncate(wantBytes);
-        await raf.close();
+    // On the write queue: accept reruns on resume, and cutting the file
+    // back under a chunk being written would corrupt it.
+    await _onWriteQueue(tid, () async {
+      final openRaf = _rafs.remove(tid);
+      if (openRaf != null) {
+        try {
+          await openRaf.close();
+        } catch (_) {}
       }
-    } else {
-      transfer.confirmed = 0;
-      await part.create(recursive: true);
-    }
-    transfer.path = part.path;
+
+      // Truncate any partial file to the last durable watermark, so a
+      // chunk that hit the disk but missed persistence cannot desync the
+      // offsets.
+      final part = File('${(await _partDir()).path}/$tid.part');
+      if (await part.exists()) {
+        final wantBytes = transfer.confirmed * transfer.chunkSize;
+        if (await part.length() != wantBytes) {
+          final raf = await part.open(mode: FileMode.append);
+          await raf.truncate(wantBytes);
+          await raf.close();
+        }
+      } else {
+        transfer.confirmed = 0;
+        await part.create(recursive: true);
+      }
+      transfer.path = part.path;
+    });
+    if (transfer.isTerminal) return;
     transfer.status = FtStatus.accepted;
+    // Stalled is measured from here until the first chunk lands.
+    _lastChunkMs[tid] = _nowMs();
     await _persist();
     _ping(tid);
 
@@ -770,10 +874,25 @@ class FileTransferService {
   Future<void> handleChunk(Map<String, Object?> packet) async {
     final tid = packet['tid'] as String?;
     if (tid == null) return;
+    await _onWriteQueue(tid, () => _writeChunk(packet));
+  }
+
+  Future<void> _onWriteQueue(String tid, Future<void> Function() work) {
     final previous = _writeQueues[tid] ?? Future<void>.value();
-    final task = previous.then((_) => _writeChunk(packet));
+    final task = previous.then((_) => work());
     _writeQueues[tid] = task.catchError((_) {});
-    await task;
+    return task;
+  }
+
+  /// Tells the sender where we are after a chunk we couldn't use: one past
+  /// our watermark means the chunk at it was lost ([missing]); one below
+  /// means the sender is behind us.
+  void _nudge(FileTransfer transfer, {bool missing = false}) {
+    final nowMs = _nowMs();
+    final last = _lastNudgeMs[transfer.tid] ?? 0;
+    if (nowMs - last < nudgeEvery.inMilliseconds) return;
+    _lastNudgeMs[transfer.tid] = nowMs;
+    unawaited(_sendProgress(transfer, missing: missing));
   }
 
   Future<void> _writeChunk(Map<String, Object?> packet) async {
@@ -792,10 +911,14 @@ class FileTransferService {
       return;
     }
 
-    if (i < transfer.confirmed) return; // duplicate of an old chunk
+    if (i < transfer.confirmed) {
+      // The sender went back further than needed or missed our reports.
+      _nudge(transfer);
+      return;
+    }
     if (i > transfer.confirmed) {
-      // Gap (a pass-through node dropped one): rewind the sender.
-      unawaited(_sendProgress(transfer));
+      // The chunk at our watermark was lost on the way.
+      _nudge(transfer, missing: true);
       return;
     }
 
@@ -812,18 +935,23 @@ class FileTransferService {
         secretKey: key,
       );
 
+      // At the chunk's own offset: after a crash the file can be longer
+      // than the saved watermark, and appending would shift every chunk.
       final raf =
           _rafs[tid] ??= await File(transfer.path!).open(mode: FileMode.append);
+      await raf.setPosition(i * transfer.chunkSize);
       await raf.writeFrom(plain);
 
       transfer.confirmed = i + 1;
       transfer.status = FtStatus.active;
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final nowMs = _nowMs();
       _lastChunkMs[tid] = nowMs;
+      _resumeAttempts.remove(tid);
       _meters.putIfAbsent(tid, TransferMeter.new).add(plain.length);
 
       final finished = transfer.confirmed >= transfer.totalChunks;
       if (finished) {
+        await raf.truncate(transfer.size);
         await raf.flush();
         await raf.close();
         _rafs.remove(tid);
@@ -840,13 +968,17 @@ class FileTransferService {
       }
     } catch (e) {
       // A chunk that fails authentication is forged or corrupted — do not
-      // advance; the sender rewinds to our watermark.
+      // advance; the sender goes back to our watermark.
       TransportLog.instance.log('FT: chunk $i rejected: $e');
-      unawaited(_sendProgress(transfer));
+      _nudge(transfer, missing: true);
     }
   }
 
-  Future<void> _sendProgress(FileTransfer transfer, {bool ok = false}) async {
+  Future<void> _sendProgress(
+    FileTransfer transfer, {
+    bool ok = false,
+    bool missing = false,
+  }) async {
     final send = _sendPacket;
     if (send == null || !_isOnline(transfer.peer)) return;
     await send(transfer.peer, <String, Object?>{
@@ -855,6 +987,7 @@ class FileTransferService {
       'to': transfer.peer,
       'have': transfer.confirmed,
       if (ok) 'ok': true,
+      if (missing) 'miss': true,
     });
   }
 
@@ -955,36 +1088,87 @@ class FileTransferService {
   }
 
   /// Called when peers appear: paused transfers resume by themselves when
-  /// the two devices meet again. The receiver re-announces its watermark
-  /// (restarting the sender's pump); a paused sender also restarts its own
-  /// pump directly — whichever side noticed the drop, the transfer moves.
+  /// the two devices meet again.
   Future<void> onPeersChanged(Set<String> peers) async {
     await _ensureLoaded();
-    final now = DateTime.now().millisecondsSinceEpoch;
-    for (final transfer in _byId.values) {
+    await _resumeWhereStuck(peersAppeared: true);
+  }
+
+  /// Gets stuck transfers going again whenever the other side is in range,
+  /// whichever side noticed the problem. A sender restarts its pump; a
+  /// receiver that hears nothing tells the sender where it is, which sends
+  /// a running sender back to its watermark or restarts a stopped one.
+  /// Attempts that change nothing back off, up to [maxResumeWait].
+  Future<void> _resumeWhereStuck({bool peersAppeared = false}) async {
+    final nowMs = _nowMs();
+    for (final transfer in _byId.values.toList()) {
       if (transfer.isTerminal || transfer.status == FtStatus.offered) {
         continue;
       }
-      if (!peers.contains(transfer.peer)) continue;
-      final lastResume = _lastResumeMs[transfer.tid] ?? 0;
-      if (now - lastResume < stallAfter.inMilliseconds) continue;
+      final tid = transfer.tid;
+      if (!_isOnline(transfer.peer)) continue;
+      final attempts = _resumeAttempts[tid] ?? 0;
+      final waitMs = peersAppeared
+          ? stallAfter.inMilliseconds
+          : min(resumeEvery.inMilliseconds << min(attempts, 3),
+              maxResumeWait.inMilliseconds);
+      if (nowMs - (_lastResumeMs[tid] ?? 0) < waitMs) continue;
 
       if (transfer.outgoing) {
-        if (transfer.status == FtStatus.paused) {
-          _lastResumeMs[transfer.tid] = now;
-          unawaited(_pump(transfer.tid));
-        }
+        if (_pumping.contains(tid)) continue;
+        _lastResumeMs[tid] = nowMs;
+        _resumeAttempts[tid] = attempts + 1;
+        TransportLog.instance.log('FT: resuming "${transfer.name}" with '
+            '${_short(transfer.peer)} at chunk '
+            '${transfer.confirmed}/${transfer.totalChunks}');
+        unawaited(_pump(tid));
         continue;
       }
 
-      // Receiver: only re-announce when the stream is NOT visibly flowing
-      // — re-accepting mid-stream would truncate a healthy transfer.
-      final last = _lastChunkMs[transfer.tid] ?? 0;
-      final stalled = now - last > stallAfter.inMilliseconds;
-      if (transfer.status == FtStatus.paused || stalled) {
-        _lastResumeMs[transfer.tid] = now;
-        unawaited(accept(transfer.tid)); // re-sends the watermark
+      // Receiver: only when the stream is NOT flowing — re-accepting
+      // mid-stream would cut a healthy transfer back.
+      final last = _lastChunkMs[tid] ?? 0;
+      if (nowMs - last < stallAfter.inMilliseconds) continue;
+      _lastResumeMs[tid] = nowMs;
+      _resumeAttempts[tid] = attempts + 1;
+      if (attempts == 0) {
+        TransportLog.instance.log('FT: nothing from ${_short(transfer.peer)} '
+            'for "${transfer.name}" at chunk '
+            '${transfer.confirmed}/${transfer.totalChunks} — asking it to '
+            'continue');
       }
+      if (peersAppeared || transfer.status == FtStatus.paused) {
+        // Reliable path; also covers a sender that restarted its app.
+        unawaited(accept(tid));
+      }
+      _lastNudgeMs[tid] = nowMs;
+      unawaited(_sendProgress(transfer, missing: true));
+    }
+  }
+
+  /// The user asked to continue a paused or stuck transfer now.
+  Future<void> resume(String tid) async {
+    await _ensureLoaded();
+    final transfer = _byId[tid];
+    if (transfer == null ||
+        transfer.isTerminal ||
+        transfer.status == FtStatus.offered) {
+      return;
+    }
+    final nowMs = _nowMs();
+    _lastResumeMs[tid] = nowMs;
+    _resumeAttempts.remove(tid);
+    TransportLog.instance.log('FT: resume "${transfer.name}" requested at '
+        'chunk ${transfer.confirmed}/${transfer.totalChunks}'
+        '${_isOnline(transfer.peer) ? '' : ' (other side not in range yet)'}');
+    if (!transfer.outgoing) {
+      await accept(tid);
+      _lastNudgeMs[tid] = nowMs;
+      await _sendProgress(transfer, missing: true);
+      return;
+    }
+    if (!(_windows[tid]?.rewind(nowMs: nowMs) ?? false)) {
+      unawaited(_pump(tid));
     }
   }
 

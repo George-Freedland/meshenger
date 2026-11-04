@@ -10,6 +10,7 @@ import '../../core/services/media_store.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/save_file.dart';
 import '../../core/ui/video_player_card.dart';
 
 /// Local file library: import anything, preview images and audio, send
@@ -221,6 +222,16 @@ class _StorageScreenState extends State<StorageScreen>
                   onTap: () {
                     Navigator.pop(ctx);
                     showImageViewer(context, path);
+                  },
+                ),
+              if (path != null)
+                ListTile(
+                  leading: Icon(saveActionIcon),
+                  title: Text(saveActionLabel),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    saveFileCopy(context,
+                        path: path, name: item.name, mime: item.mime);
                   },
                 ),
               ListTile(

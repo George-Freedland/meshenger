@@ -50,7 +50,10 @@ class BleTransport implements RelayTransport {
   /// the kernel won't restore it for us — re-assert it on a short cycle.
   static const Duration rawAdvReenableInterval = Duration(seconds: 20);
 
+  /// Chunk flags, as in the app: older peers only look at the final one;
+  /// the first one lets a receiver drop a packet that broke off mid-way.
   static const int _finalChunkFlag = 0x01;
+  static const int _firstChunkFlag = 0x02;
 
   /// Notification payload budget. BlueZ truncates notifications to the
   /// link's MTU-3; phones negotiate ≥185 automatically, so 180 is safe on
@@ -832,7 +835,9 @@ class BleTransport implements RelayTransport {
     _recentPushes[key] = nowMs;
 
     await outbox.push(payload,
-        chunkSize: _notifyChunkSize, finalFlag: _finalChunkFlag);
+        chunkSize: _notifyChunkSize,
+        finalFlag: _finalChunkFlag,
+        firstFlag: _firstChunkFlag);
     log('BLE: pushed ${payload.length} bytes toward ${_short(peerAddress)} '
         '(outbox notify)');
     return true;
@@ -859,7 +864,8 @@ class BleTransport implements RelayTransport {
             : payload.length;
         final isLast = end == payload.length;
         final chunk = Uint8List(end - offset + 1);
-        chunk[0] = isLast ? _finalChunkFlag : 0x00;
+        chunk[0] = (offset == 0 ? _firstChunkFlag : 0) |
+            (isLast ? _finalChunkFlag : 0);
         chunk.setRange(1, chunk.length, payload, offset);
 
         // The final chunk's write response is the transport-level ack.
@@ -1079,6 +1085,8 @@ class _InboxCharacteristic extends _GattCharacteristic {
 
     final flags = value[0];
     final body = value.sublist(1);
+    // A new packet: whatever is left of one that broke off is useless.
+    if ((flags & 0x02) != 0) _buffers.remove(writer);
     final buffer = _buffers.putIfAbsent(writer, BytesBuilder.new);
     buffer.add(body);
 
@@ -1149,6 +1157,7 @@ class _OutboxCharacteristic extends _GattCharacteristic {
     List<int> payload, {
     required int chunkSize,
     required int finalFlag,
+    required int firstFlag,
   }) async {
     for (var offset = 0; offset < payload.length; offset += chunkSize) {
       final end = (offset + chunkSize < payload.length)
@@ -1156,7 +1165,7 @@ class _OutboxCharacteristic extends _GattCharacteristic {
           : payload.length;
       final isLast = end == payload.length;
       final chunk = Uint8List(end - offset + 1);
-      chunk[0] = isLast ? finalFlag : 0x00;
+      chunk[0] = (offset == 0 ? firstFlag : 0) | (isLast ? finalFlag : 0);
       chunk.setRange(1, chunk.length, payload, offset);
       await emitPropertiesChanged(
         _GattCharacteristic.interfaceName,

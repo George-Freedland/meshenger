@@ -20,6 +20,7 @@ import '../../core/services/safety_service.dart';
 import '../../core/services/transfer_meter.dart';
 import '../../core/ui/audio_track_card.dart';
 import '../../core/ui/media_widgets.dart';
+import '../../core/ui/save_file.dart';
 import '../../core/ui/video_player_card.dart';
 import '../shared/peer_info_sheet.dart';
 import '../shared/safety_actions.dart';
@@ -471,9 +472,27 @@ class _ChatScreenState extends State<ChatScreen> {
   // Message actions
   // -----------------------------------------------------------------------
 
+  /// The file behind a message, when it can be saved: never a view-once
+  /// photo, and a received transfer only once it's complete.
+  Future<String?> _savablePath(ChatMessage message) async {
+    final mediaId = message.mediaId;
+    if (mediaId == null || message.mediaTemp) return null;
+    if (message.kind == 'transfer') {
+      final transfer = await FileTransferService.instance.get(mediaId);
+      if (transfer == null) return null;
+      if (transfer.outgoing) return transfer.path;
+      final stored = transfer.mediaId;
+      if (transfer.status != FtStatus.done || stored == null) return null;
+      return MediaStore.instance.pathFor(stored);
+    }
+    return _mediaPaths[mediaId] ?? await MediaStore.instance.pathFor(mediaId);
+  }
+
   Future<void> _showMessageActions(ChatMessage message) async {
     final key = _chatKey;
-    if (key == null || message.isSystem || !message.isMe) return;
+    if (key == null || message.isSystem) return;
+    final savePath = await _savablePath(message);
+    if (!mounted || (!message.isMe && savePath == null)) return;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -481,43 +500,57 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (message.status == MessageStatus.pending ||
-                message.status == MessageStatus.failed)
+            if (savePath != null)
               ListTile(
-                leading: const Icon(Icons.refresh),
-                title: Text(message.status == MessageStatus.failed
-                    ? 'Resend (mesh gap, retries are unlimited)'
-                    : 'Try sending now'),
+                leading: Icon(saveActionIcon),
+                title: Text(saveActionLabel),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  saveFileCopy(context,
+                      path: savePath,
+                      name: message.mediaName ?? 'file',
+                      mime: message.mediaMime);
+                },
+              ),
+            if (message.isMe) ...[
+              if (message.status == MessageStatus.pending ||
+                  message.status == MessageStatus.failed)
+                ListTile(
+                  leading: const Icon(Icons.refresh),
+                  title: Text(message.status == MessageStatus.failed
+                      ? 'Resend (mesh gap, retries are unlimited)'
+                      : 'Try sending now'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await MessengerService.instance.retryChat(key);
+                    await _loadMessages();
+                  },
+                ),
+              if (message.kind == null)
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('Edit message'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _editing = message;
+                      _inputController.text = message.text;
+                    });
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Delete for everyone'),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  await MessengerService.instance.retryChat(key);
+                  await MessengerService.instance.sendDeleteMessage(
+                    key,
+                    message.id,
+                  );
                   await _loadMessages();
                 },
               ),
-            if (message.kind == null)
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('Edit message'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  setState(() {
-                    _editing = message;
-                    _inputController.text = message.text;
-                  });
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete for everyone'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await MessengerService.instance.sendDeleteMessage(
-                  key,
-                  message.id,
-                );
-                await _loadMessages();
-              },
-            ),
+            ],
           ],
         ),
       ),
@@ -1102,6 +1135,18 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         ),
+        if (path != null)
+          Builder(
+            builder: (buttonContext) => IconButton(
+              tooltip: saveActionLabel,
+              visualDensity: VisualDensity.compact,
+              icon: Icon(saveActionIcon, color: textColor, size: 20),
+              onPressed: () => saveFileCopy(buttonContext,
+                  path: path,
+                  name: message.mediaName ?? 'file',
+                  mime: message.mediaMime),
+            ),
+          ),
       ],
     );
   }
@@ -1148,7 +1193,8 @@ class _ChatScreenState extends State<ChatScreen> {
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
-        onLongPress: isMe ? () => _showMessageActions(message) : null,
+        onLongPress: () => _showMessageActions(message),
+        onSecondaryTap: () => _showMessageActions(message),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1636,8 +1682,9 @@ class TransferBubble extends StatefulWidget {
 class _TransferBubbleState extends State<TransferBubble> {
   FileTransfer? _transfer;
 
-  /// The song, video or image itself once it's on this device (sending:
-  /// the original).
+  /// The file once it's on this device (sending: the original, while it
+  /// still exists), and the same for songs, videos and images.
+  String? _filePath;
   String? _mediaPath;
 
   /// Whether the incoming file's format can play from its first bytes.
@@ -1678,22 +1725,24 @@ class _TransferBubbleState extends State<TransferBubble> {
 
   Future<void> _reload() async {
     final transfer = await FileTransferService.instance.get(widget.tid);
-    String? mediaPath;
-    if (transfer != null && _isMedia(transfer.mime)) {
+    String? filePath;
+    if (transfer != null) {
       final mediaId = transfer.mediaId;
       if (transfer.outgoing) {
-        mediaPath = transfer.path;
+        filePath = transfer.path;
       } else if (transfer.status == FtStatus.done && mediaId != null) {
-        mediaPath = await MediaStore.instance.pathFor(mediaId);
+        filePath = await MediaStore.instance.pathFor(mediaId);
       }
-      if (mediaPath != null && !await File(mediaPath).exists()) {
-        mediaPath = null;
+      if (filePath != null && !await File(filePath).exists()) {
+        filePath = null;
       }
     }
     if (!mounted) return;
     setState(() {
       _transfer = transfer;
-      _mediaPath = mediaPath;
+      _filePath = filePath;
+      _mediaPath =
+          transfer != null && _isMedia(transfer.mime) ? filePath : null;
     });
     if (transfer == null) return;
     _checkStreamable(transfer);
@@ -1740,25 +1789,33 @@ class _TransferBubbleState extends State<TransferBubble> {
   }
 
   String _statusLine(FileTransfer t) {
+    final service = FileTransferService.instance;
     final done = formatBytes(t.transferredBytes);
     final total = formatBytes(t.size);
+    final where = t.outgoing
+        ? '${(t.progress * 100).round()}% of $total'
+        : '$done of $total';
     // The speed and time left are for whoever is waiting on the file.
     final speed = t.outgoing
         ? null
-        : speedLine(
-            FileTransferService.instance.meterFor(t.tid), t.remainingBytes);
+        : speedLine(service.meterFor(t.tid), t.remainingBytes);
+    final stuck = service.isStalled(t.tid);
+    final stuckLine = service.peerInRange(t.tid)
+        ? 'Paused at $where — getting it going again…'
+        : 'Paused at $where — continues when you are near each other';
     return switch (t.status) {
       FtStatus.offered => t.outgoing
           ? 'Waiting for them to accept ($total)'
           : 'Incoming file — $total',
+      FtStatus.accepted when stuck => stuckLine,
       FtStatus.accepted => 'Starting… ($total)',
+      FtStatus.active when stuck => stuckLine,
       FtStatus.active => t.outgoing
-          ? 'Sending · ${(t.progress * 100).round()}% of $total'
+          ? 'Sending · $where'
           : speed == null
-              ? '$done of $total'
-              : '$done of $total · $speed',
-      FtStatus.paused =>
-        'Paused at $done of $total — resumes when you meet again',
+              ? where
+              : '$where · $speed',
+      FtStatus.paused => stuckLine,
       FtStatus.done => t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
       FtStatus.declined => 'Declined',
       FtStatus.canceled => 'Canceled',
@@ -1785,6 +1842,7 @@ class _TransferBubbleState extends State<TransferBubble> {
     }
 
     final running = _running(t);
+    final actions = _actions(t, color);
     final media = _mediaCard(context, t);
     if (media != null) {
       return ConstrainedBox(
@@ -1800,7 +1858,7 @@ class _TransferBubbleState extends State<TransferBubble> {
               style: theme.textTheme.labelSmall
                   ?.copyWith(color: color.withValues(alpha: 0.75)),
             ),
-            if (running) _cancelButton(t, color),
+            if (actions != null) actions,
           ],
         ),
       );
@@ -1870,25 +1928,75 @@ class _TransferBubbleState extends State<TransferBubble> {
                 ),
               ],
             ),
-          ] else if (running || (t.outgoing && t.status == FtStatus.offered))
-            _cancelButton(t, color),
+          ] else if (actions != null)
+            actions,
         ],
       ),
     );
   }
 
-  Widget _cancelButton(FileTransfer t, Color color) => Align(
-        alignment: Alignment.centerLeft,
-        child: TextButton.icon(
+  /// Resume or cancel while it runs, save once it has arrived, send again
+  /// when it didn't make it.
+  Widget? _actions(FileTransfer t, Color color) {
+    final service = FileTransferService.instance;
+    final style = TextButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      foregroundColor: color.withValues(alpha: 0.75),
+    );
+    final path = _filePath;
+    final buttons = <Widget>[
+      if (_running(t) && service.isStalled(t.tid))
+        TextButton.icon(
           style: TextButton.styleFrom(
             visualDensity: VisualDensity.compact,
-            foregroundColor: color.withValues(alpha: 0.7),
+            foregroundColor: color,
           ),
-          onPressed: () => FileTransferService.instance.cancel(t.tid),
+          onPressed: () => service.resume(t.tid),
+          icon: const Icon(Icons.play_arrow, size: 16),
+          label: const Text('Resume'),
+        ),
+      if (_running(t) || (t.outgoing && t.status == FtStatus.offered))
+        TextButton.icon(
+          style: style,
+          onPressed: () => service.cancel(t.tid),
           icon: const Icon(Icons.close, size: 14),
           label: const Text('Cancel transfer'),
         ),
-      );
+      if (!t.outgoing && t.status == FtStatus.done && path != null)
+        Builder(
+          builder: (buttonContext) => TextButton.icon(
+            style: style,
+            onPressed: () => saveFileCopy(buttonContext,
+                path: path, name: t.name, mime: t.mime),
+            icon: Icon(saveActionIcon, size: 16),
+            label: Text(savesWithDialog ? 'Save to computer' : 'Save or share'),
+          ),
+        ),
+      if (t.outgoing &&
+          path != null &&
+          (t.status == FtStatus.failed ||
+              t.status == FtStatus.canceled ||
+              t.status == FtStatus.declined))
+        TextButton.icon(
+          style: style,
+          onPressed: () => _sendAgain(t, path),
+          icon: const Icon(Icons.refresh, size: 16),
+          label: const Text('Send again'),
+        ),
+    ];
+    if (buttons.isEmpty) return null;
+    return Wrap(spacing: 4, children: buttons);
+  }
+
+  Future<void> _sendAgain(FileTransfer t, String path) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await MessengerService.instance
+          .sendFileTransfer(t.peer, path: path, name: t.name, mime: t.mime);
+    } on StateError catch (e) {
+      messenger?.showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
 
   /// Songs and videos play in place (incoming ones while they arrive, when
   /// they can); images show once here. Null keeps the plain file card,

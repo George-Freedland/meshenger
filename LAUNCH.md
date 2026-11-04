@@ -195,14 +195,18 @@ Every release:
 
 ### 2.4 iPhone: TestFlight
 
-- [ ] Plug in an iPhone and run `flutter run -d ios --release` once. Confirm it chats with your Mac over Bluetooth before you involve Apple.
-- [ ] In [App Store Connect](https://appstoreconnect.apple.com), go to **Apps → + → New App**. Choose iOS, name **Meshenger**, bundle ID `com.georgefreedland.meshenger`, SKU `meshenger`. If the bundle ID isn't in the list, register it under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) first.
-- [ ] Open `ios/Runner.xcworkspace` in Xcode → **Runner** target → **Signing & Capabilities**. Set **Team** to your account and keep **Automatically manage signing** on.
+You need the Apple Developer Program membership from 2.1 (the same $99 covers iPhone), an iPhone and the Mac. The project is ready: the iOS release build compiles, the Bluetooth background modes, permission texts and encryption flag are in `Info.plist`, and `ios/Runner/PrivacyInfo.xcprivacy` declares the system calls the video player uses (App Store Connect rejects uploads without it).
+
+- [ ] **Register the app.** In [App Store Connect](https://appstoreconnect.apple.com), go to **Apps → + → New App**. Choose iOS, name **Meshenger**, primary language English, bundle ID `com.georgefreedland.meshenger`, SKU `meshenger`. If the bundle ID isn't in the list, register it under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) first (**+ → App IDs → App**, explicit ID, no extra capabilities).
+- [ ] **Signing.** Open `ios/Runner.xcworkspace` in Xcode → **Runner** target → **Signing & Capabilities**. Set **Team** to your account and keep **Automatically manage signing** on.
+- [ ] **Try it on your iPhone first.** Plug it in and tap **Trust**. When iOS asks, turn on **Settings → Privacy & Security → Developer Mode** and restart the phone. Then run `flutter run -d ios --release` and confirm it chats with your Mac over Bluetooth and plays a song before you involve Apple.
+- [ ] **Bump the build number** in `pubspec.yaml`: every upload needs a higher number after the `+` (step 1.9), for example `version: 1.0.0+2`.
 - [ ] Build:
   ```bash
   flutter build ipa --release        # produces build/ios/ipa/*.ipa
   ```
-- [ ] Upload with Apple's **Transporter** app (free on the Mac App Store): drag the `.ipa` in and click **Deliver**. Processing takes 5–15 minutes.
+  If it can't find a signing certificate or profile, do the Signing step once in Xcode and run it again. If only the export step fails, run `open build/ios/archive/Runner.xcarchive`. Xcode's Organizer opens; click **Distribute App → App Store Connect → Upload** and skip Transporter.
+- [ ] Upload with Apple's **Transporter** app (free on the Mac App Store): drag the `.ipa` in and click **Deliver**. Processing takes 5–30 minutes, and Apple emails you when the build is ready, or if something is wrong with it.
 - [ ] **Encryption.** The app declares that it uses non-exempt encryption, which is correct: it encrypts messages itself. When App Store Connect asks, choose **standard encryption algorithms not provided by Apple's operating system**. No documents are needed **unless you distribute in France**, which needs a French encryption declaration. Simplest: leave France out of availability until you've filed one. [Apple's guide](https://developer.apple.com/help/app-store-connect/reference/app-information/export-compliance-documentation-for-encryption/).
 - [ ] **TestFlight → Internal Testing → +**: add yourself, install the **TestFlight** app on your iPhone and test.
 - [ ] **TestFlight → External Testing → +**: create a group called "Public beta" and add the build. Fill in **Test Information**:
@@ -235,6 +239,8 @@ Every release:
 - [ ] **Songs stream.** Post an MP3 on Global. On the other device, tap play straight away: it plays while the bar fills, or says "Starts in 0:20" and starts by itself.
 - [ ] **Videos play in the app.** Send an MP4 in a chat and post one on Global. Both play inside Meshenger (try full screen), without opening QuickTime, VLC or Media Player.
 - [ ] **Mixed versions.** A device still on the previous build can chat with an updated one and receive files (more slowly).
+- [ ] **Transfers survive drops.** Halfway through a big transfer, turn Bluetooth off on one device for 20 seconds, then back on. Both cards say "Paused at …", then it continues by itself from where it stopped. **Resume** on either card retries at once.
+- [ ] **Save to the computer.** Long-press (or right-click) a received file, photo or song in a chat → **Save to this computer…**, and do the same from Storage. On a phone it's **Save or share…** (Save to Files, Save Image).
 
 ---
 
@@ -546,4 +552,8 @@ There's no server, so you can't delete anything from other people's phones. What
 | Microsoft Store: "package identity doesn't match" | `identity_name` or `publisher` in `msix_config` still has the placeholder, or a typo. Copy both again from Partner Center → Product identity |
 | A file transfer crawls (a few KB/s) | One of the two devices runs an older build, which falls back to the slow format. Update both |
 | Banner: "Bluetooth went quiet" (Windows) | The scan heard nothing for 90 s even after restarting itself. Tap **Retry**; if it comes back, quit and reopen Meshenger; restart the PC only if that doesn't help. The connection log says what happened |
-| Windows log: `COM on the app's main thread had been shut down by another component; started it again` | Another part of the app shut down the main thread's COM. Before this fix it cut Bluetooth off until a restart; now the plugin repairs it on the spot. Note when it appears (playing a song? a call?) and send it to me |
+| Windows log: `COM on the app's main thread had been shut down by another component; started it again` | The media player (libmpv) releases COM on the app's main thread each time a player closes. The Bluetooth plugin now holds spare references so that never reaches zero, and repairs it if it does. Seeing this line again means it got through anyway: send me the log |
+| A transfer shows "Paused at …" | The link dropped. It continues by itself within seconds of the devices hearing each other again (the log says `FT: resuming …`); **Resume** on the card tries right away. Cancel and **Send again** start over |
+| Log: `dropped N bytes of a packet … that broke off mid-way` | A packet was cut off by a link drop and thrown away instead of corrupting the next one. Harmless; the file transfer re-sends what was lost |
+| iPhone: tapping Save Image in the share sheet crashes | `NSPhotoLibraryAddUsageDescription` is missing from `ios/Runner/Info.plist`. It's there now; rebuild |
+| App Store Connect email `ITMS-91053: Missing API declaration` | A bundled library uses an API Apple wants a reason for. `ios/Runner/PrivacyInfo.xcprivacy` declares the ones the video player uses; send me the email if a new one appears |

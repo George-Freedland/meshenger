@@ -362,6 +362,29 @@ namespace bluetooth_low_energy_windows
 	{
 		try
 		{
+			// Already connected (an open push channel holds it): a new device
+			// object and session would replace the ones that channel's
+			// characteristics and notification handlers belong to.
+			auto connected = false;
+			const auto existing = m_devices.find(address_args);
+			if (existing != m_devices.end() && existing->second.has_value() &&
+				m_sessions.find(address_args) != m_sessions.end())
+			{
+				try
+				{
+					connected = existing->second->ConnectionStatus() ==
+								winrt::Windows::Devices::Bluetooth::BluetoothConnectionStatus::Connected;
+				}
+				catch (const winrt::hresult_error &)
+				{
+					// Closed under us: connect from scratch.
+				}
+			}
+			if (connected)
+			{
+				result(std::nullopt);
+				co_return;
+			}
 			const auto address = static_cast<uint64_t>(address_args);
 			// FromBluetoothAddressAsync(address) assumes a public address and
 			// returns null for peripherals using random addressing (macOS/iOS).
