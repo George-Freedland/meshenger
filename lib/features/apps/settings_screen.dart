@@ -115,12 +115,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
     final location = LocationService.instance;
     final fix = location.lastReading;
-    if (fix != null && !location.isLooking) {
+    if (fix != null) {
       final at = TimeOfDay.fromDateTime(
               DateTime.fromMillisecondsSinceEpoch(fix.tsMs))
           .format(context);
-      return "This device's location, to within about ${fix.accuracyM} m "
-          '(read at $at).';
+      final where = switch (location.origin) {
+        LocationOrigin.nearby =>
+          'Placed next to a device in radio range, to within about '
+              '${fix.accuracyM} m',
+        LocationOrigin.remembered =>
+          'Last position this device measured, to within about '
+              '${fix.accuracyM} m',
+        _ => "This device's location, to within about ${fix.accuracyM} m",
+      };
+      return '$where (as of $at).';
     }
     final problem = location.problem;
     if (problem != null && !location.isLooking) {

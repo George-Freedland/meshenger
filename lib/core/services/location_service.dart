@@ -80,8 +80,22 @@ enum LocationProblem {
   /// Nobody has been asked yet (access is only requested from Settings).
   notAsked,
 
-  /// Access is fine, but the device couldn't work out where it is.
+  /// Access is fine, but the device couldn't work out where it is, and
+  /// nobody it can hear is sharing one either.
   notFound,
+}
+
+/// Where the current reading came from.
+enum LocationOrigin {
+  /// Measured by this device.
+  sensor,
+
+  /// A measurement this device stored earlier.
+  remembered,
+
+  /// A device in direct radio range. This device has no position of its
+  /// own, so it stands next to one it can hear.
+  nearby,
 }
 
 /// Where this device is, for the Mesh Map globe, and how much of that it
@@ -103,16 +117,35 @@ class LocationService {
   static const _exactKey = 'location_share_exact_v1';
   static const _pinKey = 'location_pin_v1';
 
+  /// This device's own last measurement. Kept so a laptop still knows
+  /// where it was after the radios that measured it go quiet.
+  static const ownFixKey = 'location_own_fix_v1';
+
+  /// Added to a neighbor's accuracy. Direct radio is tens of meters, not
+  /// a GPS point.
+  static const int nearbyRadioM = 100;
+
   final _changed = StreamController<void>.broadcast();
   Stream<void> get onChanged => _changed.stream;
 
   GeoPoint? _fix;
-  Future<GeoPoint?>? _reading;
+  LocationOrigin? _origin;
   LocationProblem? _problem;
   bool _looking = false;
+  StreamSubscription<Position>? _sensorSub;
+
+  /// The spot a device in direct radio range is sharing, or null. The
+  /// messenger installs this. Used when this device cannot measure one
+  /// itself: a Mac has no GPS, and with Wi-Fi off it has no other sensor.
+  /// Windows Location still answers then, from a position it saved or from
+  /// the network; Core Location does not.
+  Future<GeoPoint?> Function()? nearbyPosition;
 
   /// The latest reading of this device's own location.
   GeoPoint? get lastReading => _fix;
+
+  /// How [lastReading] was obtained.
+  LocationOrigin? get origin => _origin;
 
   /// Why the last attempt to read it failed, if it did.
   LocationProblem? get problem => _problem;
@@ -133,12 +166,17 @@ class LocationService {
   Future<void> setShareApproximate(bool value) async {
     await (await SharedPreferences.getInstance())
         .setBool(IdentityScope.key(_approxKey), value);
-    _changed.add(null);
+    await _afterShareChange();
   }
 
   Future<void> setShareExact(bool value) async {
     await (await SharedPreferences.getInstance())
         .setBool(IdentityScope.key(_exactKey), value);
+    await _afterShareChange();
+  }
+
+  Future<void> _afterShareChange() async {
+    if (!await isSharing) await _stopSensor();
     _changed.add(null);
   }
 
@@ -163,22 +201,32 @@ class LocationService {
     _changed.add(null);
   }
 
-  /// This device's spot: the pin if there is one, otherwise the latest
-  /// reading — taken only while sharing is on. Never waits for a new
-  /// reading (that can take many seconds); a stale one is refreshed in
-  /// the background.
+  /// This device's spot: the pin if there is one, otherwise its own
+  /// reading, otherwise a device it can hear right now. Taken only while
+  /// sharing is on. Never waits on the platform location service.
   Future<GeoPoint?> myPosition() async {
     final pin = await getPin();
     if (pin != null) return pin;
     if (!await isSharing) return null;
-    final fix = _fix;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final stale = fix == null || now - fix.tsMs >= refreshEvery.inMilliseconds;
-    if (stale && now - _lastAttemptMs >= retryEvery.inMilliseconds) {
-      _lastAttemptMs = now;
-      unawaited(_read(askPermission: false));
+    final own = await _ownFix();
+    if (own != null) {
+      _ensureListening();
+      return own;
     }
-    return fix;
+    final heard = await _heardNearby();
+    if (heard != null) {
+      _adopt(heard, LocationOrigin.nearby);
+      _problem = null;
+      _ensureListening();
+      return heard;
+    }
+    if (_origin == LocationOrigin.nearby) {
+      _fix = null;
+      _origin = null;
+      _changed.add(null);
+    }
+    _ensureListening();
+    return null;
   }
 
   /// Background attempts are at least this far apart (every attempt tells
@@ -208,7 +256,13 @@ class LocationService {
   /// way, if anything.
   Future<LocationProblem?> requestAccess() async {
     if (await getPin() != null) return null;
-    return await _read(askPermission: true) == null ? _problem : null;
+    if (!await isSharing) return LocationProblem.notAsked;
+    await _acquire(askPermission: true);
+    if (await myPosition() != null) {
+      _problem = null;
+      return null;
+    }
+    return _problem ?? LocationProblem.notFound;
   }
 
   /// What the person can do about [problem].
@@ -224,20 +278,17 @@ class LocationService {
           'Meshenger still needs your OK to read this location: tap Try '
               'again and allow it.',
         LocationProblem.notFound =>
-          "This device couldn't work out where it is. It needs Location "
-              'Services and Wi-Fi; a Mac scans for a few minutes before it '
-              'knows. Pin your spot on the globe instead: long-press it on '
-              'the Mesh Map.',
+          'No position yet. Nobody in radio range is sharing a spot, and '
+              "this device couldn't measure one itself. Pin yours on the "
+              'globe: long-press it on the Mesh Map.',
       };
 
-  /// Shown while a reading is in progress. A Mac has no GPS: Core Location
-  /// answers "unknown" at once and only returns a position at its next
-  /// Wi-Fi scan, which can be several minutes later.
+  /// Shown while a reading is in progress.
   static String finding({bool offerPin = false}) {
+    final pin = offerPin ? ' Or long-press the globe to pin your spot.' : '';
     if (Platform.isMacOS) {
-      return "Finding this Mac's location. A Wi-Fi scan can take a few "
-          'minutes, so leave this open'
-          '${offerPin ? ', or long-press the globe to pin your spot' : ''}.';
+      return 'Looking for a position. This Mac has no GPS, so it uses a '
+          'device in radio range that is sharing one.$pin';
     }
     return offerPin
         ? "Finding this device's location… or long-press your spot to pin it."
@@ -247,13 +298,11 @@ class LocationService {
   /// How one position read is asked for. [macOS] overrides the platform so
   /// tests can cover both.
   ///
-  /// On a Mac the native side already waits out that Wi-Fi scan (about six
-  /// minutes) and then fails on its own. A short [LocationSettings.timeLimit]
-  /// gives up while the scan is still running, and the next attempt restarts
-  /// the wait, so Try again never succeeds. A Mac also cannot meet a
-  /// ten-meter target, so the request asks for a kilometer, which a Wi-Fi
-  /// fix can actually satisfy. The point that comes back still carries its
-  /// real accuracy.
+  /// A Mac has no GPS. Core Location's only other source is a Wi-Fi scan,
+  /// which reports "unknown" immediately and can take minutes. The Mac
+  /// path therefore has no deadline: a live subscription waits, and the
+  /// screen does not. A kilometer is what that scan can actually meet.
+  /// The point that comes back still carries its real accuracy.
   static LocationSettings readSettings({bool? macOS}) {
     if (macOS ?? Platform.isMacOS) {
       return const LocationSettings(accuracy: LocationAccuracy.low);
@@ -275,19 +324,116 @@ class LocationService {
     } catch (_) {}
   }
 
-  /// A person asking must always reach the system's prompt, so their
-  /// request never piggybacks on a background reading that won't ask.
-  Future<GeoPoint?> _read({required bool askPermission}) => askPermission
-      ? _readNow(true)
-      : _reading ??= _readNow(false).whenComplete(() => _reading = null);
+  /// This device's own fix: the one in memory, or the one it stored.
+  Future<GeoPoint?> _ownFix() async {
+    final memory = _fix;
+    if (memory != null &&
+        _origin != LocationOrigin.nearby &&
+        _isFresh(memory)) {
+      return memory;
+    }
+    final saved = await _savedOwnFix();
+    if (saved == null) return null;
+    _adopt(saved, LocationOrigin.remembered);
+    return saved;
+  }
 
-  Future<GeoPoint?> _readNow(bool askPermission) async {
+  Future<GeoPoint?> _savedOwnFix() async {
+    final prefs = await SharedPreferences.getInstance();
+    final point = GeoPoint.decode(prefs.getString(IdentityScope.key(ownFixKey)) ?? '');
+    if (point == null || !_isFresh(point)) return null;
+    return point;
+  }
+
+  Future<void> _remember(GeoPoint point) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(IdentityScope.key(ownFixKey), point.encode());
+  }
+
+  /// A neighbor's spot, widened by radio range. The callback is responsible
+  /// for only returning someone this device can hear right now.
+  Future<GeoPoint?> _heardNearby() async {
+    final point = await nearbyPosition?.call();
+    if (point == null) return null;
+    if (point.lat.abs() > 90 || point.lon.abs() > 180) return null;
+    return GeoPoint(
+      lat: point.lat,
+      lon: point.lon,
+      accuracyM: point.accuracyM + nearbyRadioM,
+      tsMs: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  bool _isFresh(GeoPoint point) {
+    final age = DateTime.now().millisecondsSinceEpoch - point.tsMs;
+    return age >= 0 && age < maxAge.inMilliseconds;
+  }
+
+  void _adopt(GeoPoint point, LocationOrigin origin) {
+    final previous = _fix;
+    final same = previous != null &&
+        _origin == origin &&
+        previous.lat == point.lat &&
+        previous.lon == point.lon &&
+        previous.accuracyM == point.accuracyM;
+    _fix = point;
+    _origin = origin;
+    _problem = null;
+    if (!same) _changed.add(null);
+  }
+
+  GeoPoint? _accept(Position? position) {
+    if (position == null) return null;
+    final point = GeoPoint(
+      lat: position.latitude,
+      lon: position.longitude,
+      accuracyM: max(0, position.accuracy.round()),
+      tsMs: position.timestamp.millisecondsSinceEpoch,
+    );
+    return _isFresh(point) ? point : null;
+  }
+
+  /// Asks the platform, when [askPermission] says the person is waiting
+  /// for the prompt. A position it already has is kept. A Mac is not
+  /// blocked on the scan: the subscription delivers a fix later if one
+  /// ever arrives.
+  Future<void> _acquire({required bool askPermission}) async {
     _looking = true;
     _changed.add(null);
     try {
+      if (!await _sensorAllowed(askPermission)) return;
+      try {
+        final last = _accept(await Geolocator.getLastKnownPosition());
+        if (last != null) {
+          _adopt(last, LocationOrigin.sensor);
+          await _remember(last);
+        }
+      } catch (_) {}
+      if (Platform.isMacOS) {
+        _armLiveSensor();
+        return;
+      }
+      try {
+        final fix = _accept(await Geolocator.getCurrentPosition(
+          locationSettings: readSettings(),
+        ));
+        if (fix == null) return;
+        _adopt(fix, LocationOrigin.sensor);
+        await _remember(fix);
+      } catch (_) {
+        if (_fix == null) _problem = LocationProblem.notFound;
+      }
+    } finally {
+      _looking = false;
+      _changed.add(null);
+    }
+  }
+
+  Future<bool> _sensorAllowed(bool askPermission) async {
+    try {
       if (!await Geolocator.isLocationServiceEnabled()) {
         _problem = LocationProblem.servicesOff;
-        return null;
+        return false;
       }
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied && askPermission) {
@@ -296,43 +442,73 @@ class LocationService {
       switch (permission) {
         case LocationPermission.deniedForever:
           _problem = LocationProblem.notAllowed;
-          return null;
+          return false;
         case LocationPermission.denied:
-          _problem =
-              askPermission ? LocationProblem.notAllowed : LocationProblem.notAsked;
-          return null;
+          _problem = askPermission
+              ? LocationProblem.notAllowed
+              : LocationProblem.notAsked;
+          return false;
         case LocationPermission.unableToDetermine:
           _problem = LocationProblem.notFound;
-          return null;
+          return false;
         case LocationPermission.whileInUse:
         case LocationPermission.always:
-          break;
+          return true;
       }
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: readSettings(),
-      );
-      final fix = GeoPoint(
-        lat: position.latitude,
-        lon: position.longitude,
-        accuracyM: position.accuracy.round(),
-        tsMs: DateTime.now().millisecondsSinceEpoch,
-      );
-      _fix = fix;
-      _problem = null;
-      return fix;
     } catch (_) {
-      _problem = LocationProblem.notFound;
-      return null;
-    } finally {
-      _looking = false;
-      _changed.add(null);
+      if (_fix == null) _problem = LocationProblem.notFound;
+      return false;
     }
+  }
+
+  /// Starts one live subscription if the platform will already allow it.
+  /// Never prompts; the map polls this.
+  void _ensureListening() {
+    if (_sensorSub != null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final wait = _origin == LocationOrigin.sensor ||
+            _origin == LocationOrigin.remembered
+        ? refreshEvery
+        : retryEvery;
+    if (now - _lastAttemptMs < wait.inMilliseconds) return;
+    _lastAttemptMs = now;
+    unawaited(_acquire(askPermission: false));
+  }
+
+  void _armLiveSensor() {
+    if (_sensorSub != null) return;
+    try {
+      _sensorSub = Geolocator.getPositionStream(
+        locationSettings: readSettings(),
+      ).listen((position) {
+        final fix = _accept(position);
+        if (fix == null) return;
+        _adopt(fix, LocationOrigin.sensor);
+        unawaited(_remember(fix));
+      }, onError: (Object _) {
+        if (_fix == null) {
+          _problem = LocationProblem.notFound;
+          _changed.add(null);
+        }
+      });
+    } catch (_) {
+      if (_fix == null) _problem = LocationProblem.notFound;
+    }
+  }
+
+  Future<void> _stopSensor() async {
+    final sub = _sensorSub;
+    _sensorSub = null;
+    await sub?.cancel();
   }
 
   /// Forgets the in-memory reading (on identity switch or log out).
   void reset() {
     _fix = null;
+    _origin = null;
     _problem = null;
     _lastAttemptMs = 0;
+    nearbyPosition = null;
+    unawaited(_stopSensor());
   }
 }

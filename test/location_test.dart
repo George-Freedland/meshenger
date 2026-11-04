@@ -115,6 +115,38 @@ void main() {
       expect(other.accuracy, LocationAccuracy.high);
     });
 
+    test('with no fix of its own, a device stands next to one it can hear',
+        () async {
+      await location.setShareExact(true);
+      location.nearbyPosition = () async => const GeoPoint(
+            lat: 40.71280, lon: -74.00600, accuracyM: 12, tsMs: 1);
+      final exact = (await location.sharedPosition())!;
+      expect(exact.lat, 40.71280);
+      expect(exact.lon, -74.00600);
+      expect(exact.accuracyM, 12 + LocationService.nearbyRadioM);
+      expect(location.origin, LocationOrigin.nearby);
+    });
+
+    test('a position it measured earlier is used with the radios off',
+        () async {
+      final point = GeoPoint(
+        lat: 40.71280,
+        lon: -74.00600,
+        accuracyM: 30,
+        tsMs: DateTime.now().millisecondsSinceEpoch,
+      );
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          IdentityScope.key(LocationService.ownFixKey), point.encode());
+      location.nearbyPosition = () async => const GeoPoint(
+            lat: 1, lon: 2, accuracyM: 5, tsMs: 1);
+      await location.setShareExact(true);
+      final exact = (await location.sharedPosition())!;
+      expect(exact.lat, point.lat);
+      expect(exact.accuracyM, 30);
+      expect(location.origin, LocationOrigin.remembered);
+    });
+
     test('both are off until turned on, and nothing is shared', () async {
       expect(await location.getShareApproximate(), isFalse);
       expect(await location.getShareExact(), isFalse);

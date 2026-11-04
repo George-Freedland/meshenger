@@ -170,6 +170,20 @@ class MessengerService {
   /// Signal strength per online peer (dBm), when the transport measures it.
   Map<String, int> get peerSignal => _transport?.peerRssi ?? const {};
 
+  /// The most precise spot among devices in direct radio range that are
+  /// sharing one. Relayed devices are not used: they can be far away.
+  Future<GeoPoint?> _positionHeardNearby() async {
+    final inRange = visiblePeers;
+    if (inRange.isEmpty) return null;
+    GeoPoint? best;
+    for (final address in inRange) {
+      final point = (await PeerDirectory.instance.get(address))?.recentLocation;
+      if (point == null) continue;
+      if (best == null || point.accuracyM < best.accuracyM) best = point;
+    }
+    return best;
+  }
+
   bool get isTransportRunning => _transport?.isRunning ?? false;
 
   Future<void> start() async {
@@ -178,6 +192,9 @@ class MessengerService {
     RouteTable.instance.reset();
     RouteLog.instance.clear();
     LocationService.instance.reset();
+    // A Mac with Wi-Fi off has no position sensor. A device it can hear
+    // that is already sharing a spot places it on the globe instead.
+    LocationService.instance.nearbyPosition = _positionHeardNearby;
     MeshActivityLog.instance.resetCache();
     await _seedDeletedPostIds();
     unawaited(NotificationService.instance.init());
