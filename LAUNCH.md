@@ -220,7 +220,7 @@ You need the Apple Developer Program membership from 2.1 (the same $99 covers iP
   - Feedback email: your contact email.
   - Privacy policy URL.
   - Beta description: "Meshenger lets phones text and share pages over Bluetooth with no internet."
-  - Review notes: "No account is needed: tap Create New Identity and pick any password. Messaging needs two devices near each other with Bluetooth on. With one device you can browse Network → Global and build your own page. User content safety (guideline 1.2): users accept Terms of Use with zero tolerance for abuse at first launch. They can block people and report or hide posts, pages and sites from each item's ⋮ menu, and from chats and person details. Reports reach us by email and are reviewed within 24 hours. Confirmed abusive identities are blocked for all users in app updates. Contact details are in Settings → Safety."
+  - Review notes: "No account is needed: tap Create New Identity and pick any password. Messaging needs two devices near each other with Bluetooth on. With one device you can browse Network → Global and build your own page. User content safety (guideline 1.2): users accept Terms of Use with zero tolerance for abuse at first launch. They can block people and report or hide posts, pages and sites from each item's ⋮ menu, and from chats and person details. Reports reach us by email and are reviewed within 24 hours. Confirmed abusive identities are blocked for all users in app updates. Contact details are in Settings → Safety. Location is optional and off by default: Settings → Location on the Mesh Map has two switches (approximate, about 1 km, or exact). It only places this device on other users' Mesh Map globe, device to device; it never reaches us or any server."
   - Submit. The first review usually takes about a day.
 - [ ] Once it's approved, go to **External group → Testers → Create Public Link**, set the limit to 10,000 and copy the link. Paste it into `TESTFLIGHT_URL` in `docs/index.html`.
 - [ ] **TestFlight builds expire after 90 days.** Upload a new build at least every 60 days.
@@ -327,7 +327,7 @@ The Store signs your app itself, so Store installs show no SmartScreen warning a
 - [ ] In App Store Connect → your app → **App Store** tab, prepare version 1.0 and fill in:
   - Description, keywords, and the website as the support URL.
   - Privacy policy URL.
-  - **App Privacy: Data Not Collected.** Nothing reaches you or any server.
+  - **App Privacy: Data Not Collected.** Nothing reaches you or any server. Optional location sharing goes only device to device, to other users' Mesh Maps, and never to you; say so in the review notes (below) so the reviewer isn't surprised by the location prompt.
   - Age rating questionnaire. Messaging and user content usually rate 13+ or higher.
   - iPhone 6.9" screenshots, and iPad 13" screenshots because the app runs on iPad. Simulator screenshots (**Cmd+S**) are fine.
 - [ ] Select your TestFlight build and submit. Review usually takes 1–2 days.

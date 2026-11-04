@@ -1,6 +1,6 @@
 # Meshenger privacy policy
 
-_Last updated: October 30, 2026_
+_Last updated: November 3, 2026_
 
 Meshenger is a messenger that works over Bluetooth, device to device, with no internet connection and no servers. This policy explains what that means for your data.
 
@@ -9,7 +9,7 @@ Meshenger is a messenger that works over Bluetooth, device to device, with no in
 - **We don't collect anything.** There are no accounts, no servers, no analytics, no ads and no trackers. Nothing you do in Meshenger is sent to us.
 - **Your data stays on your devices.** Messages, contacts, photos, files and settings are stored on the device you use.
 - **Messages are end-to-end encrypted.** Only you and the person you're talking to can read them. Devices that relay a message for you can't.
-- **Some things are public by design.** Your nickname and public key are visible to people nearby. So are posts and pages you publish in the Network app.
+- **Some things are public by design.** Your nickname and public key are visible to people nearby. So are posts and pages you publish in the Network app, and your location if you turn on location sharing (it's off unless you do).
 
 ## What's stored on your device
 
@@ -26,6 +26,8 @@ Meshenger works by devices talking to each other directly. To do that, some info
 | That a Meshenger device is nearby, your **public key**, your **encryption public key** and your **nickname** | Anyone nearby running Meshenger, and devices further away that learn about you from nearby devices ("gossip") |
 | The **content** of your messages, photos, voice notes, files and calls | Only you and the recipients (end-to-end encrypted with X25519 and AES-256-GCM, signed with Ed25519) |
 | The **envelope** of a message: sender and recipient public keys, size, hop count and expiry time | Devices and relays that carry the message for you. They store and forward it but can't read it |
+| The **route** a message took: the public keys of the last relays that carried it | The recipient, who sends it back to you inside the encrypted delivery receipt so both of your Mesh Maps can draw it |
+| Your **location**, only if you turn on location sharing: either approximate (about 1 km) or exact, as two separate settings | Everyone your mesh reaches, on the Mesh Map. It travels with your device's announcement, signed so nobody can move you. Turn sharing off and the next announcement removes it from their maps; locations older than a day are never shown. Invisible mode shares nothing |
 | **Global posts**, and **site posts and pages** you publish | Everyone your mesh reaches. They're signed with your key and copied from device to device |
 | **Songs and files** attached to those posts | Anyone your mesh reaches can download them. Every device that downloads one keeps a copy and shares it with others until the post expires |
 
@@ -44,8 +46,9 @@ Meshenger asks only for what its features need:
 - **Camera**, for photos and scanning contact QR codes.
 - **Photos and files**, for attachments you choose to send.
 - **Notifications**, to tell you about new messages and calls.
+- **Location**, only if you turn on location sharing for the Mesh Map globe.
 
-Meshenger never reads your location. On Android 12 and newer, Bluetooth scanning is declared as not deriving location. On Android 11 and older, the system won't let apps scan for Bluetooth devices without the location permission, so Meshenger asks for it there, only for scanning.
+Meshenger reads your location only while one of the two location-sharing settings is on, and only to share it as you chose. Instead, you can pin your spot on the globe by hand, and then your device's location isn't read at all. On Android 12 and newer, Bluetooth scanning is declared as not deriving location. On Android 11 and older, the system won't let apps scan for Bluetooth devices without the location permission, so Meshenger asks for it there for scanning too.
 
 ## Gateways and relays
 

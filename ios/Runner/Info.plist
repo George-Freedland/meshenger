@@ -30,6 +30,8 @@
 	<string>Meshenger uses Bluetooth to discover nearby devices and exchange end-to-end encrypted messages without any network.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Meshenger uses the camera to capture photos for chats and stories.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Only if you turn on location sharing in Settings: Meshenger puts this device on the Mesh Map globe for people in the mesh, approximately or exactly, as you choose.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Meshenger uses the microphone for voice memos, voice messages, voicemail, and mesh calls.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

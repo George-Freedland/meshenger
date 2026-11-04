@@ -26,6 +26,10 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Meshenger uses Bluetooth to discover nearby devices and exchange end-to-end encrypted messages without any network.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Only if you turn on location sharing in Settings: Meshenger puts this Mac on the Mesh Map globe for people in the mesh, approximately or exactly, as you choose.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Only if you turn on location sharing in Settings: Meshenger puts this Mac on the Mesh Map globe for people in the mesh, approximately or exactly, as you choose.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Meshenger uses the microphone for voice memos, voice messages, voicemail, and mesh calls.</string>
 	<key>NSCameraUsageDescription</key>

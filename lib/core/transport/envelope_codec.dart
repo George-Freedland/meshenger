@@ -6,6 +6,7 @@ import 'package:cryptography/cryptography.dart';
 import '../models/incoming_message.dart';
 import '../models/post_attachment.dart';
 import '../services/identity_service.dart';
+import '../services/location_service.dart';
 import 'message_body.dart';
 
 /// A verified peer identity learned from a signed announcement.
@@ -221,7 +222,14 @@ class EnvelopeCodec {
 
   /// Builds my signed gossip record. [nickname] is broadcast to the mesh
   /// (like a Bluetooth device name) so nearby strangers see a friendly name.
-  static Future<Map<String, Object?>> buildGossip({String? nickname}) async {
+  /// [location], when the person shares it, puts this device on everyone's
+  /// Mesh Map globe. It is signed on its own (`loc|address|value`): older
+  /// builds keep verifying the record as before and pass `loc` along, and
+  /// no relay can move someone on the map.
+  static Future<Map<String, Object?>> buildGossip({
+    String? nickname,
+    GeoPoint? location,
+  }) async {
     final identity = IdentityService.instance;
     final address = await identity.getPublicAddressBase64();
     if (address == null || !identity.isUnlocked) {
@@ -232,6 +240,16 @@ class EnvelopeCodec {
     final nick = nickname ?? '';
     final signature = await identity
         .sign(utf8.encode('gossip|$address|$x25519|$nick|$ts'));
+    Map<String, Object?>? loc;
+    if (location != null) {
+      final value = location.encode();
+      final locSignature =
+          await identity.sign(utf8.encode('loc|$address|$value'));
+      loc = <String, Object?>{
+        'v': value,
+        'sig': base64Encode(locSignature.bytes),
+      };
+    }
 
     return <String, Object?>{
       't': 'gossip',
@@ -242,7 +260,27 @@ class EnvelopeCodec {
       'sig': base64Encode(signature.bytes),
       'hops': 0,
       'max': gossipMaxHops,
+      if (loc != null) 'loc': loc,
     };
+  }
+
+  /// The location in a gossip record when its own signature holds.
+  static Future<GeoPoint?> _verifyGossipLocation(
+    Object? loc,
+    String address,
+  ) async {
+    if (loc is! Map) return null;
+    final value = loc['v'];
+    final sig = loc['sig'];
+    if (value is! String || sig is! String) return null;
+    final point = GeoPoint.decode(value);
+    if (point == null) return null;
+    final valid = await IdentityService.verify(
+      message: utf8.encode('loc|$address|$value'),
+      signatureBytes: base64Decode(sig),
+      publicKeyBase64: address,
+    );
+    return valid ? point : null;
   }
 
   /// Verifies a gossip record's signature. Returns null when invalid.
@@ -267,12 +305,20 @@ class EnvelopeCodec {
       );
       if (!valid) return null;
 
+      GeoPoint? location;
+      try {
+        location = await _verifyGossipLocation(decoded['loc'], addr);
+      } catch (_) {
+        // A damaged location doesn't spoil the rest of the record.
+      }
+
       return GossipRecord(
         address: addr,
         x25519Base64: x25519,
         nickname: nick.isEmpty ? null : nick,
         tsMs: ts,
         hops: (decoded['hops'] as num?)?.toInt() ?? 0,
+        location: location,
       );
     } catch (_) {
       return null;
@@ -711,11 +757,15 @@ class GossipRecord {
   final int tsMs;
   final int hops;
 
+  /// Where the node says it is, when it shares that (signature checked).
+  final GeoPoint? location;
+
   const GossipRecord({
     required this.address,
     required this.x25519Base64,
     required this.nickname,
     required this.tsMs,
     required this.hops,
+    this.location,
   });
 }

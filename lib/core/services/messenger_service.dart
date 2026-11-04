@@ -28,10 +28,12 @@ import 'identity_service.dart';
 import 'media_store.dart';
 import 'alert_sound_service.dart';
 import 'in_app_notice_service.dart';
+import 'location_service.dart';
 import 'mesh_activity.dart';
 import 'network_service.dart';
 import 'notification_service.dart';
 import 'peer_directory.dart';
+import 'route_log.dart';
 import 'route_table.dart';
 import 'safety_service.dart';
 import 'settings_service.dart';
@@ -174,6 +176,8 @@ class MessengerService {
     _invisible = await SettingsService.instance.getInvisible();
     PeerDirectory.instance.resetCache();
     RouteTable.instance.reset();
+    RouteLog.instance.clear();
+    LocationService.instance.reset();
     MeshActivityLog.instance.resetCache();
     await _seedDeletedPostIds();
     unawaited(NotificationService.instance.init());
@@ -466,6 +470,7 @@ class MessengerService {
     try {
       final gossip = await EnvelopeCodec.buildGossip(
         nickname: IdentityService.instance.active?.nickname,
+        location: await LocationService.instance.sharedPosition(),
       );
       for (final peer in peersNow) {
         unawaited(transport.sendPacket(peer, gossip));
@@ -553,6 +558,7 @@ class MessengerService {
       nickname: record.nickname,
       hops: record.hops,
       tsMs: record.tsMs,
+      location: record.location,
     );
     if (!fresher) return;
 
@@ -583,12 +589,13 @@ class MessengerService {
     // the gradient instead of flooding.
     _learnFromEnvelope(packet);
 
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    if (me == null) return;
+    _noteRoute(packet, id, to: to, me: me);
+
     // Dedup: relayed envelopes can arrive several times over several paths.
     if (_seen.contains(id)) return;
     _markSeen(id);
-
-    final me = await IdentityService.instance.getPublicAddressBase64();
-    if (me == null) return;
 
     if (to != me) {
       await _relayEnvelope(packet, to);
@@ -604,6 +611,38 @@ class MessengerService {
     _seen.add(id);
     while (_seen.length > _seenCap) {
       _seen.remove(_seen.first);
+    }
+  }
+
+  /// How the first copy of each envelope addressed to me got here; it goes
+  /// back to the sender inside the delivery receipt.
+  final LinkedHashMap<String, (List<String>, int)> _arrivalRoutes =
+      LinkedHashMap<String, (List<String>, int)>();
+
+  /// Puts this copy's journey (sender, relays, me) on the Mesh Map.
+  void _noteRoute(
+    Map<String, Object?> packet,
+    String id, {
+    required String to,
+    required String me,
+  }) {
+    final from = packet['from'];
+    if (from is! String || from == me) return;
+    final via =
+        (packet['via'] as List?)?.whereType<String>().toList() ?? const [];
+    final path = <String>[from, ...via, me];
+    final hops = (packet['hops'] as num?)?.toInt() ?? via.length;
+    RouteLog.instance.note(
+      messageId: id,
+      path: path,
+      delivered: to == me,
+      truncated: hops > via.length,
+    );
+    if (to == me && !_arrivalRoutes.containsKey(id)) {
+      _arrivalRoutes[id] = (path, hops);
+      while (_arrivalRoutes.length > 200) {
+        _arrivalRoutes.remove(_arrivalRoutes.keys.first);
+      }
     }
   }
 
@@ -1052,12 +1091,20 @@ class MessengerService {
       },
     ));
 
-    // Send the end-to-end delivery receipt (works across relays too).
+    // Send the end-to-end delivery receipt (works across relays too). Its
+    // text tells the sender which way the message came, for their Mesh
+    // Map; older builds ignore an ack's text.
+    final arrival = _arrivalRoutes.remove(incoming.id);
     unawaited(_deliverBody(
       incoming.fromAddress,
       MessageBody(
         messageId: _uuid.v4(),
-        text: '',
+        text: arrival == null
+            ? ''
+            : jsonEncode(<String, Object?>{
+                'route': arrival.$1,
+                'hops': arrival.$2,
+              }),
         timestamp: DateTime.now(),
         action: 'ack',
         targetId: incoming.id,
@@ -1100,6 +1147,7 @@ class MessengerService {
     final target = incoming.targetId;
     if (target == null) return;
     _ackDeadlineMs.remove(target);
+    _noteDeliveredRoute(target, incoming.text);
     final me = await IdentityService.instance.getPublicAddressBase64();
     if (me == null) return;
 
@@ -1122,6 +1170,26 @@ class MessengerService {
       allRecipients: allRecipients,
     );
     if (changed) _changed.add(chatKey);
+  }
+
+  /// The route a message of mine took to its recipient, from their receipt.
+  void _noteDeliveredRoute(String messageId, String text) {
+    if (!text.startsWith('{')) return;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is! Map) return;
+      final route = (decoded['route'] as List?)?.whereType<String>().toList();
+      if (route == null || route.length < 2) return;
+      final hops = (decoded['hops'] as num?)?.toInt() ?? route.length - 2;
+      RouteLog.instance.note(
+        messageId: messageId,
+        path: route,
+        delivered: true,
+        truncated: hops > route.length - 2,
+      );
+    } on FormatException {
+      // Not a route.
+    }
   }
 
   /// The earliest applicable auto-delete deadline: the sender's TTL and my

@@ -52,6 +52,7 @@ dependencies:
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
   share_plus: ^13.3.1
+  geolocator: ^14.1.2
 
 dev_dependencies:
   flutter_test:
@@ -84,6 +85,9 @@ flutter:
   uses-material-design: true
   assets:
     - assets/sounds/
+    # Offline world for the Mesh Map globe (Natural Earth, public domain;
+    # rebuilt by tool/build_world_geo.dart).
+    - assets/geo/world.bin
     - TERMS.md
 
 # Regenerate every platform's app icon after changing the image:
@@ -118,5 +122,5 @@ msix_config:
   msix_version: 1.0.0.0
   logo_path: assets/branding/icon.png
   # Bluetooth, plus mic and camera for voice and photos. No internet.
-  capabilities: bluetooth,microphone,webcam
+  capabilities: bluetooth,microphone,webcam,location
   store: true

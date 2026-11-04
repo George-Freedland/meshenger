@@ -72,6 +72,20 @@ class SettingsService {
     _changed.add(null);
   }
 
+  static const _meshGlobeKey = 'mesh_map_globe_v1';
+
+  /// Whether the Mesh Map shows the 3D globe instead of the radar view.
+  Future<bool> getMeshMapGlobe() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(IdentityScope.key(_meshGlobeKey)) ?? false;
+  }
+
+  Future<void> setMeshMapGlobe(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(IdentityScope.key(_meshGlobeKey), value);
+    _changed.add(null);
+  }
+
   static const _activityExpandedKey = 'network_activity_expanded_v1';
 
   /// Whether the joined/left list on the Network global page is expanded.

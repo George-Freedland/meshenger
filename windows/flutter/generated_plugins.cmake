@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   bluetooth_low_energy_windows
   file_selector_windows
   flutter_secure_storage_windows
+  geolocator_windows
   media_kit_libs_windows_video
   media_kit_video
   record_windows

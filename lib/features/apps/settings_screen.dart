@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_info.dart';
 import '../../core/services/alert_sound_service.dart';
 import '../../core/services/identity_service.dart';
+import '../../core/services/location_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/safety_service.dart';
 import '../../core/services/settings_service.dart';
@@ -40,6 +41,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _avatarId = 0;
   bool _soundEnabled = true;
   AlertTone _alertTone = AlertTone.ping;
+  bool _shareApproximate = false;
+  bool _shareExact = false;
+  GeoPoint? _pin;
 
   @override
   void initState() {
@@ -63,6 +67,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final tone = AlertTone.fromName(
       await SettingsService.instance.getAlertToneName(),
     );
+    final location = LocationService.instance;
+    final shareApproximate = await location.getShareApproximate();
+    final shareExact = await location.getShareExact();
+    final pin = await location.getPin();
     if (!mounted) return;
     setState(() {
       _allowAnyone = allowAnyone;
@@ -72,8 +80,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _nicknameController.text = identity?.nickname ?? '';
       _soundEnabled = soundEnabled;
       _alertTone = tone;
+      _shareApproximate = shareApproximate;
+      _shareExact = shareExact;
+      _pin = pin;
       _loading = false;
     });
+  }
+
+  /// Turning sharing on: ask for access, and say what to do if this device
+  /// can't tell where it is.
+  Future<void> _askForLocation() async {
+    final problem = await LocationService.instance.requestAccess();
+    if (problem == null || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(problem),
+      duration: const Duration(seconds: 8),
+    ));
   }
 
   Future<void> _unhidePosts() async {
@@ -355,6 +377,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           .setAutoDeleteSeconds(value);
                     },
                   ),
+                ),
+                const SizedBox(height: 24),
+                Text('Location on the Mesh Map',
+                    style: theme.textTheme.titleSmall),
+                const SizedBox(height: 4),
+                Text(
+                  'Puts this device on the Mesh Map globe for everyone the '
+                  'mesh reaches. Both are off until you turn one on, and '
+                  'nothing is shared in invisible mode.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Share approximate location'),
+                  subtitle: const Text(
+                    'Others see roughly where you are, to within about 1 km.',
+                  ),
+                  value: _shareApproximate,
+                  onChanged: (value) async {
+                    setState(() => _shareApproximate = value);
+                    await LocationService.instance.setShareApproximate(value);
+                    if (value) await _askForLocation();
+                  },
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Share exact location'),
+                  subtitle: const Text(
+                    'Others see exactly where this device is. Anyone your '
+                    'messages can reach can see it.',
+                  ),
+                  value: _shareExact,
+                  onChanged: (value) async {
+                    setState(() => _shareExact = value);
+                    await LocationService.instance.setShareExact(value);
+                    if (value) await _askForLocation();
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('My spot'),
+                  subtitle: Text(_pin == null
+                      ? "This device's own location. If it can't tell (most "
+                          'laptops offline), long-press your spot on the '
+                          'Mesh Map globe to pin it.'
+                      : 'Pinned at ${_pin!.lat.toStringAsFixed(3)}, '
+                          '${_pin!.lon.toStringAsFixed(3)}. Long-press the '
+                          'globe to move it.'),
+                  trailing: _pin == null
+                      ? null
+                      : TextButton(
+                          onPressed: () async {
+                            await LocationService.instance.setPin(null);
+                            if (mounted) setState(() => _pin = null);
+                          },
+                          child: const Text('Remove pin'),
+                        ),
                 ),
                 const SizedBox(height: 24),
                 Text('Sounds', style: theme.textTheme.titleSmall),

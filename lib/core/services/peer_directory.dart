@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity_scope.dart';
+import 'location_service.dart';
 
 /// A node known to exist somewhere in the mesh.
 class KnownPeer {
@@ -13,15 +14,27 @@ class KnownPeer {
   final int hops; // 0 = seen directly, N = via N relays
   final int lastSeenMs;
 
+  /// Where it last said it is, when it shares that.
+  final GeoPoint? location;
+
   const KnownPeer({
     required this.address,
     required this.x25519Base64,
     required this.nickname,
     required this.hops,
     required this.lastSeenMs,
+    this.location,
   });
 
   bool get isDirect => hops == 0;
+
+  /// [location] unless it's too old to put on the globe.
+  GeoPoint? get recentLocation {
+    final point = location;
+    if (point == null) return null;
+    final age = DateTime.now().millisecondsSinceEpoch - point.tsMs;
+    return age < LocationService.maxAge.inMilliseconds ? point : null;
+  }
 
   Map<String, Object?> toJson() => <String, Object?>{
         'addr': address,
@@ -29,6 +42,7 @@ class KnownPeer {
         if (nickname != null) 'nick': nickname,
         'hops': hops,
         'seen': lastSeenMs,
+        if (location != null) 'loc': location!.toJson(),
       };
 
   static KnownPeer fromJson(Map<String, Object?> json) => KnownPeer(
@@ -37,6 +51,7 @@ class KnownPeer {
         nickname: json['nick'] as String?,
         hops: (json['hops'] as num?)?.toInt() ?? 0,
         lastSeenMs: (json['seen'] as num?)?.toInt() ?? 0,
+        location: GeoPoint.fromJson(json['loc']),
       );
 }
 
@@ -70,17 +85,24 @@ class PeerDirectory {
 
   /// Records a node learned via verified gossip. Returns true when the
   /// record was new or fresher than what we had (callers re-flood those).
+  /// A fresher record without [location] means the node stopped sharing
+  /// it, so the old one goes too.
   Future<bool> recordGossip(
     String address,
     String x25519Base64, {
     String? nickname,
     required int hops,
     required int tsMs,
+    GeoPoint? location,
   }) async {
     final existing = (await _read())[address];
     if (existing != null && existing.lastSeenMs >= tsMs) return false;
     await _record(address, x25519Base64,
-        nickname: nickname, hops: hops, tsMs: tsMs);
+        nickname: nickname,
+        hops: hops,
+        tsMs: tsMs,
+        location: location,
+        replaceLocation: true);
     return true;
   }
 
@@ -90,6 +112,8 @@ class PeerDirectory {
     String? nickname,
     required int hops,
     required int tsMs,
+    GeoPoint? location,
+    bool replaceLocation = false,
   }) async {
     final peers = await _read();
     final existing = peers[address];
@@ -102,6 +126,7 @@ class PeerDirectory {
           ? existing.hops
           : hops,
       lastSeenMs: tsMs,
+      location: replaceLocation ? location : existing?.location,
     );
     await _write(peers);
     _changed.add(null);

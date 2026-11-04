@@ -8,11 +8,16 @@ import '../../core/models/contact.dart';
 import '../../core/services/chat_storage.dart';
 import '../../core/services/contacts_service.dart';
 import '../../core/services/identity_service.dart';
+import '../../core/services/location_service.dart';
 import '../../core/services/messenger_service.dart';
 import '../../core/services/peer_directory.dart';
+import '../../core/services/route_log.dart';
+import '../../core/services/route_table.dart';
+import '../../core/services/settings_service.dart';
 import '../shared/peer_info_sheet.dart';
 import '../shared/rescan_button.dart';
 import '../shared/transport_status_banner.dart';
+import 'mesh_globe.dart';
 
 /// Live map of the mesh as seen from this device: nodes in direct radio
 /// range (positioned by signal strength) plus nodes known through gossip
@@ -33,20 +38,34 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   List<Contact> _contacts = const <Contact>[];
   StreamSubscription<Set<String>>? _peersSub;
   StreamSubscription<void>? _directorySub;
+  StreamSubscription<void>? _routesSub;
+  StreamSubscription<void>? _locationSub;
   Timer? _refreshTimer;
 
   String? _selected;
   bool _listExpanded = true;
   bool _clearing = false;
 
+  /// Globe instead of radar (remembered); globe data.
+  bool _globe = false;
+  String? _myAddress;
+  GeoPoint? _myPosition;
+  List<MessageRoute> _routes = const <MessageRoute>[];
+  final GlobalKey<MeshGlobeState> _globeKey = GlobalKey<MeshGlobeState>();
+
   @override
   void initState() {
     super.initState();
     _reload();
+    SettingsService.instance.getMeshMapGlobe().then((globe) {
+      if (mounted) setState(() => _globe = globe);
+    });
     _peersSub =
         MessengerService.instance.onPeersChanged.listen((_) => _reload());
     _directorySub =
         PeerDirectory.instance.onChanged.listen((_) => _reload());
+    _routesSub = RouteLog.instance.onChanged.listen((_) => _reload());
+    _locationSub = LocationService.instance.onChanged.listen((_) => _reload());
     _refreshTimer =
         Timer.periodic(const Duration(seconds: 3), (_) => _reload());
   }
@@ -55,6 +74,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   void dispose() {
     _peersSub?.cancel();
     _directorySub?.cancel();
+    _routesSub?.cancel();
+    _locationSub?.cancel();
     _refreshTimer?.cancel();
     super.dispose();
   }
@@ -62,12 +83,17 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   Future<void> _reload() async {
     final contacts = await ContactsService.instance.listContacts();
     final known = await PeerDirectory.instance.listRecent();
+    final me = await IdentityService.instance.getPublicAddressBase64();
+    final position = await LocationService.instance.myPosition();
     if (!mounted) return;
     setState(() {
       _direct = MessengerService.instance.visiblePeers;
       _rssi = MessengerService.instance.peerSignal;
       _known = known;
       _contacts = contacts;
+      _myAddress = me;
+      _myPosition = position;
+      _routes = RouteLog.instance.recent();
       if (_selected != null &&
           !_direct.contains(_selected) &&
           !_known.any((p) => p.address == _selected)) {
@@ -242,6 +268,17 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
         ),
         title: const Text('Mesh Map'),
         actions: [
+          IconButton(
+            tooltip: _globe ? 'Radar view' : 'Globe view',
+            icon: Icon(_globe ? Icons.radar : Icons.public),
+            onPressed: () {
+              setState(() {
+                _globe = !_globe;
+                _selected = null;
+              });
+              unawaited(SettingsService.instance.setMeshMapGlobe(_globe));
+            },
+          ),
           const RescanButton(),
           IconButton(
             tooltip: 'Clear mesh data',
@@ -266,8 +303,13 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
             child: Text(
-              'Green: direct radio link. Blue: heard through relays. '
-              'messages to them ride the mesh from device to device.',
+              _globe
+                  ? 'Yellow: you. Green: direct radio link. Blue: heard '
+                      'through relays. Orange arcs: the way recent messages '
+                      'travelled; dashed where a device on the way keeps its '
+                      'location to itself.'
+                  : 'Green: direct radio link. Blue: heard through relays. '
+                      'messages to them ride the mesh from device to device.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurface.withValues(alpha: 0.45),
@@ -284,6 +326,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     List<String> direct,
     List<KnownPeer> relayed,
   ) {
+    if (_globe) return _buildGlobe(theme, direct, relayed);
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
@@ -366,6 +409,182 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
         );
       },
     );
+  }
+
+  Widget _buildGlobe(
+    ThemeData theme,
+    List<String> direct,
+    List<KnownPeer> relayed,
+  ) {
+    final me = _myAddress;
+    final mine = _myPosition;
+    final nodes = <GlobeNode>[
+      if (me != null && mine != null)
+        GlobeNode(
+          id: me,
+          label: _youLabel,
+          lat: mine.lat,
+          lon: mine.lon,
+          kind: GlobeNodeKind.me,
+        ),
+    ];
+    var unplaced = 0;
+    for (final address in [...direct, for (final p in relayed) p.address]) {
+      final location = _knownFor(address)?.recentLocation;
+      if (location == null) {
+        unplaced++;
+        continue;
+      }
+      nodes.add(GlobeNode(
+        id: address,
+        label: _labelFor(address),
+        lat: location.lat,
+        lon: location.lon,
+        accuracyM: location.accuracyM,
+        kind: _direct.contains(address)
+            ? GlobeNodeKind.direct
+            : GlobeNodeKind.mesh,
+      ));
+    }
+    final placed = {for (final node in nodes) node.id};
+    final links = <GlobeLink>[
+      if (me != null)
+        for (final address in direct)
+          if (placed.contains(address)) GlobeLink(me, address),
+      for (final peer in relayed)
+        if (placed.contains(peer.address))
+          for (final hop in RouteTable.instance
+              .nextHopsFor(peer.address, online: _direct)
+              .take(1))
+            if (placed.contains(hop))
+              GlobeLink(hop, peer.address, inferred: true),
+    ];
+    final selected = _selected;
+    final muted = Colors.white.withValues(alpha: 0.75);
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: MeshGlobe(
+            key: _globeKey,
+            nodes: nodes,
+            links: links,
+            routes: _routes,
+            selected: selected,
+            focus: mine == null ? null : (mine.lat, mine.lon),
+            onSelect: (address) => setState(
+                () => _selected = address == me ? null : address),
+            onLongPress: _confirmPin,
+          ),
+        ),
+        if (selected != null)
+          Positioned(
+            left: 8,
+            top: 8,
+            child: _PeerDetailsCard(
+              title: _labelFor(selected),
+              address: selected,
+              route: _routeLabel(selected),
+              lastSeen: _lastSeenLabel(selected),
+              signal: _rssi[selected],
+              isDirect: _isDirectSelected,
+              isContact: _isContact(selected),
+              onClose: () => setState(() => _selected = null),
+              onMessage: () => _message(selected),
+              onAddContact: () => _addContact(selected),
+            ),
+          ),
+        Positioned(
+          right: 8,
+          top: 8,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              IconButton.filledTonal(
+                tooltip: 'Zoom in',
+                icon: const Icon(Icons.add),
+                onPressed: () => _globeKey.currentState?.zoomBy(2),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Zoom out',
+                icon: const Icon(Icons.remove),
+                onPressed: () => _globeKey.currentState?.zoomBy(0.5),
+              ),
+              if (mine != null)
+                IconButton.filledTonal(
+                  tooltip: 'Show me',
+                  icon: const Icon(Icons.my_location),
+                  onPressed: () => _globeKey.currentState
+                      ?.lookAt(mine.lat, mine.lon, zoom: 40),
+                ),
+            ],
+          ),
+        ),
+        if (mine == null || unplaced > 0)
+          Positioned(
+            left: 12,
+            right: 64,
+            bottom: 10,
+            child: IgnorePointer(
+              child: Text(
+                [
+                  if (mine == null)
+                    "You're not on the globe: turn on location sharing in "
+                        'Settings, or long-press your spot to pin it.',
+                  if (unplaced > 0)
+                    '$unplaced device${unplaced == 1 ? " doesn't" : "s don't"} '
+                        'share a location, so ${unplaced == 1 ? "it's" : "they're"} '
+                        'only in the list below and on the radar.',
+                ].join(' '),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: muted,
+                  shadows: const [Shadow(color: Colors.black, blurRadius: 6)],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Long-press on the globe: pin this device's spot there.
+  Future<void> _confirmPin(double lat, double lon, double metersPerPixel) async {
+    // A fingertip covers about 20 px.
+    final accuracy = max(25, (metersPerPixel * 20).round());
+    final rough = accuracy > 2000;
+    final sharing = await LocationService.instance.isSharing;
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Pin your spot here?'),
+        content: Text([
+          '${lat.toStringAsFixed(3)}, ${lon.toStringAsFixed(3)}'
+              '${rough ? ' (to within about ${(accuracy / 1000).round()} km: zoom in first to place it more precisely)' : ''}.',
+          sharing
+              ? 'Others see it as your location from now on.'
+              : 'Nobody sees it until you turn on location sharing in '
+                  'Settings.',
+        ].join('\n\n')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Pin it'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await LocationService.instance.setPin(GeoPoint(
+      lat: lat,
+      lon: lon,
+      accuracyM: accuracy,
+      tsMs: DateTime.now().millisecondsSinceEpoch,
+    ));
   }
 
   Widget _buildListHeader(ThemeData theme, int deviceCount) {
