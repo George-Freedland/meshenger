@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:geolocator/geolocator.dart';
@@ -223,10 +224,45 @@ class LocationService {
           'Meshenger still needs your OK to read this location: tap Try '
               'again and allow it.',
         LocationProblem.notFound =>
-          "This device couldn't work out where it is (laptops often can't "
-              'without Wi-Fi and internet). Pin your spot on the globe '
-              'instead: long-press it on the Mesh Map.',
+          "This device couldn't work out where it is. It needs Location "
+              'Services and Wi-Fi; a Mac scans for a few minutes before it '
+              'knows. Pin your spot on the globe instead: long-press it on '
+              'the Mesh Map.',
       };
+
+  /// Shown while a reading is in progress. A Mac has no GPS: Core Location
+  /// answers "unknown" at once and only returns a position at its next
+  /// Wi-Fi scan, which can be several minutes later.
+  static String finding({bool offerPin = false}) {
+    if (Platform.isMacOS) {
+      return "Finding this Mac's location. A Wi-Fi scan can take a few "
+          'minutes, so leave this open'
+          '${offerPin ? ', or long-press the globe to pin your spot' : ''}.';
+    }
+    return offerPin
+        ? "Finding this device's location… or long-press your spot to pin it."
+        : "Finding this device's location…";
+  }
+
+  /// How one position read is asked for. [macOS] overrides the platform so
+  /// tests can cover both.
+  ///
+  /// On a Mac the native side already waits out that Wi-Fi scan (about six
+  /// minutes) and then fails on its own. A short [LocationSettings.timeLimit]
+  /// gives up while the scan is still running, and the next attempt restarts
+  /// the wait, so Try again never succeeds. A Mac also cannot meet a
+  /// ten-meter target, so the request asks for a kilometer, which a Wi-Fi
+  /// fix can actually satisfy. The point that comes back still carries its
+  /// real accuracy.
+  static LocationSettings readSettings({bool? macOS}) {
+    if (macOS ?? Platform.isMacOS) {
+      return const LocationSettings(accuracy: LocationAccuracy.low);
+    }
+    return const LocationSettings(
+      accuracy: LocationAccuracy.high,
+      timeLimit: Duration(seconds: 20),
+    );
+  }
 
   /// Opens the device's location settings, where access is allowed.
   Future<void> openDeviceSettings() async {
@@ -273,10 +309,7 @@ class LocationService {
           break;
       }
       final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 20),
-        ),
+        locationSettings: readSettings(),
       );
       final fix = GeoPoint(
         lat: position.latitude,

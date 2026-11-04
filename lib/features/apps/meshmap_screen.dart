@@ -534,9 +534,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                   if (mine == null)
                     _sharing
                         ? switch (LocationService.instance.problem) {
-                            null =>
-                              "Finding this device's location… or long-press "
-                                  'your spot to pin it.',
+                            null => LocationService.finding(offerPin: true),
                             final problem =>
                               "You're not on the globe yet. "
                                   '${LocationService.describe(problem)}',

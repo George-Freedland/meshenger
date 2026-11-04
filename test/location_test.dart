@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:meshenger/core/models/incoming_message.dart';
@@ -104,6 +105,15 @@ void main() {
 
   group('sharing settings', () {
     final location = LocationService.instance;
+
+    test('a Mac waits out its Wi-Fi scan instead of the 20 second limit', () {
+      final mac = LocationService.readSettings(macOS: true);
+      final other = LocationService.readSettings(macOS: false);
+      expect(mac.timeLimit, isNull);
+      expect(mac.accuracy, LocationAccuracy.low);
+      expect(other.timeLimit, const Duration(seconds: 20));
+      expect(other.accuracy, LocationAccuracy.high);
+    });
 
     test('both are off until turned on, and nothing is shared', () async {
       expect(await location.getShareApproximate(), isFalse);

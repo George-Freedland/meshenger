@@ -126,7 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (problem != null && !location.isLooking) {
       return LocationService.describe(problem);
     }
-    return "Finding this device's location…";
+    return LocationService.finding();
   }
 
   Future<void> _unhidePosts() async {
