@@ -250,7 +250,13 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
       case BlobState.verifying:
         return 'Checking…';
       default:
-        return null;
+        // Whoever has the file (the poster, or anyone who downloaded it)
+        // shares it; say so while someone is getting it from here.
+        final sharing = BlobService.instance.sharingWith(_file.sha256);
+        if (sharing == 0) return null;
+        return sharing == 1
+            ? 'Sharing with 1 person nearby'
+            : 'Sharing with $sharing people nearby';
     }
   }
 
@@ -284,7 +290,8 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
     } catch (_) {}
     if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('No app here opens that — save it to Storage instead')));
+          content:
+              Text('No app here opens that — save it to Storage instead')));
     }
   }
 
@@ -330,8 +337,7 @@ class _PostAttachmentViewState extends State<PostAttachmentView> {
         onFetch: _fetch,
         busy: _busy,
         downloadFraction: fraction,
-        status: _status ??
-            (_path == null ? formatBytes(_file.size) : null),
+        status: _status ?? (_path == null ? formatBytes(_file.size) : null),
         actions: actions,
       );
     }

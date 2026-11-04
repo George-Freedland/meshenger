@@ -1,4 +1,6 @@
-import 'package:audioplayers/audioplayers.dart';
+import 'dart:io';
+
+import 'package:media_kit/media_kit.dart';
 
 import 'settings_service.dart';
 
@@ -36,18 +38,20 @@ class AlertSoundService {
   AlertSoundService._();
   static final AlertSoundService instance = AlertSoundService._();
 
-  // Created on the first sound, so muted devices never start an audio player.
-  late final AudioPlayer _player = AudioPlayer();
+  // Created on the first sound, so muted devices never start a player.
+  Player? _player;
 
   Future<void> play({AlertTone? tone, bool ignoreMute = false}) async {
     if (!ignoreMute && !await SettingsService.instance.getSoundEnabled()) {
       return;
     }
+    // Unit tests run without the player's native library.
+    if (Platform.environment.containsKey('FLUTTER_TEST')) return;
     final chosen =
         tone ?? AlertTone.fromName(await SettingsService.instance.getAlertToneName());
     try {
-      await _player.stop();
-      await _player.play(AssetSource('sounds/${chosen.name}.wav'));
+      final player = _player ??= Player();
+      await player.open(Media('asset:///${chosen.asset}'));
     } catch (_) {
       // Sound is best-effort; never block message handling.
     }

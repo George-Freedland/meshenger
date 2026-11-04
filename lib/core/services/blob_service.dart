@@ -149,6 +149,7 @@ class BlobService {
     }
     _downloads.clear();
     _serving.clear();
+    _uploads.clear();
     _index = null;
   }
 
@@ -162,6 +163,34 @@ class BlobService {
   /// Per (file, requester): bumping it stops an older serve loop.
   final Map<String, int> _serving = <String, int>{};
   Timer? _ticker;
+
+  /// Devices downloading each of my files from me: file → device → when it
+  /// last asked for chunks.
+  final Map<String, Map<String, int>> _uploads = <String, Map<String, int>>{};
+
+  /// A device that hasn't asked for chunks this long has finished or left.
+  static const Duration uploadQuietAfter = Duration(seconds: 12);
+
+  /// How many devices nearby are downloading [sha] from this one right now.
+  int sharingWith(String sha) => _uploads[sha]?.length ?? 0;
+
+  void _noteUpload(String sha, String to) {
+    final peers = _uploads.putIfAbsent(sha, () => <String, int>{});
+    final isNew = !peers.containsKey(to);
+    peers[to] = DateTime.now().millisecondsSinceEpoch;
+    if (isNew) _changed.add(sha);
+    _ticker ??= Timer.periodic(const Duration(seconds: 2), (_) => _tick());
+  }
+
+  void _expireUploads(int now) {
+    for (final sha in _uploads.keys.toList()) {
+      final peers = _uploads[sha]!;
+      final before = peers.length;
+      peers.removeWhere((_, ms) => now - ms > uploadQuietAfter.inMilliseconds);
+      if (peers.isEmpty) _uploads.remove(sha);
+      if (peers.length != before) _changed.add(sha);
+    }
+  }
 
   /// Complete files on disk: hash → path.
   Map<String, String>? _index;
@@ -662,12 +691,13 @@ class BlobService {
   }
 
   Future<void> _tick() async {
-    if (_downloads.isEmpty) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    _expireUploads(now);
+    if (_downloads.isEmpty && _uploads.isEmpty) {
       _ticker?.cancel();
       _ticker = null;
       return;
     }
-    final now = DateTime.now().millisecondsSinceEpoch;
     for (final d in _downloads.values.toList()) {
       if (d.state == BlobState.downloading &&
           now - d.lastActivityMs > _stallLimitMs(d, now)) {
@@ -729,6 +759,7 @@ class BlobService {
     final total = chunkCountFor(size);
     if (from < 0 || from >= total) return;
     final end = min(total, from + count.clamp(1, window));
+    _noteUpload(sha, to);
 
     // A newer request from the same device replaces this one.
     final key = '$sha|$to';
@@ -754,6 +785,7 @@ class BlobService {
           bulk: true,
         );
         if (!sent) return;
+        _uploads[sha]?[to] = DateTime.now().millisecondsSinceEpoch;
       }
     } finally {
       await raf.close();

@@ -436,18 +436,29 @@ final class CentralManagerImpl
     final servicesArgs = await _api.getServices(addressArgs, modeArgs);
     for (var serviceArgs in servicesArgs) {
       final handleArgs = serviceArgs.handleArgs;
-      final includedServicesArgs = await _getIncludedServices(
-        addressArgs,
-        handleArgs,
-        modeArgs,
-      );
-      serviceArgs.includedServicesArgs = includedServicesArgs;
-      final characteristicsArgs = await _getCharacteristics(
-        addressArgs,
-        handleArgs,
-        modeArgs,
-      );
-      serviceArgs.characteristicsArgs = characteristicsArgs;
+      // Some services refuse to be read (macOS answers "access denied" for
+      // its own ones). That shouldn't fail discovering the rest, so such a
+      // service just comes back empty.
+      try {
+        serviceArgs.includedServicesArgs = await _getIncludedServices(
+          addressArgs,
+          handleArgs,
+          modeArgs,
+        );
+      } catch (e) {
+        _logger.warning('getIncludedServices failed, skipping.', e);
+        serviceArgs.includedServicesArgs = [];
+      }
+      try {
+        serviceArgs.characteristicsArgs = await _getCharacteristics(
+          addressArgs,
+          handleArgs,
+          modeArgs,
+        );
+      } catch (e) {
+        _logger.warning('getCharacteristics failed, skipping.', e);
+        serviceArgs.characteristicsArgs = [];
+      }
     }
     return servicesArgs;
   }

@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
+
+import '../media/progressive_player.dart';
 
 String formatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
@@ -23,6 +25,23 @@ String formatDuration(Duration d) {
   final seconds = d.inSeconds % 60;
   return '$minutes:${seconds.toString().padLeft(2, '0')}';
 }
+
+/// Voice notes and push-to-talk: speech needs far fewer bits than music,
+/// and every clip crosses Bluetooth, so 32 kbps at 24 kHz (half of the old
+/// 64 kbps). Windows' AAC encoder only does 96 kbps and up at 44.1/48 kHz
+/// whatever it's asked, so it keeps the settings it accepts.
+RecordConfig voiceRecordConfig() => Platform.isWindows
+    ? const RecordConfig(
+        encoder: AudioEncoder.aacLc,
+        bitRate: 64000,
+        numChannels: 1,
+      )
+    : const RecordConfig(
+        encoder: AudioEncoder.aacLc,
+        bitRate: 32000,
+        sampleRate: 24000,
+        numChannels: 1,
+      );
 
 const _mimeByExtension = <String, String>{
   'jpg': 'image/jpeg',
@@ -164,58 +183,52 @@ class AudioClipPlayer extends StatefulWidget {
 }
 
 class _AudioClipPlayerState extends State<AudioClipPlayer> {
-  final AudioPlayer _player = AudioPlayer();
-  PlayerState _playerState = PlayerState.stopped;
-  Duration _position = Duration.zero;
-  Duration? _duration;
-
-  final List<StreamSubscription<dynamic>> _subs = [];
+  final ProgressivePlayer _player = ProgressivePlayer();
 
   @override
   void initState() {
     super.initState();
-    _subs.add(_player.onPlayerStateChanged.listen((state) {
-      if (mounted) setState(() => _playerState = state);
-    }));
-    _subs.add(_player.onPositionChanged.listen((position) {
-      if (mounted) setState(() => _position = position);
-    }));
-    _subs.add(_player.onDurationChanged.listen((duration) {
-      if (mounted) setState(() => _duration = duration);
-    }));
-    if (widget.durationMs != null) {
-      _duration = Duration(milliseconds: widget.durationMs!);
-    }
+    _sync();
+    _player.addListener(_onPlayer);
+  }
+
+  @override
+  void didUpdateWidget(covariant AudioClipPlayer old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    final ms = widget.durationMs;
+    _player.update(
+      path: widget.path,
+      length: ms == null ? null : Duration(milliseconds: ms),
+    );
+  }
+
+  void _onPlayer() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    for (final sub in _subs) {
-      sub.cancel();
-    }
+    _player.removeListener(_onPlayer);
     _player.dispose();
     super.dispose();
   }
 
-  Future<void> _toggle() async {
-    if (_playerState == PlayerState.playing) {
-      await _player.pause();
-    } else if (_playerState == PlayerState.paused) {
-      await _player.resume();
-    } else {
-      await _player.play(DeviceFileSource(widget.path));
-    }
-  }
+  Future<void> _toggle() => _player.toggle();
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = widget.color ?? theme.colorScheme.primary;
-    final total = _duration ?? Duration.zero;
+    final total = _player.length ?? Duration.zero;
+    final position = _player.position;
     final progress = total.inMilliseconds == 0
         ? 0.0
-        : (_position.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0);
-    final playing = _playerState == PlayerState.playing;
+        : (position.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0);
+    final playing = _player.playing;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -240,8 +253,8 @@ class _AudioClipPlayerState extends State<AudioClipPlayer> {
               ),
               const SizedBox(height: 4),
               Text(
-                playing || _position > Duration.zero
-                    ? formatDuration(_position)
+                playing || position > Duration.zero
+                    ? formatDuration(position)
                     : formatDuration(total),
                 style: theme.textTheme.labelSmall,
               ),
@@ -253,13 +266,23 @@ class _AudioClipPlayerState extends State<AudioClipPlayer> {
   }
 }
 
-/// Plays an audio file once (used to auto-play call audio). Returns the
-/// player so the caller can stop it.
-Future<AudioPlayer> playOnce(String path) async {
-  final player = AudioPlayer();
-  player.onPlayerComplete.listen((_) => player.dispose());
-  await player.play(DeviceFileSource(path));
-  return player;
+/// Plays an audio file once (used to auto-play call audio). Returns a
+/// function that stops it early; the player cleans up after itself either
+/// way.
+Future<Future<void> Function()> playOnce(String path) async {
+  final player = Player();
+  var disposed = false;
+  Future<void> stop() async {
+    if (disposed) return;
+    disposed = true;
+    await player.dispose();
+  }
+
+  player.stream.completed.listen((completed) {
+    if (completed) unawaited(stop());
+  });
+  await player.open(Media(path));
+  return stop;
 }
 
 // ---------------------------------------------------------------------
@@ -331,14 +354,7 @@ class _RecordSheetState extends State<_RecordSheet> {
       final dir = await getTemporaryDirectory();
       final path =
           '${dir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          bitRate: 64000,
-          numChannels: 1,
-        ),
-        path: path,
-      );
+      await _recorder.start(voiceRecordConfig(), path: path);
       _startedAt = DateTime.now();
       _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
         if (mounted && _startedAt != null) {

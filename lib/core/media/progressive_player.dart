@@ -50,10 +50,9 @@ class ProgressivePlayer extends ChangeNotifier {
 
   bool _playWhenReady = false;
 
-  /// Where playback caught up with the download, and how far the download
-  /// must get before it goes on.
+  /// Where playback caught up with the download; it goes on from here once
+  /// the rest will arrive in time.
   Duration? _resumeAt;
-  int _resumeBytes = 0;
 
   VideoController? get video => _video;
   Duration? get length => _knownLength ?? _playerLength;
@@ -119,17 +118,18 @@ class ProgressivePlayer extends ChangeNotifier {
     }
     final partial = _partial;
     if (partial == null) return; // still looking for the file
-    if (_resumeAt != null &&
-        !partial.complete &&
-        partial.availableBytes < _resumeBytes) {
-      return;
-    }
-    final wait = waitBeforePlaying(partial,
-        minimumBytes: withVideo ? 512 * 1024 : 64 * 1024);
+    final wait = waitBeforePlaying(
+      partial,
+      from: _resumeAt ?? Duration.zero,
+      minimumBytes: withVideo ? 512 * 1024 : 64 * 1024,
+    );
+    final resuming = _resumeAt != null;
     final label = wait == null
-        ? 'Starting…'
+        ? (resuming ? 'Buffering…' : 'Starting…')
         : wait > Duration.zero
-            ? 'Starts in ${_clock(wait)}'
+            ? (resuming
+                ? 'Buffering… ${_clock(wait)}'
+                : 'Starts in ${_clock(wait)}')
             : null;
     if (label != null) {
       if (label != waitLabel) {
@@ -199,10 +199,9 @@ class ProgressivePlayer extends ChangeNotifier {
   void _onEnded({bool error = false}) {
     final partial = _partial;
     if (onPartial && partial != null && !partial.complete) {
-      // Ran out of downloaded bytes: carry on once more has arrived.
+      // Ran out of downloaded bytes: carry on once the rest will arrive in
+      // time from here.
       _resumeAt ??= position;
-      _resumeBytes = partial.availableBytes +
-          max(128 * 1024, (partial.bytesPerSecond * 5).round());
       waitLabel = 'Buffering…';
       opened = false;
       _notify();

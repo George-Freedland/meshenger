@@ -81,6 +81,8 @@ namespace bluetooth_low_energy_windows
 		// (it costs both devices power).
 		std::map<int64_t, winrt::Windows::Foundation::IClosable> m_throughput_requests;
 		std::map<int64_t, std::chrono::steady_clock::time_point> m_last_bulk_write;
+		// Notifications from each peripheral in the current second.
+		std::map<int64_t, std::pair<std::chrono::steady_clock::time_point, int>> m_notification_bursts;
 		std::optional<winrt::Windows::Devices::Radios::Radio::StateChanged_revoker> m_radio_state_changed_revoker;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::BluetoothLEDevice::ConnectionStatusChanged_revoker>> m_device_connection_status_changed_revokers;
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession::MaxPduSizeChanged_revoker>> m_session_max_pdu_size_changed_revokers;
@@ -103,6 +105,7 @@ namespace bluetooth_low_energy_windows
 		void CloseConnection(int64_t address_args);
 		void RequestThroughput(int64_t address_args);
 		void ReleaseThroughput(int64_t address_args);
+		void NoteNotification(int64_t address_args);
 		winrt::fire_and_forget ReleaseThroughputWhenIdleAsync(int64_t address_args);
 
 		winrt::Windows::Devices::Bluetooth::BluetoothLEDevice &RetrieveDevice(int64_t address_args);

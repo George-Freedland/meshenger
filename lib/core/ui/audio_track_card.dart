@@ -422,16 +422,30 @@ Future<AudioMetadata> _cachedMetadata(String path) {
 
 /// [AudioTrackCard] for a file on this device: tags and cover come from
 /// the file, falling back to its name.
+///
+/// While the file is still arriving, give [partial] instead of [path]: it's
+/// the same card (and the same player) from the first bytes to the finished
+/// file, so a song playing as it downloads keeps playing when it completes.
 class AudioFileCard extends StatefulWidget {
   const AudioFileCard({
     super.key,
     required this.path,
     required this.fileName,
+    this.partial,
+    this.duration,
+    this.busy = false,
+    this.downloadFraction,
     this.actions = const <Widget>[],
   });
 
-  final String path;
+  final String? path;
   final String fileName;
+  final GrowingFile? partial;
+
+  /// Playing time known before the file is here.
+  final Duration? duration;
+  final bool busy;
+  final double? downloadFraction;
   final List<Widget> actions;
 
   @override
@@ -439,12 +453,15 @@ class AudioFileCard extends StatefulWidget {
 }
 
 class _AudioFileCardState extends State<AudioFileCard> {
-  late Future<AudioMetadata> _meta = _cachedMetadata(widget.path);
+  late Future<AudioMetadata> _meta = _metaFor(widget.path);
+
+  static Future<AudioMetadata> _metaFor(String? path) =>
+      path == null ? Future.value(AudioMetadata.empty) : _cachedMetadata(path);
 
   @override
   void didUpdateWidget(covariant AudioFileCard old) {
     super.didUpdateWidget(old);
-    if (old.path != widget.path) _meta = _cachedMetadata(widget.path);
+    if (old.path != widget.path) _meta = _metaFor(widget.path);
   }
 
   @override
@@ -457,11 +474,14 @@ class _AudioFileCardState extends State<AudioFileCard> {
         final art = meta.art;
         return AudioTrackCard(
           path: widget.path,
+          partial: widget.partial,
           title: meta.title ?? title,
           artist: meta.artist ?? artist,
           album: meta.album,
-          duration: meta.duration,
+          duration: meta.duration ?? widget.duration,
           art: art == null ? null : MemoryImage(art),
+          busy: widget.busy,
+          downloadFraction: widget.downloadFraction,
           actions: widget.actions,
         );
       },

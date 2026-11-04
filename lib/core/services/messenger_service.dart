@@ -98,6 +98,7 @@ class MessengerService {
   /// central-only because this adapter cannot advertise).
   String? get transportWarning =>
       isTransportRunning ? _transport?.startupWarning : null;
+  String? _lastTransportWarning;
 
   final _changed = StreamController<String>.broadcast();
   final _peers = StreamController<Set<String>>.broadcast();
@@ -433,6 +434,13 @@ class MessengerService {
 
   Future<void> _meshTick() async {
     if (!IdentityScope.hasActive || !isTransportRunning) return;
+    // The transport's warning can change while it runs (Bluetooth going
+    // quiet, then recovering); the status banner listens for this.
+    final warning = transportWarning;
+    if (warning != _lastTransportWarning) {
+      _lastTransportWarning = warning;
+      _transportChanged.add(null);
+    }
     // Deadline sweep runs even with zero peers — "no nodes in range at
     // all" is exactly the mesh-gap signal the sender must see.
     await _sweepDeliveryDeadlines();

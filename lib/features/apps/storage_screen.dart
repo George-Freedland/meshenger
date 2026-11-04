@@ -154,8 +154,9 @@ class _StorageScreenState extends State<StorageScreen>
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sent to ${target.nickname ?? 'contact'}. '
-              'Delivering over the mesh.')),
+          SnackBar(
+              content: Text('Sent to ${target.nickname ?? 'contact'}. '
+                  'Delivering over the mesh.')),
         );
       }
     } on StateError catch (e) {
@@ -183,59 +184,63 @@ class _StorageScreenState extends State<StorageScreen>
     final path = _paths[item.id];
     await showModalBottomSheet<void>(
       context: context,
+      // A video player plus the actions is taller than the default sheet.
+      isScrollControlled: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (item.isAudio && path != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: AudioFileCard(path: path, fileName: item.name),
-              ),
-            if (item.mime.startsWith('video/') && path != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: VideoPlayerCard(
-                  title: item.name,
-                  path: path,
-                  duration: item.durationMs == null
-                      ? null
-                      : Duration(milliseconds: item.durationMs!),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (item.isAudio && path != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                  child: AudioFileCard(path: path, fileName: item.name),
+                ),
+              if (item.mime.startsWith('video/') && path != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                  child: VideoPlayerCard(
+                    title: item.name,
+                    path: path,
+                    duration: item.durationMs == null
+                        ? null
+                        : Duration(milliseconds: item.durationMs!),
+                  ),
+                ),
+              ListTile(
+                title: Text(item.name,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                  '${_sourceLabel(item.source)} · ${formatBytes(item.sizeBytes)}',
                 ),
               ),
-            ListTile(
-              title: Text(item.name,
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(
-                '${_sourceLabel(item.source)} · ${formatBytes(item.sizeBytes)}',
-              ),
-            ),
-            if (item.isImage && path != null)
+              if (item.isImage && path != null)
+                ListTile(
+                  leading: const Icon(Icons.visibility_outlined),
+                  title: const Text('View'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    showImageViewer(context, path);
+                  },
+                ),
               ListTile(
-                leading: const Icon(Icons.visibility_outlined),
-                title: const Text('View'),
+                leading: const Icon(Icons.send_outlined),
+                title: const Text('Send to contact'),
                 onTap: () {
                   Navigator.pop(ctx);
-                  showImageViewer(context, path);
+                  _sendToContact(item);
                 },
               ),
-            ListTile(
-              leading: const Icon(Icons.send_outlined),
-              title: const Text('Send to contact'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _sendToContact(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await MediaStore.instance.delete(item.id);
-              },
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Delete'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await MediaStore.instance.delete(item.id);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

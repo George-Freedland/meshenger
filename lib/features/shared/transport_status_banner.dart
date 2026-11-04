@@ -45,6 +45,10 @@ class _TransportStatusBannerState extends State<TransportStatusBanner> {
     if (mounted) setState(() => _retrying = false);
   }
 
+  /// Bluetooth went quiet mid-session: restarting it is worth a try.
+  static bool _quiet(String? warning) =>
+      warning != null && warning.contains("isn't hearing any devices");
+
   @override
   Widget build(BuildContext context) {
     final service = MessengerService.instance;
@@ -61,8 +65,11 @@ class _TransportStatusBannerState extends State<TransportStatusBanner> {
         ? theme.colorScheme.onErrorContainer
         : theme.colorScheme.onTertiaryContainer;
     final icon = isError ? Icons.bluetooth_disabled : Icons.info_outline;
-    final title =
-        isError ? 'Bluetooth transport not running' : 'Limited Bluetooth mode';
+    final title = isError
+        ? 'Bluetooth transport not running'
+        : _quiet(warning)
+            ? 'Bluetooth went quiet'
+            : 'Limited Bluetooth mode';
 
     return Material(
       color: background,
@@ -92,7 +99,7 @@ class _TransportStatusBannerState extends State<TransportStatusBanner> {
                 ],
               ),
             ),
-            if (isError) ...[
+            if (isError || _quiet(warning)) ...[
               const SizedBox(width: 8),
               _retrying
                   ? const Padding(

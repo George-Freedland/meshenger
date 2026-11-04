@@ -5,6 +5,8 @@ namespace bluetooth_low_energy_windows
 	// static
 	void BluetoothLowEnergyWindowsPlugin::RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar)
 	{
+		// Registration runs on the platform thread: events come back to it.
+		platform_thread::Initialize();
 		auto messenger = registrar->messenger();
 
 		auto central_manager = std::make_unique<CentralManagerImpl>(messenger);

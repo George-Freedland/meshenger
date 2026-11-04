@@ -32,8 +32,26 @@ void main() {
 
     test('after a head start when it is slower', () {
       final wait = waitBeforePlaying(file(have: 0, rate: 10 * 1024))!;
-      // Needs 4 MB − 0.85 × 10 KB/s × 240 s ≈ 2 MB first: about 205 s.
-      expect(wait.inSeconds, inInclusiveRange(195, 215));
+      // Needs 4 MB − 0.8 × 10 KB/s × 240 s ≈ 2.1 MB first: about 218 s.
+      expect(wait.inSeconds, inInclusiveRange(210, 225));
+    });
+
+    test('a resume counts from where playback stopped', () {
+      // Halfway through with 3 of 4 MB here: 4 MB − 0.8 × 10 KB/s × 120 s
+      // ≈ 3.06 MB must be in first, so about 6 s more.
+      final wait = waitBeforePlaying(
+        file(have: 3 * 1024 * 1024, rate: 10 * 1024),
+        from: const Duration(minutes: 2),
+      )!;
+      expect(wait.inSeconds, inInclusiveRange(5, 8));
+      // Far ahead of the playhead: go on at once.
+      expect(
+        waitBeforePlaying(
+          file(have: 3 * 1024 * 1024, rate: 48 * 1024),
+          from: const Duration(minutes: 1),
+        ),
+        Duration.zero,
+      );
     });
 
     test('not before there is a speed to go on', () {

@@ -75,7 +75,8 @@ namespace bluetooth_low_energy_windows
 		std::atomic<uint64_t> m_next_write_ticket{0};
 		uint64_t m_next_write_delivery = 0;
 		std::map<uint64_t, std::function<void()>> m_pending_writes;
-		std::atomic<int64_t> m_next_write_id{1};
+		// Ids for read and write requests awaiting Dart's answer.
+		std::atomic<int64_t> m_next_request_id{1};
 		// Device id -> Bluetooth address; looking it up for every write
 		// costs a round trip through the Bluetooth stack.
 		std::mutex m_addresses_mutex;
@@ -83,6 +84,9 @@ namespace bluetooth_low_energy_windows
 		std::map<int64_t, std::optional<winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession>> m_watched_sessions;
 
 		void DeliverWriteInOrder(uint64_t ticket, std::function<void()> deliver);
+		// The Bluetooth address behind [session]; throws when the device is
+		// already gone (a request arriving as it disconnects).
+		winrt::Windows::Foundation::IAsyncOperation<int64_t> AddressOfAsync(winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession session);
 		void WatchMtu(int64_t address_args, const CentralArgs &central_args, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSession &session);
 
 		winrt::fire_and_forget InitializeAsync(std::function<void(std::optional<FlutterError> reply)> result);

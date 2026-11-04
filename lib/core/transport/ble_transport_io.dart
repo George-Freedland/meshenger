@@ -115,7 +115,12 @@ class _IoBleTransport implements MeshTransport {
   int _inboundHandshakeUntilMs = 0;
 
   @override
-  String? get startupWarning => _startupWarning;
+  String? get startupWarning => _startupWarning ?? _healthWarning;
+
+  /// Set while the scan hears nothing at all (Windows' broad scan always
+  /// hears something when the radio works).
+  String? _healthWarning;
+  int _silentChecks = 0;
 
   final Map<String, _BlePeer> _peersByAddress = <String, _BlePeer>{};
   final Map<String, String> _addressByDeviceUuid = <String, String>{};
@@ -152,6 +157,15 @@ class _IoBleTransport implements MeshTransport {
   /// File chunks and their bookkeeping; logging each would flush the
   /// connection log within seconds.
   static const Set<String> _quietTypes = {'ftc', 'fta', 'bdat', 'bget'};
+
+  /// Links whose packet size is already in the log ("write:…", "push:…").
+  final Set<String> _loggedLinkSizes = <String>{};
+
+  void _logLinkSize(String key, String what, int bytes) {
+    if (_loggedLinkSizes.add(key)) {
+      TransportLog.instance.log('BLE: $what in $bytes-byte packets');
+    }
+  }
 
   final _packets = StreamController<Map<String, Object?>>.broadcast();
   final _peersChanged = StreamController<Set<String>>.broadcast();
@@ -441,6 +455,9 @@ class _IoBleTransport implements MeshTransport {
     _notifyBuffers.clear();
     _binaryPeers.clear();
     _pushQueues.clear();
+    _healthWarning = null;
+    _silentChecks = 0;
+    _loggedLinkSizes.clear();
     _inboundPeers.clear();
     _inboundByAddress.clear();
     _notifySubscribed.clear();
@@ -868,6 +885,18 @@ class _IoBleTransport implements MeshTransport {
     // Only Windows scans broadly; a filtered scan is silent whenever no
     // Meshenger device is around.
     if (!Platform.isWindows) return;
+    _silentChecks = heard == 0 ? _silentChecks + 1 : 0;
+    if (_silentChecks >= 3 && _healthWarning == null) {
+      _healthWarning = "This PC's Bluetooth isn't hearing any devices. "
+          'Meshenger keeps restarting the scan; if this lasts, tap Retry, '
+          'then quit and reopen Meshenger, and if that fails restart the PC.';
+      TransportLog.instance.log('BLE: nothing heard for '
+          '${_silentChecks * scanCheckInterval.inSeconds} s despite restarts '
+          '— showing the user how to recover');
+    } else if (_silentChecks == 0 && _healthWarning != null) {
+      _healthWarning = null;
+      TransportLog.instance.log('BLE: hearing devices again');
+    }
     final now = DateTime.now().millisecondsSinceEpoch;
     final silentMs = now - _lastAdvertHeardMs;
     if (silentMs < silentScanRestartAfter.inMilliseconds) return;
@@ -1190,6 +1219,15 @@ class _IoBleTransport implements MeshTransport {
         .timeout(gattTimeout);
     // 1 byte reserved for the chunk flag.
     final chunkSize = (maxWriteLength - 1).clamp(19, 511);
+    if (payload.length > chunkSize) {
+      final who = _addressByDeviceUuid[device.uuid.toString()];
+      _logLinkSize(
+        'write:${device.uuid}',
+        'writing to ${who == null ? device.uuid : _shortAddr(who)}'
+            '${unacked ? '' : ' (acknowledged, older app)'}',
+        chunkSize + 1,
+      );
+    }
 
     for (var offset = 0; offset < payload.length; offset += chunkSize) {
       final end = (offset + chunkSize < payload.length)
@@ -1251,6 +1289,10 @@ class _IoBleTransport implements MeshTransport {
         maxLen = 181;
       }
       final chunkSize = (maxLen - 1).clamp(19, 511);
+      if (payload.length > chunkSize) {
+        _logLinkSize('push:$centralUuid', 'pushing to ${_shortAddr(peerAddress)}',
+            chunkSize + 1);
+      }
 
       for (var offset = 0; offset < payload.length; offset += chunkSize) {
         final end = (offset + chunkSize < payload.length)

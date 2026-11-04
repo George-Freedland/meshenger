@@ -1742,15 +1742,21 @@ class _TransferBubbleState extends State<TransferBubble> {
   String _statusLine(FileTransfer t) {
     final done = formatBytes(t.transferredBytes);
     final total = formatBytes(t.size);
-    final speed =
-        speedLine(FileTransferService.instance.meterFor(t.tid), t.remainingBytes);
+    // The speed and time left are for whoever is waiting on the file.
+    final speed = t.outgoing
+        ? null
+        : speedLine(
+            FileTransferService.instance.meterFor(t.tid), t.remainingBytes);
     return switch (t.status) {
       FtStatus.offered => t.outgoing
           ? 'Waiting for them to accept ($total)'
           : 'Incoming file — $total',
       FtStatus.accepted => 'Starting… ($total)',
-      FtStatus.active =>
-        speed == null ? '$done of $total' : '$done of $total · $speed',
+      FtStatus.active => t.outgoing
+          ? 'Sending · ${(t.progress * 100).round()}% of $total'
+          : speed == null
+              ? '$done of $total'
+              : '$done of $total · $speed',
       FtStatus.paused =>
         'Paused at $done of $total — resumes when you meet again',
       FtStatus.done => t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
@@ -1908,12 +1914,12 @@ class _TransferBubbleState extends State<TransferBubble> {
     final ms = t.durationMs;
     final length = ms == null ? null : Duration(milliseconds: ms);
     if (t.mime.startsWith('audio/')) {
-      if (path != null) return AudioFileCard(path: path, fileName: t.name);
-      final (title, artist) = trackNameFromFile(t.name);
-      return AudioTrackCard(
-        title: title,
-        artist: artist,
+      // One card from first bytes to finished file, so a song that plays
+      // while it arrives keeps playing when it completes.
+      return AudioFileCard(
+        path: path,
         partial: _partial(t),
+        fileName: t.name,
         duration: length,
         busy: incoming,
         downloadFraction: incoming ? t.progress : null,

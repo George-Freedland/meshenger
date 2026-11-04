@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -168,7 +167,7 @@ class _CallScreenState extends State<_CallScreen> {
   // Auto-play of incoming call audio.
   StreamSubscription<String>? _chatSub;
   final Set<String> _playedIds = <String>{};
-  AudioPlayer? _activePlayer;
+  Future<void> Function()? _stopActive;
 
   @override
   void initState() {
@@ -195,7 +194,7 @@ class _CallScreenState extends State<_CallScreen> {
     _ticker?.cancel();
     _chatSub?.cancel();
     _recorder.dispose();
-    _activePlayer?.dispose();
+    unawaited(_stopActive?.call());
     super.dispose();
   }
 
@@ -230,8 +229,8 @@ class _CallScreenState extends State<_CallScreen> {
           ? null
           : await MediaStore.instance.pathFor(message.mediaId!);
       if (path != null) {
-        _activePlayer?.stop();
-        _activePlayer = await playOnce(path);
+        await _stopActive?.call();
+        _stopActive = await playOnce(path);
       }
       break;
     }
@@ -244,14 +243,7 @@ class _CallScreenState extends State<_CallScreen> {
       final dir = await getTemporaryDirectory();
       final path =
           '${dir.path}/ptt_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          bitRate: 64000,
-          numChannels: 1,
-        ),
-        path: path,
-      );
+      await _recorder.start(voiceRecordConfig(), path: path);
       setState(() {
         _talking = true;
         _recPath = path;

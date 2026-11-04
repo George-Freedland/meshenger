@@ -36,24 +36,37 @@ class GrowingFile {
 String playerUriFor(String path, {required bool growing}) =>
     growing ? 'appending://${path.replaceAll(r'\', '/')}' : path;
 
-/// How long to wait before starting [file] so playback never catches up
-/// with the download: zero to start now, null while there's no speed or
-/// playing time to go on yet.
+/// How long to wait before playing [file] from [from] so playback never
+/// catches up with the download: zero to start now, null while there's no
+/// speed or playing time to go on yet.
 ///
-/// Played at its average bitrate, the bytes needed by time t are S·t/D;
-/// downloaded by then are H + R·t. Both grow linearly, so the gap is
-/// widest at the end: start once H ≥ S − R·D (with some margin).
-Duration? waitBeforePlaying(GrowingFile file, {int minimumBytes = 64 * 1024}) {
+/// Played at its average bitrate S/D from position p, the bytes needed t
+/// seconds in are S·(p + t)/D; downloaded by then are H + R·t. Both grow
+/// linearly, so the gap is widest at the end: start once
+/// H ≥ S − R·(D − p), with a margin for a speed that wobbles, and once a
+/// few seconds past p have arrived.
+Duration? waitBeforePlaying(
+  GrowingFile file, {
+  Duration from = Duration.zero,
+  int minimumBytes = 64 * 1024,
+}) {
   if (file.complete) return Duration.zero;
   final rate = file.bytesPerSecond;
   final duration = file.duration;
   if (rate <= 0 || duration == null || duration.inMilliseconds <= 0) {
     return null;
   }
+  final total = file.totalBytes.toDouble();
   final seconds = duration.inMilliseconds / 1000;
-  final needed = max(
-    min(file.totalBytes, minimumBytes).toDouble(),
-    file.totalBytes - rate * seconds * 0.85,
+  final position = (from.inMilliseconds / 1000).clamp(0.0, seconds);
+  final bytesPerPlayedSecond = total / seconds;
+  final headroom = max(minimumBytes.toDouble(), bytesPerPlayedSecond * 5);
+  final needed = min(
+    total,
+    max(
+      bytesPerPlayedSecond * position + headroom,
+      total - rate * (seconds - position) * 0.8,
+    ),
   );
   final missing = needed - file.availableBytes;
   if (missing <= 0) return Duration.zero;

@@ -24,6 +24,7 @@ namespace bluetooth_low_energy_windows
 
 	ErrorOr<BluetoothLowEnergyStateArgs> CentralManagerImpl::GetState()
 	{
+		platform_thread::EnsureCom();
 		try
 		{
 			const auto has_adapter = m_adapter.has_value();
@@ -52,6 +53,7 @@ namespace bluetooth_low_energy_windows
 
 	std::optional<FlutterError> CentralManagerImpl::StartDiscovery(const flutter::EncodableList &service_uuids_args)
 	{
+		platform_thread::EnsureCom();
 		try
 		{
 			const auto &watcher = m_watcher.value();
@@ -81,6 +83,7 @@ namespace bluetooth_low_energy_windows
 
 	std::optional<FlutterError> CentralManagerImpl::StopDiscovery()
 	{
+		platform_thread::EnsureCom();
 		try
 		{
 			const auto &watcher = m_watcher.value();
@@ -319,7 +322,7 @@ namespace bluetooth_low_energy_windows
 	winrt::fire_and_forget CentralManagerImpl::RestartDiscoveryAsync(winrt::Windows::Foundation::TimeSpan delay)
 	{
 		co_await winrt::resume_after(delay);
-		co_await m_ui_context;
+		co_await ResumeOnPlatformThread{};
 		if (!m_discovering)
 		{
 			co_return;
@@ -562,17 +565,17 @@ namespace bluetooth_low_energy_windows
 				const auto characteristic_handle_args = characteristic_args.handle_args();
 				m_characteristic_value_changed_revokers[address_args][characteristic_handle_args] = characteristic.ValueChanged(
 					winrt::auto_revoke,
-					[this, address_args](const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic &characteristic, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs &event_args)
+					[this, address_args, characteristic_args](const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattCharacteristic &, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs &event_args)
 					{
 						const auto peripheral_args = PeripheralArgs(address_args);
-						const auto characteristic_args = CharacteristicToArgs(characteristic);
 						const auto value = event_args.CharacteristicValue();
 						const auto value_length = value.Length();
 						auto value_args = std::vector<uint8_t>(value_length);
 						const auto value_reader = winrt::Windows::Storage::Streams::DataReader::FromBuffer(value);
 						value_reader.ReadBytes(value_args);
-						RunOnApartment(m_ui_context, [this, peripheral_args, characteristic_args, value_args]
+						RunOnApartment(m_ui_context, [this, address_args, peripheral_args, characteristic_args, value_args]
 						{
+							NoteNotification(address_args);
 							auto &api = m_api.value();
 							api.OnCharacteristicNotified(peripheral_args, characteristic_args, value_args, []() {}, [](const auto &error) {});
 						});
@@ -904,13 +907,31 @@ namespace bluetooth_low_energy_windows
 #endif
 	}
 
+	// A peripheral pushing a file arrives as a stream of notifications. Only
+	// the central can choose fast connection timing, so a burst asks for it
+	// just as bulk writes do; a single small packet doesn't.
+	void CentralManagerImpl::NoteNotification(int64_t address_args)
+	{
+		const auto now = std::chrono::steady_clock::now();
+		auto burst = m_notification_bursts.find(address_args);
+		if (burst == m_notification_bursts.end() || now - burst->second.first > std::chrono::seconds(1))
+		{
+			m_notification_bursts[address_args] = {now, 1};
+			return;
+		}
+		if (++burst->second.second >= 8)
+		{
+			RequestThroughput(address_args);
+		}
+	}
+
 	winrt::fire_and_forget CentralManagerImpl::ReleaseThroughputWhenIdleAsync(int64_t address_args)
 	{
 		const auto idle = std::chrono::seconds(5);
 		while (true)
 		{
 			co_await winrt::resume_after(std::chrono::seconds(2));
-			co_await m_ui_context;
+			co_await ResumeOnPlatformThread{};
 			if (m_throughput_requests.find(address_args) == m_throughput_requests.end())
 			{
 				co_return;
@@ -945,6 +966,7 @@ namespace bluetooth_low_energy_windows
 	{
 		ReleaseThroughput(address_args);
 		m_last_bulk_write.erase(address_args);
+		m_notification_bursts.erase(address_args);
 		m_device_connection_status_changed_revokers.erase(address_args);
 		m_session_max_pdu_size_changed_revokers.erase(address_args);
 		m_characteristic_value_changed_revokers.erase(address_args);
