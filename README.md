@@ -1,4 +1,4 @@
-**[Download Meshenger](https://george-freedland.github.io/meshenger/)**: Mac · Windows · Android · iPhone (TestFlight) · Raspberry Pi relay
+**[Download Meshenger](https://george-freedland.github.io/meshenger/)**: Mac · Windows · Android · [iPhone (TestFlight beta)](https://testflight.apple.com/join/VAkKgTBV) · Raspberry Pi relay
 
 ## Meshenger
 
@@ -419,7 +419,7 @@ One‑time setup:
 
 1. In [App Store Connect](https://appstoreconnect.apple.com) → **Apps → +** create the app. Pick a unique bundle ID (e.g. `com.yourname.meshenger`) — register it first under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) if it isn't listed.
 2. Point the project at your bundle ID and team: open `ios/Runner.xcworkspace` in Xcode → select the **Runner** target → **Signing & Capabilities** → set **Team** to your developer account and **Bundle Identifier** to the ID from step 1, with **Automatically manage signing** on.
-3. Export compliance: `ITSAppUsesNonExemptEncryption=true` is set in `ios/Runner/Info.plist`, because the app implements its own end‑to‑end encryption (AES‑256‑GCM/X25519/Ed25519 in Dart, not Apple's built‑in crypto). The first time you submit a build, App Store Connect asks you to create an encryption declaration: choose **standard encryption algorithms not provided by the Apple operating system**. No documents are needed unless you distribute in **France**, which requires a French encryption declaration. Either upload it, or leave France out of the app's availability until you have one. See [LAUNCH.md](LAUNCH.md#ios-testflight).
+3. Export compliance: the app implements its own end‑to‑end encryption (AES‑256‑GCM/X25519/Ed25519 in Dart, not Apple's built‑in crypto), but `Info.plist` deliberately has no `ITSAppUsesNonExemptEncryption` key: set to true without a compliance code from Apple, uploads are rejected (ITMS‑90592). Each processed build instead shows **Missing Compliance** in TestFlight: choose **standard encryption algorithms instead of, or in addition to, using or accessing the encryption within Apple's operating system**, then **No** for France. No documents are needed unless you distribute in **France**, which requires a French encryption declaration; leave France out of the app's availability until you have one. See [LAUNCH.md](LAUNCH.md#24-iphone-testflight).
 
 Every release:
 
@@ -429,7 +429,15 @@ flutter build ipa --release
 # IPA lands at    build/ios/ipa/meshenger.ipa
 ```
 
-Upload the IPA with the **Transporter** app (Mac App Store — drag the `.ipa` in, press Deliver), or from Xcode: **Window → Organizer → Distribute App**. Processing takes ~5–15 minutes, then the build appears in App Store Connect → your app → **TestFlight**.
+Upload it with the Apple account signed in to Xcode (this skips the symbol upload, which only warns about the video player's libraries):
+
+```bash
+xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
+  -exportOptionsPlist tool/ios_upload_options.plist -exportPath build/ios/upload \
+  -allowProvisioningUpdates
+```
+
+Or use the **Transporter** app (Mac App Store — drag the `.ipa` in, press Deliver), or Xcode: **Window → Organizer → Distribute App**. Processing takes ~5–30 minutes, then the build appears in App Store Connect → your app → **TestFlight**.
 
 Testing tiers:
 
