@@ -25,7 +25,8 @@ class _Mesh {
           dataFrom[name] = (dataFrom[name] ?? 0) + 1;
         }
         final delay = delayFrom[name] ?? Duration.zero;
-        unawaited(Future<void>.delayed(delay, () => target.handlePacket(packet)));
+        unawaited(
+            Future<void>.delayed(delay, () => target.handlePacket(packet)));
         return true;
       },
       onlinePeers: () => neighbors,
@@ -164,8 +165,8 @@ void main() {
     mesh.add(m);
     // 40 chunks: without per-chunk checks the liar would serve all of it
     // before the whole-file hash caught it.
-    final bytes = Uint8List.fromList(List.generate(
-        BlobService.chunkSize * 40, (i) => (i * 7 + 3) % 253));
+    final bytes = Uint8List.fromList(
+        List.generate(BlobService.chunkSize * 40, (i) => (i * 7 + 3) % 253));
     final big = File('${root.path}/big.mp3')..writeAsBytesSync(bytes);
     final bigSha = await BlobService.sha256OfFile(big.path);
     final fake = File('${root.path}/fake-big.mp3')
@@ -194,8 +195,7 @@ void main() {
         reason: 'bob keeps the list, so he can serve it too');
   });
 
-  test('bytes inside a post are kept only when they match the hash',
-      () async {
+  test('bytes inside a post are kept only when they match the hash', () async {
     final solo = BlobService()..directoryForTesting = dirFor('inline');
     final bytes = song.readAsBytesSync();
     expect(

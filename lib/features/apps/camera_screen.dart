@@ -186,8 +186,8 @@ class _CameraScreenState extends State<CameraScreen> {
             heroTag: 'import',
             onPressed: _busy ? null : () => _capture(fromCamera: false),
             icon: const Icon(Icons.add_photo_alternate_outlined),
-            label: Text(
-                supportsCameraCapture ? 'From gallery' : 'Import photo'),
+            label:
+                Text(supportsCameraCapture ? 'From gallery' : 'Import photo'),
           ),
         ],
       ),

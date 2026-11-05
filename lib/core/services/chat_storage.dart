@@ -89,8 +89,7 @@ class ChatStorage {
   static const _unreadCountsKey = 'chats_unread_counts_v1';
 
   /// Chat keys with at least one unread message.
-  Future<Set<String>> listUnread() async =>
-      (await unreadCounts()).keys.toSet();
+  Future<Set<String>> listUnread() async => (await unreadCounts()).keys.toSet();
 
   /// Per-chat unread counts (iPhone-style badge numbers).
   Future<Map<String, int>> unreadCounts() async {
@@ -246,9 +245,8 @@ class ChatStorage {
     }
 
     final existing = await getGroupInfo(event.groupId);
-    final name = event.action == 'rename'
-        ? event.name
-        : (event.name ?? existing?.name);
+    final name =
+        event.action == 'rename' ? event.name : (event.name ?? existing?.name);
     final info = GroupInfo(
       id: event.groupId,
       adminAddress: event.adminAddress,

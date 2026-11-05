@@ -56,8 +56,8 @@ void main() {
     const spot = GeoPoint(lat: 40.71280, lon: -74.00600, accuracyM: 5, tsMs: 1);
 
     test('rides along signed, and the record verifies as before', () async {
-      final gossip = await EnvelopeCodec.buildGossip(
-          nickname: 'Me', location: spot);
+      final gossip =
+          await EnvelopeCodec.buildGossip(nickname: 'Me', location: spot);
       final record = (await EnvelopeCodec.verifyGossip(gossip))!;
       expect(record.address, me);
       expect(record.location!.lat, spot.lat);
@@ -118,8 +118,8 @@ void main() {
     test('with no fix of its own, a device stands next to one it can hear',
         () async {
       await location.setShareExact(true);
-      location.nearbyPosition = () async => const GeoPoint(
-            lat: 40.71280, lon: -74.00600, accuracyM: 12, tsMs: 1);
+      location.nearbyPosition = () async =>
+          const GeoPoint(lat: 40.71280, lon: -74.00600, accuracyM: 12, tsMs: 1);
       final exact = (await location.sharedPosition())!;
       expect(exact.lat, 40.71280);
       expect(exact.lon, -74.00600);
@@ -138,8 +138,8 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
           IdentityScope.key(LocationService.ownFixKey), point.encode());
-      location.nearbyPosition = () async => const GeoPoint(
-            lat: 1, lon: 2, accuracyM: 5, tsMs: 1);
+      location.nearbyPosition =
+          () async => const GeoPoint(lat: 1, lon: 2, accuracyM: 5, tsMs: 1);
       await location.setShareExact(true);
       final exact = (await location.sharedPosition())!;
       expect(exact.lat, point.lat);
@@ -150,14 +150,14 @@ void main() {
     test('both are off until turned on, and nothing is shared', () async {
       expect(await location.getShareApproximate(), isFalse);
       expect(await location.getShareExact(), isFalse);
-      await location.setPin(
-          const GeoPoint(lat: 37.77493, lon: -122.41942, accuracyM: 30, tsMs: 1));
+      await location.setPin(const GeoPoint(
+          lat: 37.77493, lon: -122.41942, accuracyM: 30, tsMs: 1));
       expect(await location.sharedPosition(), isNull);
     });
 
     test('approximate shares the cell, exact shares the spot', () async {
-      await location.setPin(
-          const GeoPoint(lat: 37.77493, lon: -122.41942, accuracyM: 30, tsMs: 1));
+      await location.setPin(const GeoPoint(
+          lat: 37.77493, lon: -122.41942, accuracyM: 30, tsMs: 1));
       await location.setShareApproximate(true);
       final rough = (await location.sharedPosition())!;
       expect(rough.lat, 37.77);

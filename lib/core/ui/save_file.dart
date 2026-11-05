@@ -40,8 +40,7 @@ Future<void> saveFileCopy(
     }
     if (savesWithDialog) {
       // In the Mac sandbox this would be the app's own container.
-      final downloads =
-          Platform.isMacOS ? null : await getDownloadsDirectory();
+      final downloads = Platform.isMacOS ? null : await getDownloadsDirectory();
       final location = await getSaveLocation(
         suggestedName: fileName,
         initialDirectory: downloads?.path,
@@ -69,8 +68,8 @@ Future<void> saveFileCopy(
       sharePositionOrigin: origin,
     ));
   } catch (e) {
-    messenger?.showSnackBar(
-        SnackBar(content: Text("Couldn't save the file: $e")));
+    messenger
+        ?.showSnackBar(SnackBar(content: Text("Couldn't save the file: $e")));
   }
 }
 

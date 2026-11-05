@@ -37,7 +37,8 @@ void main() {
   group('transfer keys', () {
     final secret = List<int>.generate(32, (i) => i * 7 % 256);
 
-    test('both ends derive the same key; other transfers get another', () async {
+    test('both ends derive the same key; other transfers get another',
+        () async {
       final a = await FileTransferService.deriveKey(secret, 'transfer-1');
       final b = await FileTransferService.deriveKey(secret, 'transfer-1');
       final other = await FileTransferService.deriveKey(secret, 'transfer-2');

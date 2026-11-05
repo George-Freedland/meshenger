@@ -268,7 +268,8 @@ class MessengerService {
   Future<void> clearMeshSightings() async {
     await PeerDirectory.instance.clear();
     RouteTable.instance.reset();
-    TransportLog.instance.log('Mesh: sightings cleared — map reset to just you');
+    TransportLog.instance
+        .log('Mesh: sightings cleared — map reset to just you');
   }
 
   Future<void> stop() async {
@@ -843,8 +844,7 @@ class MessengerService {
     for (final envelope in spool) {
       final to = envelope['to'] as String?;
       final from = envelope['from'] as String?;
-      final via =
-          (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
+      final via = (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
       var deliveredToRecipient = false;
 
       if (to != null && peersNow.contains(to)) {
@@ -1042,7 +1042,7 @@ class MessengerService {
         id: incoming.groupId!,
         adminAddress: incoming.groupAdmin ??
             existing?.adminAddress ??
-        incoming.fromAddress,
+            incoming.fromAddress,
         name: incoming.groupName ?? existing?.name,
         members: incoming.groupMembers ?? existing?.members ?? <String>[],
       ));
@@ -1076,12 +1076,12 @@ class MessengerService {
     await ChatStorage.instance.ensureChatExists(chatKey);
     await ChatStorage.instance.appendMessage(
       chatKey,
-        ChatMessage(
-          id: incoming.id,
-          text: incoming.text,
-          isMe: false,
-          timestamp: incoming.timestamp,
-          status: MessageStatus.sent,
+      ChatMessage(
+        id: incoming.id,
+        text: incoming.text,
+        isMe: false,
+        timestamp: incoming.timestamp,
+        status: MessageStatus.sent,
         senderAddress: incoming.fromAddress,
         expiresAtMs: expiresAtMs,
         kind: mediaId != null ? incoming.kind : null,
@@ -1453,8 +1453,7 @@ class MessengerService {
       action: incoming.groupEvent!,
     );
 
-    final stillMember =
-        await ChatStorage.instance.applyGroupEvent(event, me);
+    final stillMember = await ChatStorage.instance.applyGroupEvent(event, me);
     if (!stillMember) {
       _changed.add(ChatStorage.groupChatKey(groupId));
       return;
@@ -1751,9 +1750,7 @@ class MessengerService {
         timestamp: at,
         status: MessageStatus.sent,
         isSystem: true,
-        kind: video
-            ? ChatStorage.videoCallLineKind
-            : ChatStorage.callLineKind,
+        kind: video ? ChatStorage.videoCallLineKind : ChatStorage.callLineKind,
       ),
     );
     if (unread) await ChatStorage.instance.markUnread(peer);
@@ -1841,7 +1838,8 @@ class MessengerService {
 
     final me = await IdentityService.instance.getPublicAddressBase64();
     final hops = verified.hops + 1;
-    final maxHops = (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.postMaxHops;
+    final maxHops =
+        (packet['max'] as num?)?.toInt() ?? EnvelopeCodec.postMaxHops;
 
     if (deleted) {
       _deletedPostIds.add(id);
@@ -2130,7 +2128,8 @@ class MessengerService {
       if (path != null) media = await File(path).readAsBytes();
     }
     final artId = fresh.artMediaId;
-    final art = artId == null ? null : await MediaStore.instance.readBytes(artId);
+    final art =
+        artId == null ? null : await MediaStore.instance.readBytes(artId);
     await _publishMyPost(
       fresh,
       mediaB64: media == null ? null : base64Encode(media),
@@ -2299,8 +2298,7 @@ class MessengerService {
       final exp = (packet['exp'] as num?)?.toInt();
       if (exp != null && exp < now) continue;
       final author = packet['author'] as String?;
-      final offered =
-          _postOfferedTo.putIfAbsent(id, () => <String>{});
+      final offered = _postOfferedTo.putIfAbsent(id, () => <String>{});
       for (final peer in peersNow) {
         if (peer == author || offered.contains(peer)) continue;
         if (await transport.sendPacket(peer, packet)) {
@@ -2342,9 +2340,7 @@ class MessengerService {
     } else if (ChatStorage.isGroupChat(chatKey)) {
       gid = ChatStorage.groupIdOf(chatKey);
       final info = await ChatStorage.instance.getGroupInfo(gid);
-      to = (info?.members ?? const <String>[])
-          .where((a) => a != me)
-          .toList();
+      to = (info?.members ?? const <String>[]).where((a) => a != me).toList();
     } else {
       to = [chatKey];
     }
@@ -2413,8 +2409,7 @@ class MessengerService {
     }
 
     if (changed) {
-      ops.removeWhere(
-          (op) => ((op['to'] as List?) ?? const []).isEmpty);
+      ops.removeWhere((op) => ((op['to'] as List?) ?? const []).isEmpty);
       await _writeControlOps(ops);
     }
   }
@@ -2454,9 +2449,8 @@ class MessengerService {
     await ChatStorage.instance.saveGroupInfo(GroupInfo(
       id: groupId,
       adminAddress: me,
-      name: (trimmedName != null && trimmedName.isNotEmpty)
-          ? trimmedName
-          : null,
+      name:
+          (trimmedName != null && trimmedName.isNotEmpty) ? trimmedName : null,
       members: members,
     ));
     final chatKey = ChatStorage.groupChatKey(groupId);

@@ -38,8 +38,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshBadges();
     _subs.add(
         MessengerService.instance.onChanged.listen((_) => _refreshBadges()));
-    _subs.add(
-        NetworkService.instance.onChanged.listen((_) => _refreshBadges()));
+    _subs
+        .add(NetworkService.instance.onChanged.listen((_) => _refreshBadges()));
     // Invisible mode restarts the transport; refresh the indicator.
     _subs.add(MessengerService.instance.onTransportChanged.listen((_) {
       if (mounted) setState(() {});

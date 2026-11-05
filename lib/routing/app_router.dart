@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/services/safety_service.dart';
-import '../features/apps/appstore_screen.dart';
 import '../features/apps/camera_screen.dart';
 import '../features/apps/contacts_screen.dart';
 import '../features/apps/meshmap_screen.dart';
@@ -86,10 +85,6 @@ final GoRouter appRouter = GoRouter(
       path: '/app/network',
       builder: (context, state) =>
           NetworkScreen(initialUrl: state.uri.queryParameters['url']),
-    ),
-    GoRoute(
-      path: '/app/store',
-      builder: (context, state) => const AppStoreScreen(),
     ),
     GoRoute(
       path: '/app/settings',

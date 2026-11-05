@@ -28,14 +28,20 @@ class _Folders extends PathProviderPlatform with MockPlatformInterfaceMixin {
   Future<String?> getTemporaryPath() async => root;
 }
 
-final _png = Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2]);
+final _png =
+    Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2]);
 
 /// A small tagged MP3 (tags + cover + a few frames).
 List<int> _song() {
   List<int> frame(String id, List<int> data) => [
         ...latin1.encode(id),
-        (data.length >> 24) & 0xFF, (data.length >> 16) & 0xFF,
-        (data.length >> 8) & 0xFF, data.length & 0xFF, 0, 0, ...data,
+        (data.length >> 24) & 0xFF,
+        (data.length >> 16) & 0xFF,
+        (data.length >> 8) & 0xFF,
+        data.length & 0xFF,
+        0,
+        0,
+        ...data,
       ];
   final body = [
     ...frame('TIT2', [0, ...latin1.encode('Mesh Love')]),
@@ -43,8 +49,22 @@ List<int> _song() {
     ...frame('APIC', [0, ...latin1.encode('image/png'), 0, 3, 0, ..._png]),
   ];
   return [
-    ...latin1.encode('ID3'), 3, 0, 0, 0, 0, 0, body.length, ...body,
-    for (var i = 0; i < 4; i++) ...[0xFF, 0xFB, 0x90, 0x00, ...List.filled(413, 0)],
+    ...latin1.encode('ID3'),
+    3,
+    0,
+    0,
+    0,
+    0,
+    0,
+    body.length,
+    ...body,
+    for (var i = 0; i < 4; i++) ...[
+      0xFF,
+      0xFB,
+      0x90,
+      0x00,
+      ...List.filled(413, 0)
+    ],
   ];
 }
 
@@ -75,7 +95,8 @@ void main() {
       () async {
     final bytes = Uint8List.fromList(_song());
     final sha = await BlobService.sha256OfBytes(bytes);
-    await IdentityService.instance.debugUnlockWithKeyPair(alice, nickname: 'Alice');
+    await IdentityService.instance
+        .debugUnlockWithKeyPair(alice, nickname: 'Alice');
     final now = DateTime.now().millisecondsSinceEpoch;
     final packet = await EnvelopeCodec.buildNetworkPost(
       id: 'song-1',
@@ -96,8 +117,8 @@ void main() {
     );
     await IdentityService.instance.debugUnlockWithKeyPair(me, nickname: 'Me');
 
-    await MessengerService.instance
-        .debugHandlePacket(jsonDecode(jsonEncode(packet)) as Map<String, Object?>);
+    await MessengerService.instance.debugHandlePacket(
+        jsonDecode(jsonEncode(packet)) as Map<String, Object?>);
 
     final post = await NetworkService.instance.byId('song-1');
     expect(post, isNotNull);
@@ -110,7 +131,8 @@ void main() {
   });
 
   test('posting my song keeps a copy to share and reads its tags', () async {
-    final original = File('${root.path}/Mesh Love.mp3')..writeAsBytesSync(_song());
+    final original = File('${root.path}/Mesh Love.mp3')
+      ..writeAsBytesSync(_song());
     final prepared = await preparePostFile(
         path: original.path, name: 'Mesh Love.mp3', mime: 'audio/mpeg');
     expect(prepared.attachment.title, 'Mesh Love');
@@ -130,7 +152,7 @@ void main() {
 
     // Deleting the post lets the file go too.
     await MessengerService.instance.deleteNetworkPost(mine.id);
-    expect(await BlobService.instance.pathFor(prepared.attachment.sha256),
-        isNull);
+    expect(
+        await BlobService.instance.pathFor(prepared.attachment.sha256), isNull);
   });
 }

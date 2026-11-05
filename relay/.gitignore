@@ -5,3 +5,6 @@ relay-identity.json
 .dart_tool/
 pubspec.lock
 meshenger-relay
+
+# Compiled relays go to GitHub Releases, not the repo.
+build/

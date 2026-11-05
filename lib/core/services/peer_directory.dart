@@ -81,7 +81,9 @@ class PeerDirectory {
     String? nickname,
   }) =>
       _record(address, x25519Base64,
-          nickname: nickname, hops: 0, tsMs: DateTime.now().millisecondsSinceEpoch);
+          nickname: nickname,
+          hops: 0,
+          tsMs: DateTime.now().millisecondsSinceEpoch);
 
   /// Records a node learned via verified gossip. Returns true when the
   /// record was new or fresher than what we had (callers re-flood those).

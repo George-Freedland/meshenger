@@ -28,8 +28,7 @@ import 'transport.dart';
 /// (and any modern BlueZ stack) supports.
 class BleTransport implements RelayTransport {
   static const String serviceUuid = '4d455348-454e-4745-5242-4c4530303031';
-  static const String announceCharUuid =
-      '4d455348-454e-4745-5242-4c4530303032';
+  static const String announceCharUuid = '4d455348-454e-4745-5242-4c4530303032';
   static const String inboxCharUuid = '4d455348-454e-4745-5242-4c4530303033';
   static const String outboxCharUuid = '4d455348-454e-4745-5242-4c4530303034';
 

@@ -210,7 +210,8 @@ Future<bool> showAddContactDialog(BuildContext context) async {
 }
 
 /// Shared nickname editor for an existing contact. Returns true on save.
-Future<bool> showEditContactDialog(BuildContext context, Contact contact) async {
+Future<bool> showEditContactDialog(
+    BuildContext context, Contact contact) async {
   final controller = TextEditingController(text: contact.nickname ?? '');
   var saved = false;
   await showDialog<void>(

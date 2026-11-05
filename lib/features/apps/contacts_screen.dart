@@ -163,7 +163,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
       ),
       title: Text(_labelFor(c)),
       subtitle: Text(
-        online ? '${_short(c.address)} · in range' : '${_short(c.address)} · via mesh',
+        online
+            ? '${_short(c.address)} · in range'
+            : '${_short(c.address)} · via mesh',
       ),
       onTap: () => _message(c),
       trailing: Wrap(

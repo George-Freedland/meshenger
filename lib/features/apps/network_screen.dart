@@ -761,9 +761,8 @@ class _NetworkScreenState extends State<NetworkScreen> {
                 PopupMenuItem(
                   value: 'bookmark',
                   child: ListTile(
-                    leading: Icon(_bookmarkHere == null
-                        ? Icons.star_border
-                        : Icons.star),
+                    leading: Icon(
+                        _bookmarkHere == null ? Icons.star_border : Icons.star),
                     title: Text(_bookmarkHere == null
                         ? 'Bookmark this page…'
                         : 'Edit bookmark…'),

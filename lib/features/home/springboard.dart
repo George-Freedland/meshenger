@@ -219,7 +219,9 @@ class _SpringboardState extends State<Springboard>
     final icon = switch (item) {
       HomeAppItem(:final appId) => Builder(builder: (_) {
           final app = appById(appId);
-          return app == null ? const SizedBox(width: 58, height: 58) : _appIcon(app);
+          return app == null
+              ? const SizedBox(width: 58, height: 58)
+              : _appIcon(app);
         }),
       HomeFolderItem folder => _folderIcon(folder),
     };
@@ -316,8 +318,8 @@ class _SpringboardState extends State<Springboard>
                     color: Colors.white.withValues(alpha: 0.4),
                   ),
                 ),
-                child: const Icon(Icons.north_west,
-                    size: 13, color: Colors.white),
+                child:
+                    const Icon(Icons.north_west, size: 13, color: Colors.white),
               ),
             ),
           ),
@@ -384,8 +386,7 @@ class _SpringboardState extends State<Springboard>
         final items = _items;
         return LayoutBuilder(
           builder: (context, constraints) {
-            final cols =
-                (constraints.maxWidth / 96).floor().clamp(3, 8);
+            final cols = (constraints.maxWidth / 96).floor().clamp(3, 8);
             final cellW = constraints.maxWidth / cols;
             final rows = items.isEmpty ? 1 : ((items.length - 1) ~/ cols) + 1;
             final editing = widget.editing.value;
@@ -527,8 +528,8 @@ Future<void> showFolderOverlay(
                                     Icon(
                                       Icons.edit_outlined,
                                       size: 15,
-                                      color: Colors.white
-                                          .withValues(alpha: 0.5),
+                                      color:
+                                          Colors.white.withValues(alpha: 0.5),
                                     ),
                                   ],
                                 ),

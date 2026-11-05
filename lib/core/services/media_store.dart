@@ -112,7 +112,8 @@ class MediaStore {
 
   Future<File> fileFor(MediaItem item) async {
     final dir = await _dir();
-    return File('${dir.path}/${item.id}.${_extensionFor(item.mime, item.name)}');
+    return File(
+        '${dir.path}/${item.id}.${_extensionFor(item.mime, item.name)}');
   }
 
   Future<MediaItem?> get(String id) async {

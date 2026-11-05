@@ -298,8 +298,7 @@ class _IoBleTransport implements MeshTransport {
           peripheral.characteristicReadRequested.listen(_scheduleReadRequest),
         );
         _subscriptions.add(
-          peripheral.characteristicWriteRequested
-              .listen(_scheduleWriteRequest),
+          peripheral.characteristicWriteRequested.listen(_scheduleWriteRequest),
         );
         _subscriptions.add(
           peripheral.characteristicNotifyStateChanged
@@ -490,8 +489,7 @@ class _IoBleTransport implements MeshTransport {
       await central.startDiscovery();
       if (!_loggedDiscoveryMode) {
         _loggedDiscoveryMode = true;
-        TransportLog.instance
-            .log('BLE: scanning (broad, filtering in app)');
+        TransportLog.instance.log('BLE: scanning (broad, filtering in app)');
       }
       return;
     }
@@ -584,8 +582,8 @@ class _IoBleTransport implements MeshTransport {
     if (knownAddress != null) {
       final peer = _peersByAddress[knownAddress];
       if (peer != null) {
-        _peersByAddress[knownAddress] =
-            peer.copyWith(peripheral: event.peripheral, lastSeen: DateTime.now());
+        _peersByAddress[knownAddress] = peer.copyWith(
+            peripheral: event.peripheral, lastSeen: DateTime.now());
         _emitPeersIfChanged();
         // Known peer without a push channel either way: retry subscribing
         // now and then (it may have gained an outbox, or a previous attempt
@@ -799,9 +797,11 @@ class _IoBleTransport implements MeshTransport {
       }
 
       step = 'read announce';
-      final bytes =
-          await central.readCharacteristic(device, announceChar).timeout(gattTimeout);
-      final peerIdentity = await EnvelopeCodec.verifyBleAnnouncementBytes(bytes);
+      final bytes = await central
+          .readCharacteristic(device, announceChar)
+          .timeout(gattTimeout);
+      final peerIdentity =
+          await EnvelopeCodec.verifyBleAnnouncementBytes(bytes);
       if (peerIdentity == null) {
         log.log('BLE: ${device.uuid} announce failed verification '
             '(${bytes.length} bytes)');
@@ -1034,9 +1034,9 @@ class _IoBleTransport implements MeshTransport {
     _notifyBuffers.forget(deviceUuid);
     final sub = _outSubs.remove(deviceUuid);
     if (sub != null) {
-      TransportLog.instance.log(
-          'BLE: push channel to ${_shortAddr(sub.address)} dropped '
-          '(link lost); rescanning will reopen it');
+      TransportLog.instance
+          .log('BLE: push channel to ${_shortAddr(sub.address)} dropped '
+              '(link lost); rescanning will reopen it');
     }
   }
 
@@ -1068,8 +1068,8 @@ class _IoBleTransport implements MeshTransport {
           await _writeChunks(central, sub.peripheral, sub.inboxChar, hello);
           _touchPeer(sub.address);
         } catch (e) {
-          TransportLog.instance.log(
-              'BLE: keepalive to ${_shortAddr(sub.address)} failed: $e');
+          TransportLog.instance
+              .log('BLE: keepalive to ${_shortAddr(sub.address)} failed: $e');
           _dropSubscription(entry.key);
         }
       });
@@ -1135,14 +1135,14 @@ class _IoBleTransport implements MeshTransport {
                 unacked: current, confirmLast: !bulk);
             delivered = true;
             if (!quiet) {
-              TransportLog.instance.log(
-                  'BLE: delivered ${payload.length} bytes to '
-                  '${_shortAddr(peerAddress)} (live channel)');
+              TransportLog.instance
+                  .log('BLE: delivered ${payload.length} bytes to '
+                      '${_shortAddr(peerAddress)} (live channel)');
             }
           } catch (e) {
-            TransportLog.instance.log(
-                'BLE: live-channel write to ${_shortAddr(peerAddress)} '
-                'failed: $e');
+            TransportLog.instance
+                .log('BLE: live-channel write to ${_shortAddr(peerAddress)} '
+                    'failed: $e');
             _dropSubscription(sub.peripheral.uuid.toString());
           }
           // Right after a failure the link is still being torn down;
@@ -1260,7 +1260,6 @@ class _IoBleTransport implements MeshTransport {
     }
   }
 
-
   /// Pushes a packet to a peer that subscribed to our outbox, as chunked
   /// notifications. No per-chunk ack exists at this layer — end-to-end
   /// encrypted acks confirm real delivery.
@@ -1272,8 +1271,8 @@ class _IoBleTransport implements MeshTransport {
     final centralUuid = _inboundByAddress[peerAddress];
     if (centralUuid == null) return Future<bool>.value(false);
     final previous = _pushQueues[centralUuid] ?? Future<void>.value();
-    final result = previous.then(
-        (_) => _pushNow(peerAddress, centralUuid, payload, quiet: quiet));
+    final result = previous
+        .then((_) => _pushNow(peerAddress, centralUuid, payload, quiet: quiet));
     _pushQueues[centralUuid] = result.then<void>((_) {}, onError: (_) {});
     return result;
   }
@@ -1300,8 +1299,8 @@ class _IoBleTransport implements MeshTransport {
       }
       final chunkSize = (maxLen - 1).clamp(19, 511);
       if (payload.length > chunkSize) {
-        _logLinkSize('push:$centralUuid', 'pushing to ${_shortAddr(peerAddress)}',
-            chunkSize + 1);
+        _logLinkSize('push:$centralUuid',
+            'pushing to ${_shortAddr(peerAddress)}', chunkSize + 1);
       }
 
       for (var offset = 0; offset < payload.length; offset += chunkSize) {
@@ -1316,8 +1315,7 @@ class _IoBleTransport implements MeshTransport {
             .timeout(gattTimeout);
       }
       if (!quiet) {
-        TransportLog.instance.log(
-            'BLE: pushed ${payload.length} bytes to '
+        TransportLog.instance.log('BLE: pushed ${payload.length} bytes to '
             '${_shortAddr(peerAddress)} over our outbox');
       }
       return true;
@@ -1453,8 +1451,7 @@ class _IoBleTransport implements MeshTransport {
     }
 
     final centralUuid = event.central.uuid.toString();
-    final payload =
-        _inboxBuffers.add(centralUuid, event.request.value);
+    final payload = _inboxBuffers.add(centralUuid, event.request.value);
     if (payload == null) {
       await _acceptWrite(peripheral, event.request);
       return;
@@ -1462,9 +1459,9 @@ class _IoBleTransport implements MeshTransport {
 
     final packet = PacketFrame.decode(payload);
     if (packet == null) {
-      TransportLog.instance.log(
-          'BLE: rejected packet from ${event.central.uuid} '
-          '(${payload.length} bytes)');
+      TransportLog.instance
+          .log('BLE: rejected packet from ${event.central.uuid} '
+              '(${payload.length} bytes)');
       await peripheral.respondWriteRequestWithError(
         event.request,
         error: GATTError.unlikelyError,
@@ -1514,8 +1511,8 @@ class _IoBleTransport implements MeshTransport {
     }
 
     if (!_quietTypes.contains(packet['t'])) {
-      TransportLog.instance.log(
-          'BLE: received ${packet['t']} packet (${payload.length} bytes)');
+      TransportLog.instance
+          .log('BLE: received ${packet['t']} packet (${payload.length} bytes)');
     }
     // Ack first (success response to the final write), then surface the
     // packet to the router.

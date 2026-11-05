@@ -55,9 +55,8 @@ void main() {
       'hops': 0,
       'max': 6,
       'via': const <String>[],
-      'exp': DateTime.now()
-          .add(const Duration(hours: 1))
-          .millisecondsSinceEpoch,
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch,
     };
 
     // Alice hands the envelope to the relay.

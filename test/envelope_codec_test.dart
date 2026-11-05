@@ -38,8 +38,7 @@ void main() {
     alice = await ed25519.newKeyPair();
     bob = await ed25519.newKeyPair();
     carol = await ed25519.newKeyPair();
-    aliceAddress =
-        base64Encode((await alice.extractPublicKey()).bytes);
+    aliceAddress = base64Encode((await alice.extractPublicKey()).bytes);
     bobAddress = base64Encode((await bob.extractPublicKey()).bytes);
     bobX25519 = await x25519Of(bob);
   });
@@ -83,8 +82,7 @@ void main() {
       expect(incoming.timestamp, sentAt);
       expect(incoming.ttlSeconds, 3600);
       expect(incoming.kind, 'image');
-      expect(utf8.decode(base64Decode(incoming.mediaB64!)),
-          'fake-jpeg-bytes');
+      expect(utf8.decode(base64Decode(incoming.mediaB64!)), 'fake-jpeg-bytes');
       expect(incoming.mediaName, 'photo.jpg');
       expect(incoming.mediaMime, 'image/jpeg');
       expect(incoming.mediaTemp, isTrue);
@@ -396,8 +394,7 @@ void main() {
           reason: 'a site post cannot be moved onto global');
     });
 
-    test('a file post carries its attachment and cover, all signed',
-        () async {
+    test('a file post carries its attachment and cover, all signed', () async {
       await unlockAs(alice);
       final now = DateTime.now().millisecondsSinceEpoch;
       final song = PostAttachment(
@@ -460,8 +457,7 @@ void main() {
       expect(peer!.address, aliceAddress);
       expect(peer.x25519Base64, await x25519Of(alice));
 
-      final decoded =
-          jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+      final decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
       decoded['x25519'] = await x25519Of(carol);
       final tampered = utf8.encode(jsonEncode(decoded));
       expect(

@@ -47,8 +47,8 @@ class AlertSoundService {
     }
     // Unit tests run without the player's native library.
     if (Platform.environment.containsKey('FLUTTER_TEST')) return;
-    final chosen =
-        tone ?? AlertTone.fromName(await SettingsService.instance.getAlertToneName());
+    final chosen = tone ??
+        AlertTone.fromName(await SettingsService.instance.getAlertToneName());
     try {
       final player = _player ??= Player();
       await player.open(Media('asset:///${chosen.asset}'));

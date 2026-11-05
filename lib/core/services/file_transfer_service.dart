@@ -493,8 +493,7 @@ class FileTransferService {
       return false;
     }
     if (transfer.status == FtStatus.paused) return true;
-    final last =
-        transfer.outgoing ? _lastProgressMs[tid] : _lastChunkMs[tid];
+    final last = transfer.outgoing ? _lastProgressMs[tid] : _lastChunkMs[tid];
     return last != null && _nowMs() - last > stallAfter.inMilliseconds;
   }
 
@@ -739,8 +738,7 @@ class FileTransferService {
       _lastProgressMs[tid] = nowMs;
       _resumeAttempts.remove(tid);
     }
-    if (_windows[tid]?.report(have, missing: missing, nowMs: nowMs) ??
-        false) {
+    if (_windows[tid]?.report(have, missing: missing, nowMs: nowMs) ?? false) {
       TransportLog.instance.log('FT: ${_short(transfer.peer)} is missing '
           'chunk $have of "${transfer.name}" — re-sending from there');
     }

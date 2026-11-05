@@ -246,7 +246,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     );
   }
 
-  Widget _buildPasswordField({required bool isNew, required VoidCallback onSubmit}) {
+  Widget _buildPasswordField(
+      {required bool isNew, required VoidCallback onSubmit}) {
     return TextField(
       controller: _passwordController,
       obscureText: _obscurePassword,
@@ -261,8 +262,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           icon: Icon(
             _obscurePassword ? Icons.visibility_off : Icons.visibility,
           ),
-          onPressed: () =>
-              setState(() => _obscurePassword = !_obscurePassword),
+          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
         ),
       ),
     );
@@ -545,8 +545,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final theme = Theme.of(context);
 
     final Widget stage = switch (_stage) {
-      _Stage.loading =>
-        const Center(child: CircularProgressIndicator()),
+      _Stage.loading => const Center(child: CircularProgressIndicator()),
       _Stage.picker => _buildPicker(theme),
       _Stage.unlock => _buildUnlock(theme),
       _Stage.create => _buildCreate(theme),

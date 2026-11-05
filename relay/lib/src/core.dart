@@ -122,8 +122,7 @@ class RelayCore {
   String shortAddr(String address) =>
       address.length <= 12 ? address : '${address.substring(0, 12)}…';
 
-  String _shortId(String id) =>
-      id.length <= 8 ? id : id.substring(0, 8);
+  String _shortId(String id) => id.length <= 8 ? id : id.substring(0, 8);
 
   String _label(String address) {
     final nick = _nicknames[address];
@@ -222,8 +221,8 @@ class RelayCore {
       via.removeAt(0);
     }
     envelope['via'] = via;
-    envelope['exp'] =
-        exp ?? DateTime.now().add(defaultEnvelopeLifetime).millisecondsSinceEpoch;
+    envelope['exp'] = exp ??
+        DateTime.now().add(defaultEnvelopeLifetime).millisecondsSinceEpoch;
 
     // Direct delivery to the recipient, on any transport, doesn't count
     // against the hop cap.
@@ -276,8 +275,8 @@ class RelayCore {
       viaMap[nextHop] = (hops, now);
     }
     while (viaMap.length > 4) {
-      final worst = viaMap.entries
-          .reduce((a, b) => a.value.$1 >= b.value.$1 ? a : b);
+      final worst =
+          viaMap.entries.reduce((a, b) => a.value.$1 >= b.value.$1 ? a : b);
       viaMap.remove(worst.key);
     }
     if (_routes.length > 2048) {
@@ -427,8 +426,7 @@ class RelayCore {
       final exp = (packet['exp'] as num?)?.toInt();
       if (exp != null && exp < now) continue;
       final author = packet['author'] as String?;
-      final offered =
-          _postOfferedTo.putIfAbsent(entry.key, () => <String>{});
+      final offered = _postOfferedTo.putIfAbsent(entry.key, () => <String>{});
       for (final peer in peers) {
         if (peer == author || offered.contains(peer)) continue;
         if (await transport.sendPacket(peer, packet)) {
@@ -552,8 +550,7 @@ class RelayCore {
       final id = envelope['id'] as String? ?? '';
       final to = envelope['to'] as String?;
       final from = envelope['from'] as String?;
-      final via =
-          (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
+      final via = (envelope['via'] as List?)?.whereType<String>().toSet() ?? {};
 
       if (to != null && peers.contains(to)) {
         if (await transport.sendPacket(to, envelope)) {
@@ -579,8 +576,7 @@ class RelayCore {
     }
   }
 
-  String get stats =>
-      'peers $totalPeers · spool ${_spool.length} · '
+  String get stats => 'peers $totalPeers · spool ${_spool.length} · '
       'posts ${_postCache.length} · '
       'delivered $_delivered · forwarded $_forwarded';
 }

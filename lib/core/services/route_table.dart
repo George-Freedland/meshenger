@@ -41,8 +41,8 @@ class RouteTable {
     }
 
     if (viaMap.length > _maxNextHopsPerDestination) {
-      final worst = viaMap.entries.reduce((a, b) =>
-          _score(a.value, now) >= _score(b.value, now) ? a : b);
+      final worst = viaMap.entries.reduce(
+          (a, b) => _score(a.value, now) >= _score(b.value, now) ? a : b);
       viaMap.remove(worst.key);
     }
     if (_routes.length > _maxDestinations) {

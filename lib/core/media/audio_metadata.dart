@@ -63,7 +63,8 @@ Future<AudioMetadata> readAudioMetadata(String path) async {
     var meta = AudioMetadata.empty;
     var audioStart = 0;
     if (_ascii(head, 0, 3) == 'ID3' && head.length >= 10) {
-      final tagSize = _syncsafe(head, 6) + 10 + ((head[5] & 0x10) != 0 ? 10 : 0);
+      final tagSize =
+          _syncsafe(head, 6) + 10 + ((head[5] & 0x10) != 0 ? 10 : 0);
       // Cover art can be large, but a tag past 32 MB is not a tag.
       final tag = await _readAt(raf, 0, min(tagSize, min(length, 32 << 20)));
       meta = parseId3v2(tag) ?? AudioMetadata.empty;
@@ -134,8 +135,7 @@ AudioMetadata? parseId3v2(Uint8List data) {
     if (major == 2) {
       frameSize = (body[pos + 3] << 16) | (body[pos + 4] << 8) | body[pos + 5];
     } else {
-      frameSize =
-          major == 4 ? _syncsafe(body, pos + 4) : _u32be(body, pos + 4);
+      frameSize = major == 4 ? _syncsafe(body, pos + 4) : _u32be(body, pos + 4);
       frameFlags = (body[pos + 8] << 8) | body[pos + 9];
     }
     final start = pos + headerLength;
@@ -419,7 +419,8 @@ Duration? mp3Duration(Uint8List frames, {required int audioBytes}) {
       }
     }
     final vbri = i + 36;
-    if (vbri + 18 <= frames.length && _ascii(frames, vbri, vbri + 4) == 'VBRI') {
+    if (vbri + 18 <= frames.length &&
+        _ascii(frames, vbri, vbri + 4) == 'VBRI') {
       return fromFrames(_u32be(frames, vbri + 14));
     }
     final bytes = audioBytes - i;
@@ -650,8 +651,8 @@ Map<String, String> parseVorbisComments(Uint8List block) {
   final mimeLength = _u32be(block, pos);
   pos += 4;
   if (pos + mimeLength > block.length) return null;
-  final mime = latin1.decode(block.sublist(pos, pos + mimeLength),
-      allowInvalid: true);
+  final mime =
+      latin1.decode(block.sublist(pos, pos + mimeLength), allowInvalid: true);
   pos += mimeLength;
   if (pos + 4 > block.length) return null;
   final descLength = _u32be(block, pos);

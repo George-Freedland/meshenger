@@ -10,8 +10,8 @@
 // Run it from outside the app's folder (inside it, `dart` first builds the
 // app's native hooks):
 //
-//   cd /tmp && dart ~/Code/meshenger/tool/build_world_geo.dart \
-//       <folder with those files> ~/Code/meshenger/assets/geo/world.bin
+//   cd /tmp && dart <repo>/tool/build_world_geo.dart \
+//       <folder with those files> <repo>/assets/geo/world.bin
 //
 // Format, little-endian: "MGEO", version byte, 3 padding bytes; land dots
 // (u32 count, then f32 lat/lon pairs); then coastlines, borders and state
@@ -109,8 +109,7 @@ List<List<_Line>> _polygons(Map<String, Object?> collection) {
         result.add(coordinates.map((c) => _line(c as List)).toList());
       case 'MultiPolygon':
         for (final polygon in coordinates) {
-          result.add(
-              (polygon as List).map((c) => _line(c as List)).toList());
+          result.add((polygon as List).map((c) => _line(c as List)).toList());
         }
     }
   }

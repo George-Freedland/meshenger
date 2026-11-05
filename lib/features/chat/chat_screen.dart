@@ -26,8 +26,18 @@ import 'call_history_screen.dart';
 import '../shared/safety_actions.dart';
 
 const _monthNames = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
 ];
 
 /// Either a date separator or a message row.
@@ -138,8 +148,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final contacts = await ContactsService.instance.listContacts();
 
     if (_isGroup) {
-      final info = await ChatStorage.instance
-          .getGroupInfo(ChatStorage.groupIdOf(key));
+      final info =
+          await ChatStorage.instance.getGroupInfo(ChatStorage.groupIdOf(key));
       if (!mounted) return;
       if (info != null && _myAddress != null && !info.contains(_myAddress!)) {
         _goBack();
@@ -152,7 +162,7 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       final contact = await ContactsService.instance.getContact(key);
       final blocked = await SafetyService.instance.isBlocked(key);
-    if (!mounted) return;
+      if (!mounted) return;
       setState(() {
         _contacts = contacts;
         _nickname = contact?.nickname;
@@ -905,8 +915,8 @@ class _ChatScreenState extends State<ChatScreen> {
         margin: const EdgeInsets.symmetric(vertical: 10),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHighest
-              .withValues(alpha: 0.6),
+          color:
+              theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Text(
@@ -923,8 +933,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final key = _chatKey;
     final mediaId = message.mediaId;
     if (key == null || mediaId == null) return;
-    final path = _mediaPaths[mediaId] ??
-        await MediaStore.instance.pathFor(mediaId);
+    final path =
+        _mediaPaths[mediaId] ?? await MediaStore.instance.pathFor(mediaId);
     if (path == null || !mounted) {
       // File already gone.
       await MessengerService.instance.markViewOnceOpened(key, message);
@@ -995,8 +1005,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   color: Colors.orangeAccent),
               const SizedBox(width: 8),
               Text('Tap to view. Disappears after',
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: textColor)),
+                  style:
+                      theme.textTheme.bodyMedium?.copyWith(color: textColor)),
             ],
           ),
         ),
@@ -1038,8 +1048,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       size: 14, color: Colors.orangeAccent),
                   const SizedBox(width: 4),
                   Text('View once',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                          color: textColor.withValues(alpha: 0.6))),
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: textColor.withValues(alpha: 0.6))),
                 ],
               ),
             ),
@@ -1119,15 +1129,12 @@ class _ChatScreenState extends State<ChatScreen> {
             children: [
               Text(
                 message.mediaName ?? 'File',
-                style:
-                    theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
               Text(
-                message.isMe
-                    ? 'Sent file'
-                    : 'Saved to your Storage app',
+                message.isMe ? 'Sent file' : 'Saved to your Storage app',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: textColor.withValues(alpha: 0.6),
                 ),
@@ -1220,24 +1227,24 @@ class _ChatScreenState extends State<ChatScreen> {
       child: GestureDetector(
         onLongPress: () => _showMessageActions(message),
         onSecondaryTap: () => _showMessageActions(message),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        constraints: const BoxConstraints(maxWidth: 480),
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isMe ? 16 : 4),
-            bottomRight: Radius.circular(isMe ? 4 : 16),
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          constraints: const BoxConstraints(maxWidth: 480),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isMe ? 16 : 4),
+              bottomRight: Radius.circular(isMe ? 4 : 16),
+            ),
           ),
-        ),
-        child: Column(
+          child: Column(
             crossAxisAlignment:
                 isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
+            mainAxisSize: MainAxisSize.min,
+            children: [
               if (showSender) ...[
                 Text(
                   _labelFor(message.senderAddress!),
@@ -1253,15 +1260,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 if (message.text.isNotEmpty) const SizedBox(height: 6),
               ],
               if (message.text.isNotEmpty)
-            Text(
-              message.text,
-                  style:
-                      theme.textTheme.bodyMedium?.copyWith(color: textColor),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+                Text(
+                  message.text,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   if (message.edited) ...[
                     Text(
                       'edited',
@@ -1272,26 +1278,26 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     const SizedBox(width: 6),
                   ],
-                Text(
-                  time,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: textColor.withValues(alpha: 0.6),
+                  Text(
+                    time,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: textColor.withValues(alpha: 0.6),
+                    ),
                   ),
-                ),
-                if (isMe) ...[
-                  const SizedBox(width: 4),
-                  Icon(
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    Icon(
                       statusIcon,
-                    size: 14,
+                      size: 14,
                       color: switch (message.status) {
                         MessageStatus.delivered => theme.colorScheme.primary,
                         MessageStatus.failed => theme.colorScheme.error,
                         _ => textColor.withValues(alpha: 0.6),
                       },
-                  ),
+                    ),
+                  ],
                 ],
-              ],
-            ),
+              ),
               if (pending) ...[
                 const SizedBox(height: 2),
                 Text(
@@ -1451,7 +1457,7 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.group_outlined),
             ),
           if (canAddContact && !narrow)
-          IconButton(
+            IconButton(
               tooltip: 'Add as contact',
               onPressed: _addAsContact,
               icon: const Icon(Icons.person_add_alt_1),
@@ -1634,32 +1640,32 @@ class _ChatScreenState extends State<ChatScreen> {
                                 onPressed: _sending ? null : _showAttachSheet,
                                 icon: const Icon(Icons.add_circle_outline),
                               ),
-                          Expanded(
-                            child: TextField(
-                              controller: _inputController,
-                              onSubmitted: (_) => _send(),
-                              textInputAction: TextInputAction.send,
+                              Expanded(
+                                child: TextField(
+                                  controller: _inputController,
+                                  onSubmitted: (_) => _send(),
+                                  textInputAction: TextInputAction.send,
                                   decoration: InputDecoration(
                                     hintText: _editing != null
                                         ? 'Edit message…'
                                         : 'Message…',
                                     border: const OutlineInputBorder(
-                                  borderRadius:
-                                      BorderRadius.all(Radius.circular(24)),
-                                ),
+                                      borderRadius:
+                                          BorderRadius.all(Radius.circular(24)),
+                                    ),
                                     contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 12,
+                                      horizontal: 16,
+                                      vertical: 12,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
+                              const SizedBox(width: 8),
                               if (_composerHasText || _editing != null)
-                          IconButton.filled(
+                                IconButton.filled(
                                   tooltip:
                                       _editing != null ? 'Save edit' : 'Send',
-                            onPressed: _sending ? null : _send,
+                                  onPressed: _sending ? null : _send,
                                   icon: Icon(_editing != null
                                       ? Icons.check
                                       : Icons.send),
@@ -1667,8 +1673,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               else
                                 IconButton.filled(
                                   tooltip: 'Record voice message',
-                                  onPressed:
-                                      _sending ? null : _recordVoiceNote,
+                                  onPressed: _sending ? null : _recordVoiceNote,
                                   icon: const Icon(Icons.mic),
                                 ),
                             ],
@@ -1852,7 +1857,8 @@ class _TransferBubbleState extends State<TransferBubble> {
               ? where
               : '$where · $speed',
       FtStatus.paused => stuckLine,
-      FtStatus.done => t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
+      FtStatus.done =>
+        t.outgoing ? 'Delivered · $total' : 'Saved to Storage · $total',
       FtStatus.declined => 'Declined',
       FtStatus.canceled => 'Canceled',
       FtStatus.failed => 'Failed',
@@ -1913,9 +1919,7 @@ class _TransferBubbleState extends State<TransferBubble> {
                 t.status == FtStatus.done
                     ? Icons.check_circle_outline
                     : Icons.swap_vert_circle_outlined,
-                color: t.status == FtStatus.done
-                    ? Colors.greenAccent
-                    : color,
+                color: t.status == FtStatus.done ? Colors.greenAccent : color,
               ),
               const SizedBox(width: 8),
               Flexible(
@@ -1958,8 +1962,7 @@ class _TransferBubbleState extends State<TransferBubble> {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton(
-                  onPressed: () =>
-                      FileTransferService.instance.decline(t.tid),
+                  onPressed: () => FileTransferService.instance.decline(t.tid),
                   child: const Text('Decline'),
                 ),
               ],
@@ -2040,7 +2043,8 @@ class _TransferBubbleState extends State<TransferBubble> {
   Widget? _mediaCard(BuildContext context, FileTransfer t) {
     final path = _mediaPath;
     if (!_isMedia(t.mime)) return null;
-    if (!t.outgoing && (t.status == FtStatus.offered || t.isTerminal) &&
+    if (!t.outgoing &&
+        (t.status == FtStatus.offered || t.isTerminal) &&
         t.status != FtStatus.done) {
       return null;
     }

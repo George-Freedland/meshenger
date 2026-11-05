@@ -92,7 +92,7 @@ Every Android update must be signed with the same key. **If you lose it, you can
   storePassword=YOUR_PASSWORD
   keyPassword=YOUR_PASSWORD
   keyAlias=upload
-  storeFile=/Users/georgefreedland/meshenger-upload.jks
+  storeFile=/Users/YOUR_MAC_USERNAME/meshenger-upload.jks
   ```
 - [ ] Back up `~/meshenger-upload.jks` and the password in a password manager **and** on a USB stick.
 
@@ -128,7 +128,7 @@ Both stores require apps with user-generated content (chats, Global posts, sites
 
 ### 1.9 Version numbers
 
-`pubspec.yaml` has `version: 1.0.0+1`. Before every release, bump both parts. For example, `1.0.1+2`: `1.0.1` is what users see, and `+2` must go up on every store upload.
+`pubspec.yaml` has `version: 1.0.0+3`. Before every release, bump both parts. For example, `1.0.1+4`: `1.0.1` is what users see, and `+4` must go up on every store upload.
 
 ---
 
@@ -200,7 +200,7 @@ You need the Apple Developer Program membership from 2.1 (the same $99 covers iP
 - [ ] **Register the app.** In [App Store Connect](https://appstoreconnect.apple.com), go to **Apps → + → New App**. Choose iOS, name **Meshenger**, primary language English, bundle ID `com.georgefreedland.meshenger`, SKU `meshenger`. If the bundle ID isn't in the list, register it under [Identifiers](https://developer.apple.com/account/resources/identifiers/list) first (**+ → App IDs → App**, explicit ID, no extra capabilities).
 - [ ] **Signing.** Open `ios/Runner.xcworkspace` in Xcode → **Runner** target → **Signing & Capabilities**. Set **Team** to your account and keep **Automatically manage signing** on.
 - [ ] **Try it on your iPhone first.** Plug it in and tap **Trust**. When iOS asks, turn on **Settings → Privacy & Security → Developer Mode** and restart the phone. Then run `flutter run -d ios --release` and confirm it chats with your Mac over Bluetooth and plays a song before you involve Apple.
-- [ ] **Bump the build number** in `pubspec.yaml`: every upload needs a higher number after the `+` (step 1.9). Build 2 (`1.0.0+2`) is uploaded, so the next one is `1.0.0+3`.
+- [ ] **Bump the build number** in `pubspec.yaml`: every upload needs a higher number after the `+` (step 1.9). Builds 1 and 2 are uploaded and `pubspec.yaml` is at `1.0.0+3`; the upload after that needs `+4`.
 - [ ] Build:
   ```bash
   flutter build ipa --release        # produces build/ios/ipa/*.ipa

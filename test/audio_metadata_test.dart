@@ -6,18 +6,29 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:meshenger/core/media/audio_metadata.dart';
 
-final _jpeg = Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4, 0xFF, 0xD9]);
-final _png = Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9]);
+final _jpeg =
+    Uint8List.fromList([0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4, 0xFF, 0xD9]);
+final _png =
+    Uint8List.fromList([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 9]);
 
-List<int> _u32(int v) => [(v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF];
-List<int> _u32le(int v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+List<int> _u32(int v) =>
+    [(v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF];
+List<int> _u32le(int v) =>
+    [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
 List<int> _syncsafe(int v) =>
     [(v >> 21) & 0x7F, (v >> 14) & 0x7F, (v >> 7) & 0x7F, v & 0x7F];
 
 /// An ID3v2 tag of [major] version 3 or 4 holding [frames].
 List<int> _id3(int major, List<List<int>> frames) {
   final body = frames.expand((f) => f).toList();
-  return [...latin1.encode('ID3'), major, 0, 0, ..._syncsafe(body.length), ...body];
+  return [
+    ...latin1.encode('ID3'),
+    major,
+    0,
+    0,
+    ..._syncsafe(body.length),
+    ...body
+  ];
 }
 
 List<int> _frame(int major, String id, List<int> data) => [
@@ -38,15 +49,23 @@ List<int> _utf16Text(String s) {
   return out;
 }
 
-List<int> _apic(String mime, int type, List<int> image) =>
-    [0, ...latin1.encode(mime), 0, type, ...latin1.encode('cover'), 0, ...image];
+List<int> _apic(String mime, int type, List<int> image) => [
+      0,
+      ...latin1.encode(mime),
+      0,
+      type,
+      ...latin1.encode('cover'),
+      0,
+      ...image
+    ];
 
 /// MPEG-1 Layer III, 128 kbps, 44.1 kHz, stereo: 417-byte frames.
 List<int> _mp3Frame({int? xingFrames}) {
   final frame = List<int>.filled(417, 0);
   frame.setAll(0, [0xFF, 0xFB, 0x90, 0x00]);
   if (xingFrames != null) {
-    frame.setAll(36, [...latin1.encode('Xing'), ..._u32(1), ..._u32(xingFrames)]);
+    frame.setAll(
+        36, [...latin1.encode('Xing'), ..._u32(1), ..._u32(xingFrames)]);
   }
   return frame;
 }
@@ -54,8 +73,13 @@ List<int> _mp3Frame({int? xingFrames}) {
 List<int> _box(String type, List<int> payload) =>
     [..._u32(8 + payload.length), ...latin1.encode(type), ...payload];
 
-List<int> _flacBlock(int type, List<int> data, {bool last = false}) =>
-    [(last ? 0x80 : 0) | type, (data.length >> 16) & 0xFF, (data.length >> 8) & 0xFF, data.length & 0xFF, ...data];
+List<int> _flacBlock(int type, List<int> data, {bool last = false}) => [
+      (last ? 0x80 : 0) | type,
+      (data.length >> 16) & 0xFF,
+      (data.length >> 8) & 0xFF,
+      data.length & 0xFF,
+      ...data
+    ];
 
 void main() {
   late Directory dir;
@@ -114,7 +138,12 @@ void main() {
         ];
     final body = [...frame22('TT2', tt2), ...frame22('PIC', pic)];
     final meta = await read('old.mp3', [
-      ...latin1.encode('ID3'), 2, 0, 0, ..._syncsafe(body.length), ...body,
+      ...latin1.encode('ID3'),
+      2,
+      0,
+      0,
+      ..._syncsafe(body.length),
+      ...body,
     ]);
     expect(meta.title, 'Old Tag');
     expect(meta.art, _jpeg);
@@ -122,7 +151,8 @@ void main() {
 
   test('ID3v1 only, length estimated from the bitrate', () async {
     final frames = [for (var i = 0; i < 20; i++) ..._mp3Frame()];
-    List<int> field(String s) => [...latin1.encode(s), ...List.filled(30 - s.length, 0)];
+    List<int> field(String s) =>
+        [...latin1.encode(s), ...List.filled(30 - s.length, 0)];
     final meta = await read('cbr.mp3', [
       ...frames,
       ...latin1.encode('TAG'),
@@ -142,7 +172,14 @@ void main() {
     List<int> item(String type, int kind, List<int> value) =>
         _box(type, _box('data', [..._u32(kind), ..._u32(0), ...value]));
     final mvhd = _box('mvhd', [
-      0, 0, 0, 0, ..._u32(0), ..._u32(0), ..._u32(1000), ..._u32(185500),
+      0,
+      0,
+      0,
+      0,
+      ..._u32(0),
+      ..._u32(0),
+      ..._u32(1000),
+      ..._u32(185500),
       ...List.filled(80, 0),
     ]);
     final ilst = _box('ilst', [
@@ -156,11 +193,13 @@ void main() {
       ..._box('mdat', List.filled(64, 7)),
       ..._box('moov', [
         ...mvhd,
-        ..._box('udta', _box('meta', [
-          ..._u32(0),
-          ..._box('hdlr', List.filled(25, 0)),
-          ...ilst,
-        ])),
+        ..._box(
+            'udta',
+            _box('meta', [
+              ..._u32(0),
+              ..._box('hdlr', List.filled(25, 0)),
+              ...ilst,
+            ])),
       ]),
     ]);
     expect(meta.title, 'Pocket Mesh');
@@ -174,23 +213,41 @@ void main() {
     const rate = 44100;
     const samples = rate * 60;
     final info = <int>[
-      0, 16, 0, 16, 0, 0, 0, 0, 0, 0,
-      rate >> 12, (rate >> 4) & 0xFF, ((rate & 0xF) << 4) | (1 << 1), 0xF0,
+      0,
+      16,
+      0,
+      16,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      rate >> 12,
+      (rate >> 4) & 0xFF,
+      ((rate & 0xF) << 4) | (1 << 1),
+      0xF0,
       ..._u32(samples),
       ...List.filled(16, 0),
     ];
-    List<int> comment(String s) => [..._u32le(utf8.encode(s).length), ...utf8.encode(s)];
+    List<int> comment(String s) =>
+        [..._u32le(utf8.encode(s).length), ...utf8.encode(s)];
     final comments = [
-      ..._u32le(6), ...utf8.encode('vendor'),
+      ..._u32le(6),
+      ...utf8.encode('vendor'),
       ..._u32le(3),
       ...comment('TITLE=Lossless'),
       ...comment('artist=Quiet Room'),
       ...comment('ALBUM=Samples'),
     ];
     final picture = [
-      ..._u32(3), ..._u32(10), ...latin1.encode('image/jpeg'),
-      ..._u32(0), ...List.filled(16, 0),
-      ..._u32(_jpeg.length), ..._jpeg,
+      ..._u32(3),
+      ..._u32(10),
+      ...latin1.encode('image/jpeg'),
+      ..._u32(0),
+      ...List.filled(16, 0),
+      ..._u32(_jpeg.length),
+      ..._jpeg,
     ];
     final meta = await read('song.flac', [
       ...latin1.encode('fLaC'),
@@ -206,7 +263,8 @@ void main() {
   });
 
   test('anything else gives empty metadata instead of throwing', () async {
-    final meta = await read('noise.bin', List.generate(5000, (i) => (i * 37) % 256));
+    final meta =
+        await read('noise.bin', List.generate(5000, (i) => (i * 37) % 256));
     expect(meta.title, isNull);
     expect(meta.art, isNull);
     final missing = await readAudioMetadata('${dir.path}/missing.mp3');

@@ -94,7 +94,8 @@ class _CallHistoryScreenState extends State<CallHistoryScreen>
 
   Future<List<_Voicemail>> _loadVoicemail() async {
     final peer = widget.peer;
-    final chats = peer != null ? [peer] : await ChatStorage.instance.listChats();
+    final chats =
+        peer != null ? [peer] : await ChatStorage.instance.listChats();
     final result = <_Voicemail>[];
     for (final chatKey in chats) {
       if (ChatStorage.isGroupChat(chatKey)) continue;
@@ -158,7 +159,9 @@ class _CallHistoryScreenState extends State<CallHistoryScreen>
   static IconData _iconFor(CallLogEntry entry) {
     final missed = entry.outcome == CallOutcome.missed;
     if (entry.video) {
-      return missed ? Icons.missed_video_call_outlined : Icons.videocam_outlined;
+      return missed
+          ? Icons.missed_video_call_outlined
+          : Icons.videocam_outlined;
     }
     if (missed) return Icons.call_missed;
     return entry.outgoing ? Icons.call_made : Icons.call_received;
@@ -217,8 +220,8 @@ class _CallHistoryScreenState extends State<CallHistoryScreen>
   @override
   Widget build(BuildContext context) {
     final peer = widget.peer;
-    final canClear = _tabs.index != _voicemailTab &&
-        _callsFor(_videoFilter).isNotEmpty;
+    final canClear =
+        _tabs.index != _voicemailTab && _callsFor(_videoFilter).isNotEmpty;
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -303,9 +306,8 @@ class _CallHistoryScreenState extends State<CallHistoryScreen>
           overflow: TextOverflow.ellipsis,
           style: TextStyle(color: color),
         ),
-        subtitle: Text(widget.peer == null
-            ? '$kind · ${_detail(entry)}'
-            : _detail(entry)),
+        subtitle: Text(
+            widget.peer == null ? '$kind · ${_detail(entry)}' : _detail(entry)),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

@@ -5,7 +5,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'identity_scope.dart';
 
-enum CallOutcome { completed, missed, declined, noAnswer, failed, busy, canceled }
+enum CallOutcome {
+  completed,
+  missed,
+  declined,
+  noAnswer,
+  failed,
+  busy,
+  canceled
+}
 
 class CallLogEntry {
   final String peer; // base64 address
@@ -105,8 +113,7 @@ class CallLogService {
   Future<List<CallLogEntry>> clear({bool? video, String? peer}) async {
     final entries = await _readAll();
     bool matches(CallLogEntry e) =>
-        (video == null || e.video == video) &&
-        (peer == null || e.peer == peer);
+        (video == null || e.video == video) && (peer == null || e.peer == peer);
     final removed = entries.where(matches).toList();
     if (removed.isEmpty) return removed;
     await _writeAll(entries.where((e) => !matches(e)).toList());

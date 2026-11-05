@@ -104,9 +104,8 @@ void main() {
           timestamp: DateTime(2026, 11, 3, 20, 12),
           status: MessageStatus.sent,
           isSystem: true,
-          kind: video
-              ? ChatStorage.videoCallLineKind
-              : ChatStorage.callLineKind,
+          kind:
+              video ? ChatStorage.videoCallLineKind : ChatStorage.callLineKind,
         );
 
     await storage.ensureChatExists(peer);

@@ -340,7 +340,8 @@ class LocationService {
 
   Future<GeoPoint?> _savedOwnFix() async {
     final prefs = await SharedPreferences.getInstance();
-    final point = GeoPoint.decode(prefs.getString(IdentityScope.key(ownFixKey)) ?? '');
+    final point =
+        GeoPoint.decode(prefs.getString(IdentityScope.key(ownFixKey)) ?? '');
     if (point == null || !_isFresh(point)) return null;
     return point;
   }
@@ -466,10 +467,10 @@ class LocationService {
   void _ensureListening() {
     if (_sensorSub != null) return;
     final now = DateTime.now().millisecondsSinceEpoch;
-    final wait = _origin == LocationOrigin.sensor ||
-            _origin == LocationOrigin.remembered
-        ? refreshEvery
-        : retryEvery;
+    final wait =
+        _origin == LocationOrigin.sensor || _origin == LocationOrigin.remembered
+            ? refreshEvery
+            : retryEvery;
     if (now - _lastAttemptMs < wait.inMilliseconds) return;
     _lastAttemptMs = now;
     unawaited(_acquire(askPermission: false));

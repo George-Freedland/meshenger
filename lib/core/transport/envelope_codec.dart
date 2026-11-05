@@ -193,8 +193,7 @@ class EnvelopeCodec {
           (body['ts'] as num).toInt(),
         ),
         groupId: body['gid'] as String?,
-        groupMembers:
-            (body['members'] as List?)?.whereType<String>().toList(),
+        groupMembers: (body['members'] as List?)?.whereType<String>().toList(),
         groupAdmin: body['admin'] as String?,
         groupName: body['gname'] as String?,
         groupEvent: body['gevt'] as String?,
@@ -238,8 +237,8 @@ class EnvelopeCodec {
     final x25519 = await myX25519Base64();
     final ts = DateTime.now().millisecondsSinceEpoch;
     final nick = nickname ?? '';
-    final signature = await identity
-        .sign(utf8.encode('gossip|$address|$x25519|$nick|$ts'));
+    final signature =
+        await identity.sign(utf8.encode('gossip|$address|$x25519|$nick|$ts'));
     Map<String, Object?>? loc;
     if (location != null) {
       final value = location.encode();
@@ -541,7 +540,10 @@ class EnvelopeCodec {
       final exp = (decoded['exp'] as num?)?.toInt();
       final deleted = decoded['del'] == true;
       final sig = decoded['sig'] as String?;
-      if (id == null || author == null || ts == null || exp == null ||
+      if (id == null ||
+          author == null ||
+          ts == null ||
+          exp == null ||
           sig == null) {
         return null;
       }

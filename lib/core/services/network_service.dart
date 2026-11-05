@@ -76,8 +76,7 @@ class NetworkPost {
   bool get isPage => kind == 'page';
   bool get isGlobal => scope == EnvelopeCodec.scopeGlobal;
 
-  NetworkPost copyWith({String? id, int? tsMs, bool? isPrivate}) =>
-      NetworkPost(
+  NetworkPost copyWith({String? id, int? tsMs, bool? isPrivate}) => NetworkPost(
         id: id ?? this.id,
         author: author,
         authorNick: authorNick,

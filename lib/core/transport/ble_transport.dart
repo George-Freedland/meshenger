@@ -1,7 +1,7 @@
 import 'mesh_transport.dart';
 
-import 'ble_transport_stub.dart'
-    if (dart.library.io) 'ble_transport_io.dart' as impl;
+import 'ble_transport_stub.dart' if (dart.library.io) 'ble_transport_io.dart'
+    as impl;
 
 /// Bluetooth LE transport: works with no network infrastructure at all.
 ///

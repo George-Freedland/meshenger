@@ -29,8 +29,8 @@ void main() {
           base64Encode((await keys.extractPublicKey()).bytes));
       PeerDirectory.instance.resetCache();
       await SettingsService.instance.setMeshMapGlobe(true);
-      await LocationService.instance.setPin(const GeoPoint(
-          lat: 37.77, lon: -122.42, accuracyM: 25, tsMs: 1));
+      await LocationService.instance.setPin(
+          const GeoPoint(lat: 37.77, lon: -122.42, accuracyM: 25, tsMs: 1));
       await LocationService.instance.setShareApproximate(true);
       await PeerDirectory.instance.recordGossip('denver-pi', 'key',
           nickname: 'Denver Pi',

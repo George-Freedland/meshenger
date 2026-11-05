@@ -415,8 +415,7 @@ class IdentityService {
     if (current == null) throw StateError('Identity is locked');
 
     final identities = await listIdentities();
-    final idx =
-        identities.indexWhere((i) => i.publicKey == current.publicKey);
+    final idx = identities.indexWhere((i) => i.publicKey == current.publicKey);
     if (idx < 0) return;
 
     final trimmed = nickname?.trim();

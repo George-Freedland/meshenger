@@ -45,8 +45,7 @@ class SafetyService {
       {...builtInBlocked, ...await blocked()};
 
   Future<bool> isBlocked(String address) async =>
-      builtInBlocked.contains(address) ||
-      (await blocked()).contains(address);
+      builtInBlocked.contains(address) || (await blocked()).contains(address);
 
   Future<void> block(String address) =>
       _edit(_blockedKey, (set) => set.add(address));
@@ -158,7 +157,8 @@ String reportEmailBody({
   }
   final note = details?.trim();
   if (note != null && note.isNotEmpty) lines.add('Details: $note');
-  lines.add('Reported at: ${(now ?? DateTime.now()).toUtc().toIso8601String()}');
+  lines
+      .add('Reported at: ${(now ?? DateTime.now()).toUtc().toIso8601String()}');
   return lines.join('\n');
 }
 

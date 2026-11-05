@@ -19,8 +19,8 @@ import 'package:meshenger/features/apps/network_screen.dart';
 /// plus frame, so alternate the two until it settles.
 Future<void> _settleFiles(WidgetTester tester) async {
   for (var i = 0; i < 30; i++) {
-    await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 5)));
+    await tester
+        .runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
     await tester.pump();
   }
 }
@@ -59,17 +59,19 @@ void main() {
 
   testWidgets('a song on global shows its tags and plays after fetching',
       (tester) async {
-    await post(const PostAttachment(
-      name: 'mesh_love.mp3',
-      mime: 'audio/mpeg',
-      size: 4 * 1024 * 1024,
-      sha256:
-          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      title: 'Mesh Love',
-      artist: 'The Nodes',
-      album: 'Offline',
-      durationMs: 201000,
-    ), text: 'new single');
+    await post(
+        const PostAttachment(
+          name: 'mesh_love.mp3',
+          mime: 'audio/mpeg',
+          size: 4 * 1024 * 1024,
+          sha256:
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          title: 'Mesh Love',
+          artist: 'The Nodes',
+          album: 'Offline',
+          durationMs: 201000,
+        ),
+        text: 'new single');
 
     await tester.pumpWidget(const MaterialApp(home: NetworkScreen()));
     await tester.pumpAndSettle();
@@ -118,7 +120,15 @@ void main() {
       ...frame('TPE1', [0, ...latin1.encode('Relay Kids')]),
     ];
     file.writeAsBytesSync([
-      ...latin1.encode('ID3'), 3, 0, 0, 0, 0, 0, body.length, ...body,
+      ...latin1.encode('ID3'),
+      3,
+      0,
+      0,
+      0,
+      0,
+      0,
+      body.length,
+      ...body,
     ]);
 
     await tester.pumpWidget(MaterialApp(

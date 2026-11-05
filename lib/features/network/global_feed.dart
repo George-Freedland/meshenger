@@ -436,8 +436,7 @@ class _ActivityPanelState extends State<_ActivityPanel> {
   }
 
   String _describe(MeshActivityEvent event) {
-    final name =
-        widget.widget.names.of(event.address, carried: event.nickname);
+    final name = widget.widget.names.of(event.address, carried: event.nickname);
     return '$name ${event.joined ? 'joined your mesh' : 'left'}';
   }
 

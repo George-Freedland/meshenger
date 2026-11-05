@@ -61,7 +61,8 @@ class CallService {
   final _stateController = StreamController<CallState>.broadcast();
   Stream<CallState> get onState => _stateController.stream;
 
-  final _events = StreamController<(CallEvent, String peer, bool video)>.broadcast();
+  final _events =
+      StreamController<(CallEvent, String peer, bool video)>.broadcast();
   Stream<(CallEvent, String peer, bool video)> get onEvent => _events.stream;
 
   final _audio = StreamController<Uint8List>.broadcast();
@@ -74,8 +75,7 @@ class CallService {
 
   /// Hooks into the messenger's signal stream. Safe to call repeatedly.
   void attach() {
-    _signalSub ??=
-        MessengerService.instance.onCallSignal.listen(_handleSignal);
+    _signalSub ??= MessengerService.instance.onCallSignal.listen(_handleSignal);
   }
 
   void detach() {

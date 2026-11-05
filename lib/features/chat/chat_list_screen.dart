@@ -42,8 +42,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
   void initState() {
     super.initState();
     _refresh();
-    _changesSub =
-        MessengerService.instance.onChanged.listen((_) => _refresh());
+    _changesSub = MessengerService.instance.onChanged.listen((_) => _refresh());
     _peersSub = MessengerService.instance.onPeersChanged.listen((peers) {
       if (mounted) setState(() => _onlinePeers = peers);
     });
@@ -96,7 +95,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 
   Future<void> _showMyQrModal() async {
-    final addressBase64 = await IdentityService.instance.getPublicAddressBase64();
+    final addressBase64 =
+        await IdentityService.instance.getPublicAddressBase64();
     if (!mounted) return;
 
     if (addressBase64 == null || addressBase64.isEmpty) {
@@ -111,7 +111,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text('My QR code', style: Theme.of(context).textTheme.titleLarge),
+                  Text('My QR code',
+                      style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 12),
                   const Text('No identity unlocked. Please log in again.'),
                   const SizedBox(height: 16),
@@ -173,7 +174,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             );
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Copied public address')),
+                                const SnackBar(
+                                    content: Text('Copied public address')),
                               );
                             }
                           },
@@ -262,8 +264,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           itemBuilder: (context, i) {
                             final entry = entries[entries.length - 1 - i];
                             return Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 2),
+                              padding: const EdgeInsets.symmetric(vertical: 2),
                               child: SelectableText(
                                 entry.toString(),
                                 style: const TextStyle(
@@ -326,8 +327,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 : _contacts
                     .where((c) =>
                         !recipients.contains(c.address) &&
-                        ((c.nickname?.toLowerCase().contains(query) ??
-                                false) ||
+                        ((c.nickname?.toLowerCase().contains(query) ?? false) ||
                             c.address.toLowerCase().contains(query)))
                     .take(5)
                     .toList();
@@ -455,9 +455,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                 for (final c in matches)
                                   ListTile(
                                     dense: true,
-                                    leading:
-                                        const Icon(Icons.person_outline, size: 20),
-                                    title: Text(c.nickname ?? _short(c.address)),
+                                    leading: const Icon(Icons.person_outline,
+                                        size: 20),
+                                    title:
+                                        Text(c.nickname ?? _short(c.address)),
                                     subtitle: Text(_short(c.address)),
                                     onTap: () => addRecipient(c.address),
                                   ),
@@ -582,127 +583,126 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 child: Text('No chats yet. Add a contact to get started.'),
               )
             : ListView.separated(
-                  itemCount: _chats.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final chatKey = _chats[i];
-                    final isGroup = ChatStorage.isGroupChat(chatKey);
-                    final unreadCount = _unreadCounts[chatKey] ?? 0;
-                    final unread = unreadCount > 0;
+                itemCount: _chats.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, i) {
+                  final chatKey = _chats[i];
+                  final isGroup = ChatStorage.isGroupChat(chatKey);
+                  final unreadCount = _unreadCounts[chatKey] ?? 0;
+                  final unread = unreadCount > 0;
 
-                    final String title;
-                    final String subtitle;
+                  final String title;
+                  final String subtitle;
 
-                    if (isGroup) {
-                      final info = _groupInfo[chatKey];
-                      final members = info?.members ?? const <String>[];
-                      final others =
-                          members.where((a) => !_isMyAddress(a)).toList();
-                      title = info?.displayTitle(_myAddress, _contactLabel) ??
-                          (others.isEmpty
-                              ? 'Group chat'
-                              : others.map(_contactLabel).join(', '));
-                      final onlineCount =
-                          others.where(_onlinePeers.contains).length;
-                      subtitle =
-                          '${members.length} members · $onlineCount online';
-                    } else {
-                      final nick = _nicknameFor(chatKey);
-                      title = (nick != null && nick.trim().isNotEmpty)
-                          ? nick
-                          : _short(chatKey);
-                      subtitle = _short(chatKey);
-                    }
+                  if (isGroup) {
+                    final info = _groupInfo[chatKey];
+                    final members = info?.members ?? const <String>[];
+                    final others =
+                        members.where((a) => !_isMyAddress(a)).toList();
+                    title = info?.displayTitle(_myAddress, _contactLabel) ??
+                        (others.isEmpty
+                            ? 'Group chat'
+                            : others.map(_contactLabel).join(', '));
+                    final onlineCount =
+                        others.where(_onlinePeers.contains).length;
+                    subtitle =
+                        '${members.length} members · $onlineCount online';
+                  } else {
+                    final nick = _nicknameFor(chatKey);
+                    title = (nick != null && nick.trim().isNotEmpty)
+                        ? nick
+                        : _short(chatKey);
+                    subtitle = _short(chatKey);
+                  }
 
-                    final leading = UnreadBadge(
-                      count: unreadCount,
-                      child: SizedBox(
-                        width: 32,
-                        height: 32,
-                        child: isGroup
-                            ? Icon(
-                                Icons.group,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withValues(alpha: 0.5),
-                              )
-                            : Icon(
-                                Icons.person_outline,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withValues(alpha: 0.45),
-                              ),
-                      ),
-                    );
-
-                    return ListTile(
-                      leading: leading,
-                      title: Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: unread
-                            ? const TextStyle(fontWeight: FontWeight.bold)
-                            : null,
-                      ),
-                      subtitle: Text(subtitle),
-                      onTap: () =>
-                          context.push('/chat?peer=${Uri.encodeComponent(chatKey)}'),
-                      trailing: IconButton(
-                        tooltip: isGroup ? 'Hide chat' : 'Delete chat',
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () async {
-                          if (isGroup) {
-                            await ChatStorage.instance.hideChat(chatKey);
-                            await _refresh();
-                            return;
-                          }
-                          final choice = await showDialog<String>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('Delete this chat?'),
-                              content: const Text(
-                                'Delete for everyone also removes the '
-                                'conversation on their device (applied '
-                                'when they are next reachable).',
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx),
-                                  child: const Text('Cancel'),
-                                ),
-                                OutlinedButton(
-                                  onPressed: () => Navigator.pop(ctx, 'me'),
-                                  child: const Text('Delete for me'),
-                                ),
-                                FilledButton(
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor:
-                                        Theme.of(ctx).colorScheme.error,
-                                    foregroundColor:
-                                        Theme.of(ctx).colorScheme.onError,
-                                  ),
-                                  onPressed: () =>
-                                      Navigator.pop(ctx, 'everyone'),
-                                  child: const Text('Delete for everyone'),
-                                ),
-                              ],
+                  final leading = UnreadBadge(
+                    count: unreadCount,
+                    child: SizedBox(
+                      width: 32,
+                      height: 32,
+                      child: isGroup
+                          ? Icon(
+                              Icons.group,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withValues(alpha: 0.5),
+                            )
+                          : Icon(
+                              Icons.person_outline,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurface
+                                  .withValues(alpha: 0.45),
                             ),
-                          );
-                          if (choice == 'everyone') {
-                            await MessengerService.instance
-                                .deleteChatForEveryone(chatKey);
-                          } else if (choice == 'me') {
-                            await MessengerService.instance
-                                .deleteChatLocally(chatKey);
-                          }
-                          if (choice != null) await _refresh();
-                        },
-                      ),
-                    );
-                  },
+                    ),
+                  );
+
+                  return ListTile(
+                    leading: leading,
+                    title: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: unread
+                          ? const TextStyle(fontWeight: FontWeight.bold)
+                          : null,
+                    ),
+                    subtitle: Text(subtitle),
+                    onTap: () => context
+                        .push('/chat?peer=${Uri.encodeComponent(chatKey)}'),
+                    trailing: IconButton(
+                      tooltip: isGroup ? 'Hide chat' : 'Delete chat',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () async {
+                        if (isGroup) {
+                          await ChatStorage.instance.hideChat(chatKey);
+                          await _refresh();
+                          return;
+                        }
+                        final choice = await showDialog<String>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Delete this chat?'),
+                            content: const Text(
+                              'Delete for everyone also removes the '
+                              'conversation on their device (applied '
+                              'when they are next reachable).',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: const Text('Cancel'),
+                              ),
+                              OutlinedButton(
+                                onPressed: () => Navigator.pop(ctx, 'me'),
+                                child: const Text('Delete for me'),
+                              ),
+                              FilledButton(
+                                style: FilledButton.styleFrom(
+                                  backgroundColor:
+                                      Theme.of(ctx).colorScheme.error,
+                                  foregroundColor:
+                                      Theme.of(ctx).colorScheme.onError,
+                                ),
+                                onPressed: () => Navigator.pop(ctx, 'everyone'),
+                                child: const Text('Delete for everyone'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (choice == 'everyone') {
+                          await MessengerService.instance
+                              .deleteChatForEveryone(chatKey);
+                        } else if (choice == 'me') {
+                          await MessengerService.instance
+                              .deleteChatLocally(chatKey);
+                        }
+                        if (choice != null) await _refresh();
+                      },
+                    ),
+                  );
+                },
               );
   }
 }

@@ -31,8 +31,7 @@ void main() {
       {bool video = false, int seconds = 0}) async {
     await MessengerService.instance.noteCall(peer,
         id: 'call:$callId:started',
-        text: CallService.chatLine(
-            video: video, outgoing: true, outcome: null),
+        text: CallService.chatLine(video: video, outgoing: true, outcome: null),
         at: start,
         video: video);
     final end = start.add(Duration(seconds: seconds));
@@ -91,10 +90,9 @@ void main() {
     await tester.pumpAndSettle();
     await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 300)));
-    final lines = await tester
-        .runAsync(() => ChatStorage.instance.listMessages(peer));
-    expect(lines!.map((m) => m.id),
-        ['call:a:started', 'call:a:completed']);
+    final lines =
+        await tester.runAsync(() => ChatStorage.instance.listMessages(peer));
+    expect(lines!.map((m) => m.id), ['call:a:started', 'call:a:completed']);
 
     await tester.tap(find.widgetWithText(Tab, 'All'));
     await tester.pumpAndSettle();

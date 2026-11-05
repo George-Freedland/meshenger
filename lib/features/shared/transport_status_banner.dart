@@ -86,8 +86,8 @@ class _TransportStatusBannerState extends State<TransportStatusBanner> {
                 children: [
                   Text(
                     title,
-                    style: theme.textTheme.titleSmall
-                        ?.copyWith(color: foreground),
+                    style:
+                        theme.textTheme.titleSmall?.copyWith(color: foreground),
                   ),
                   const SizedBox(height: 2),
                   Text(

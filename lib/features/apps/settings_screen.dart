@@ -116,9 +116,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final location = LocationService.instance;
     final fix = location.lastReading;
     if (fix != null) {
-      final at = TimeOfDay.fromDateTime(
-              DateTime.fromMillisecondsSinceEpoch(fix.tsMs))
-          .format(context);
+      final at =
+          TimeOfDay.fromDateTime(DateTime.fromMillisecondsSinceEpoch(fix.tsMs))
+              .format(context);
       final where = switch (location.origin) {
         LocationOrigin.nearby =>
           'Placed next to a device in radio range, to within about '
@@ -485,7 +485,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           LocationService.instance.problem ==
                               LocationProblem.servicesOff)
                         OutlinedButton(
-                          onPressed: LocationService.instance.openDeviceSettings,
+                          onPressed:
+                              LocationService.instance.openDeviceSettings,
                           child: const Text('Open location settings'),
                         ),
                     ],
@@ -585,8 +586,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading:
-                      Icon(Icons.logout, color: theme.colorScheme.error),
+                  leading: Icon(Icons.logout, color: theme.colorScheme.error),
                   title: Text(
                     'Log out',
                     style: TextStyle(color: theme.colorScheme.error),

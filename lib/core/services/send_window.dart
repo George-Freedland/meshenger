@@ -56,8 +56,7 @@ class SendWindow {
     // A receiver ahead of us (it already had what we re-sent): skip ahead.
     if (_next < _confirmed) _next = _confirmed;
     if (!missing || have < _confirmed || _next <= have) return false;
-    if (_wentBackTo == have &&
-        nowMs - _wentBackAtMs < holdoff.inMilliseconds) {
+    if (_wentBackTo == have && nowMs - _wentBackAtMs < holdoff.inMilliseconds) {
       return false;
     }
     _goBack(have, nowMs);

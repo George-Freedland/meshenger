@@ -63,8 +63,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     });
     _peersSub =
         MessengerService.instance.onPeersChanged.listen((_) => _reload());
-    _directorySub =
-        PeerDirectory.instance.onChanged.listen((_) => _reload());
+    _directorySub = PeerDirectory.instance.onChanged.listen((_) => _reload());
     _routesSub = RouteLog.instance.onChanged.listen((_) => _reload());
     _locationSub = LocationService.instance.onChanged.listen((_) => _reload());
     _refreshTimer =
@@ -134,8 +133,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
     return 'You ($nick)';
   }
 
-  bool _isContact(String address) =>
-      _contacts.any((c) => c.address == address);
+  bool _isContact(String address) => _contacts.any((c) => c.address == address);
 
   KnownPeer? _knownFor(String address) {
     for (final peer in _known) {
@@ -475,8 +473,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
             routes: _routes,
             selected: selected,
             focus: mine == null ? null : (mine.lat, mine.lon),
-            onSelect: (address) => setState(
-                () => _selected = address == me ? null : address),
+            onSelect: (address) =>
+                setState(() => _selected = address == me ? null : address),
             onLongPress: _confirmPin,
           ),
         ),
@@ -535,9 +533,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
                     _sharing
                         ? switch (LocationService.instance.problem) {
                             null => LocationService.finding(offerPin: true),
-                            final problem =>
-                              "You're not on the globe yet. "
-                                  '${LocationService.describe(problem)}',
+                            final problem => "You're not on the globe yet. "
+                                '${LocationService.describe(problem)}',
                           }
                         : "You're not on the globe: turn on location sharing "
                             'in Settings, or long-press your spot to pin it.',
@@ -558,7 +555,8 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
   }
 
   /// Long-press on the globe: pin this device's spot there.
-  Future<void> _confirmPin(double lat, double lon, double metersPerPixel) async {
+  Future<void> _confirmPin(
+      double lat, double lon, double metersPerPixel) async {
     // A fingertip covers about 20 px.
     final accuracy = max(25, (metersPerPixel * 20).round());
     final rough = accuracy > 2000;
@@ -668,8 +666,7 @@ class _MeshMapScreenState extends State<MeshMapScreen> {
               _deviceTile(
                 address: peer,
                 color: Colors.greenAccent,
-                subtitle:
-                    '${_short(peer)} · ${_lastSeenLabel(peer)}'
+                subtitle: '${_short(peer)} · ${_lastSeenLabel(peer)}'
                     '${_rssi[peer] != null ? ' · ${_rssi[peer]} dBm' : ''}',
               ),
           ],
@@ -885,12 +882,12 @@ class _MeshPainter extends CustomPainter {
     for (final entry in positions.entries) {
       final isRelayed = relayed.contains(entry.key);
       canvas.drawCircle(entry.value, 16, isRelayed ? relayGlow : directGlow);
-      canvas.drawCircle(
-          entry.value, 10, isRelayed ? relayPaint : directPaint);
+      canvas.drawCircle(entry.value, 10, isRelayed ? relayPaint : directPaint);
       if (entry.key == selected) {
         canvas.drawCircle(entry.value, 18, selectedGlow);
       }
-      _label(canvas, labels[entry.key] ?? '', entry.value + const Offset(0, 18));
+      _label(
+          canvas, labels[entry.key] ?? '', entry.value + const Offset(0, 18));
     }
   }
 

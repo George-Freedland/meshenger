@@ -106,8 +106,7 @@ Future<void> showPeerInfoSheet(
                 ),
                 child: SelectableText(
                   address,
-                  style:
-                      const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                 ),
               ),
               const SizedBox(height: 10),
@@ -155,8 +154,8 @@ Future<void> showPeerInfoSheet(
         ),
         actions: [
           TextButton.icon(
-            onPressed: () => openRoute(
-                '/app/network?url=${Uri.encodeComponent(address)}'),
+            onPressed: () =>
+                openRoute('/app/network?url=${Uri.encodeComponent(address)}'),
             icon: const Icon(Icons.public, size: 18),
             label: const Text('Visit site'),
           ),

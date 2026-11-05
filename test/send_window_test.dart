@@ -6,8 +6,7 @@ import 'package:meshenger/core/services/send_window.dart';
 
 void main() {
   group('SendWindow', () {
-    test('runs ahead by at most the window, then waits for confirmations',
-        () {
+    test('runs ahead by at most the window, then waits for confirmations', () {
       final w = SendWindow(total: 10, size: 3);
       for (var i = 0; i < 3; i++) {
         expect(w.blocked, isFalse);
@@ -41,8 +40,7 @@ void main() {
       expect(w.confirmed, 4);
     });
 
-    test('repeats for the same chunk are ignored briefly after going back',
-        () {
+    test('repeats for the same chunk are ignored briefly after going back', () {
       final w = SendWindow(total: 10, size: 8);
       for (var i = 0; i < 5; i++) {
         w.sent();

@@ -358,8 +358,7 @@ class _RecordSheetState extends State<_RecordSheet> {
       _startedAt = DateTime.now();
       _ticker = Timer.periodic(const Duration(milliseconds: 200), (_) {
         if (mounted && _startedAt != null) {
-          setState(
-              () => _elapsed = DateTime.now().difference(_startedAt!));
+          setState(() => _elapsed = DateTime.now().difference(_startedAt!));
         }
       });
       setState(() {
@@ -426,8 +425,7 @@ class _RecordSheetState extends State<_RecordSheet> {
             Text(widget.title, style: theme.textTheme.titleMedium),
             const SizedBox(height: 16),
             if (_error != null) ...[
-              Text(_error!,
-                  style: TextStyle(color: theme.colorScheme.error)),
+              Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
               const SizedBox(height: 12),
               TextButton(onPressed: _discard, child: const Text('Close')),
             ] else ...[

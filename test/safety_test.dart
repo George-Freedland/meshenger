@@ -239,8 +239,8 @@ void main() {
   testWidgets('a blocked chat shows the notice instead of the composer',
       (tester) async {
     await safety.block(aliceAddress);
-    await tester.pumpWidget(
-        MaterialApp(home: ChatScreen(peerAddress: aliceAddress)));
+    await tester
+        .pumpWidget(MaterialApp(home: ChatScreen(peerAddress: aliceAddress)));
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.textContaining('You blocked'), findsOneWidget);

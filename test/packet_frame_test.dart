@@ -77,15 +77,15 @@ void main() {
   });
 
   group('chunks', () {
-    List<Uint8List> chunk(List<int> payload, int size, {bool flagFirst = true}) {
+    List<Uint8List> chunk(List<int> payload, int size,
+        {bool flagFirst = true}) {
       return [
         for (var offset = 0; offset < payload.length; offset += size)
           () {
             final end = min(offset + size, payload.length);
             var flags = ChunkFlags.of(offset, end, payload.length);
             if (!flagFirst) flags &= ~ChunkFlags.first;
-            return Uint8List.fromList(
-                [flags, ...payload.sublist(offset, end)]);
+            return Uint8List.fromList([flags, ...payload.sublist(offset, end)]);
           }(),
       ];
     }

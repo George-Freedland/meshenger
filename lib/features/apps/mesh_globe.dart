@@ -22,8 +22,8 @@ class WorldGeo {
 
   static Future<WorldGeo>? _loading;
 
-  static Future<WorldGeo> load() => _loading ??=
-      rootBundle.load('assets/geo/world.bin').then(WorldGeo.parse);
+  static Future<WorldGeo> load() =>
+      _loading ??= rootBundle.load('assets/geo/world.bin').then(WorldGeo.parse);
 
   static WorldGeo parse(ByteData data) {
     if (data.lengthInBytes < 12 ||
@@ -93,8 +93,7 @@ class GlobeCamera {
     if (radius <= 0) return this;
     var newLon = lon - delta.dx / radius * 180 / pi;
     newLon = (newLon + 540) % 360 - 180;
-    final newLat =
-        (lat + delta.dy / radius * 180 / pi).clamp(-maxLat, maxLat);
+    final newLat = (lat + delta.dy / radius * 180 / pi).clamp(-maxLat, maxLat);
     return GlobeCamera(lat: newLat.toDouble(), lon: newLon, zoom: zoom);
   }
 
@@ -359,8 +358,8 @@ class MeshGlobeState extends State<MeshGlobe> with TickerProviderStateMixin {
         onPointerSignal: (event) {
           if (event is PointerScrollEvent) {
             _stopMotion();
-            setState(() => _camera =
-                _camera.withZoom(_camera.zoom * exp(-event.scrollDelta.dy / 400)));
+            setState(() => _camera = _camera
+                .withZoom(_camera.zoom * exp(-event.scrollDelta.dy / 400)));
           }
         },
         child: GestureDetector(
@@ -376,7 +375,8 @@ class MeshGlobeState extends State<MeshGlobe> with TickerProviderStateMixin {
             setState(() {
               var camera = _camera;
               if (last != null) {
-                camera = camera.rotatedBy(details.localFocalPoint - last, _radius);
+                camera =
+                    camera.rotatedBy(details.localFocalPoint - last, _radius);
               }
               if (details.scale != 1) {
                 camera = camera.withZoom(_scaleStartZoom * details.scale);
@@ -573,7 +573,8 @@ class _GlobePainter extends CustomPainter {
             max(1.0, r * 0.006)));
   }
 
-  void _paintDots(Canvas canvas, Size size, GlobeProjection p, Float32List dots) {
+  void _paintDots(
+      Canvas canvas, Size size, GlobeProjection p, Float32List dots) {
     final fade = 1 - _ramp(camera.zoom, 6, 30) * 0.85;
     final near = Float32List(dots.length ~/ 3 * 2);
     final mid = Float32List(dots.length ~/ 3 * 2);
@@ -609,8 +610,8 @@ class _GlobePainter extends CustomPainter {
     ]) {
       if (count == 0) continue;
       paint.color = _land.withValues(alpha: alpha * fade);
-      canvas.drawRawPoints(
-          ui.PointMode.points, Float32List.sublistView(points, 0, count), paint);
+      canvas.drawRawPoints(ui.PointMode.points,
+          Float32List.sublistView(points, 0, count), paint);
     }
   }
 
@@ -705,8 +706,8 @@ class _GlobePainter extends CustomPainter {
     canvas.drawPath(path, paint);
   }
 
-  void _paintLinks(Canvas canvas, GlobeProjection p,
-      Map<String, List<double>> positions) {
+  void _paintLinks(
+      Canvas canvas, GlobeProjection p, Map<String, List<double>> positions) {
     for (final link in links) {
       final a = positions[link.from], b = positions[link.to];
       if (a == null || b == null) continue;
@@ -722,8 +723,8 @@ class _GlobePainter extends CustomPainter {
     }
   }
 
-  void _paintRoutes(Canvas canvas, GlobeProjection p,
-      Map<String, List<double>> positions) {
+  void _paintRoutes(
+      Canvas canvas, GlobeProjection p, Map<String, List<double>> positions) {
     final now = DateTime.now().millisecondsSinceEpoch;
     var animated = 0;
     for (final route in routes) {
@@ -785,11 +786,12 @@ class _GlobePainter extends CustomPainter {
     final at = Offset.lerp(trail[i - 1], trail[i], f)!;
     canvas.drawCircle(
         at, 9, Paint()..color = color.withValues(alpha: 0.25 * strength));
-    canvas.drawCircle(at, 3.2, Paint()..color = Colors.white.withValues(alpha: strength));
+    canvas.drawCircle(
+        at, 3.2, Paint()..color = Colors.white.withValues(alpha: strength));
   }
 
-  void _paintNodes(Canvas canvas, GlobeProjection p,
-      Map<String, List<double>> positions) {
+  void _paintNodes(
+      Canvas canvas, GlobeProjection p, Map<String, List<double>> positions) {
     hits.clear();
     final ordered = [...nodes]..sort((a, b) {
         int rank(GlobeNode n) => n.id == selected
@@ -814,9 +816,9 @@ class _GlobePainter extends CustomPainter {
       };
       final halo = p.radius * node.accuracyM / _earthRadiusM;
       if (halo > 5) {
-        canvas.drawCircle(at, halo, Paint()..color = color.withValues(alpha: 0.07));
         canvas.drawCircle(
-            at, halo, _stroke(color.withValues(alpha: 0.25), 1));
+            at, halo, Paint()..color = color.withValues(alpha: 0.07));
+        canvas.drawCircle(at, halo, _stroke(color.withValues(alpha: 0.25), 1));
       }
       if (node.kind != GlobeNodeKind.mesh) {
         final t = (pulse.value * 2 + node.id.hashCode % 100 / 100) % 1;
@@ -824,8 +826,8 @@ class _GlobePainter extends CustomPainter {
             _stroke(color.withValues(alpha: 0.5 * (1 - t)), 1.4));
       }
       canvas.drawCircle(at, 10, Paint()..color = color.withValues(alpha: 0.2));
-      canvas.drawCircle(
-          at, node.kind == GlobeNodeKind.me ? 5.5 : 4.5, Paint()..color = color);
+      canvas.drawCircle(at, node.kind == GlobeNodeKind.me ? 5.5 : 4.5,
+          Paint()..color = color);
       canvas.drawCircle(at, 1.8, Paint()..color = Colors.white);
       if (node.id == selected) {
         canvas.drawCircle(at, 12, _stroke(Colors.white, 2));

@@ -35,8 +35,7 @@ void main() {
   test('move reorders within the home screen', () async {
     final c = await freshController();
     c.move(null, 'settings', 0);
-    expect(rootKeys(c),
-        ['settings', 'messages', 'phone', 'network', 'camera']);
+    expect(rootKeys(c), ['settings', 'messages', 'phone', 'network', 'camera']);
   });
 
   test('dropping one app onto another forms a named group', () async {
@@ -60,8 +59,7 @@ void main() {
     final (folderId, _) = c.mergeInto(null, 'phone', 'messages')!;
     final joined = c.mergeInto(null, 'network', folderId);
     expect(joined, (folderId, false));
-    expect(c.findFolder(folderId)!.allAppIds,
-        ['messages', 'phone', 'network']);
+    expect(c.findFolder(folderId)!.allAppIds, ['messages', 'phone', 'network']);
   });
 
   test('groups nest one level deep and no deeper', () async {
@@ -77,8 +75,7 @@ void main() {
 
     // …but nothing may group inside the sub-group.
     c.mergeInto(outerId, 'network', innerId); // joining is still fine
-    expect(c.findFolder(innerId)!.allAppIds,
-        ['messages', 'phone', 'network']);
+    expect(c.findFolder(innerId)!.allAppIds, ['messages', 'phone', 'network']);
     expect(
       c.canMerge(innerId, 'messages', 'phone'),
       isFalse,
@@ -93,8 +90,7 @@ void main() {
     c.eject(folderId, 'phone');
     expect(c.findFolder(folderId), isNull,
         reason: 'single-item groups dissolve into a plain icon');
-    expect(rootKeys(c),
-        ['messages', 'phone', 'network', 'camera', 'settings']);
+    expect(rootKeys(c), ['messages', 'phone', 'network', 'camera', 'settings']);
   });
 
   test('layout survives a restart and absorbs newly shipped apps', () async {
