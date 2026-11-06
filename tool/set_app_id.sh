@@ -87,7 +87,7 @@ perl -0pi -e 's{(<key>CFBundleDisplayName</key>\s*<string>)[^<]*}{$1$ENV{NAME}};
 perl -pi -e '
   s/^PRODUCT_NAME = .*/PRODUCT_NAME = $ENV{NAME}/;
   s/^PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = $ENV{APP_ID}/;
-  s/^PRODUCT_COPYRIGHT = .*/PRODUCT_COPYRIGHT = Copyright © $ENV{YEAR} $ENV{PUBLISHER}. All rights reserved./;
+  s/^PRODUCT_COPYRIGHT = .*/PRODUCT_COPYRIGHT = Copyright © $ENV{YEAR} $ENV{PUBLISHER}. Licensed under GPL-3.0./;
 ' macos/Runner/Configs/AppInfo.xcconfig
 replace "$OLD_ID" "$APP_ID" macos/Runner.xcodeproj/project.pbxproj
 replace "$OLD_NAME.app" "$NAME.app" \
@@ -100,7 +100,7 @@ perl -pi -e '
   s/(VALUE "CompanyName", ")[^"]*/$1$ENV{PUBLISHER}/;
   s/(VALUE "FileDescription", ")[^"]*/$1$ENV{NAME}/;
   s/(VALUE "ProductName", ")[^"]*/$1$ENV{NAME}/;
-  s/(VALUE "LegalCopyright", ")[^"]*/$1Copyright (C) $ENV{YEAR} $ENV{PUBLISHER}. All rights reserved./;
+  s/(VALUE "LegalCopyright", ")[^"]*/$1Copyright (C) $ENV{YEAR} $ENV{PUBLISHER}. Licensed under GPL-3.0./;
 ' windows/runner/Runner.rc
 perl -pi -e 's/window\.Create\(L"[^"]*"/window.Create(L"$ENV{NAME}"/' windows/runner/main.cpp
 

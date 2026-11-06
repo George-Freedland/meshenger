@@ -88,9 +88,6 @@ class ChatStorage {
   static const _unreadKey = 'chats_unread_v1'; // legacy set of chat keys
   static const _unreadCountsKey = 'chats_unread_counts_v1';
 
-  /// Chat keys with at least one unread message.
-  Future<Set<String>> listUnread() async => (await unreadCounts()).keys.toSet();
-
   /// Per-chat unread counts (iPhone-style badge numbers).
   Future<Map<String, int>> unreadCounts() async {
     final prefs = await SharedPreferences.getInstance();
@@ -201,27 +198,6 @@ class ChatStorage {
       IdentityScope.key(_groupMetaKey(info.id)),
       jsonEncode(info.toJson()),
     );
-  }
-
-  /// Merges [members] into an existing group, or creates a minimal record
-  /// when learning membership from an incoming message.
-  Future<void> upsertGroupMembers(String groupId, List<String> members) async {
-    final existing = await getGroupInfo(groupId);
-    if (existing == null) {
-      await saveGroupInfo(GroupInfo(
-        id: groupId,
-        adminAddress: members.first,
-        members: members.toSet().toList(),
-      ));
-      return;
-    }
-    final merged = <String>{...existing.members, ...members}.toList();
-    await saveGroupInfo(existing.copyWith(members: merged));
-  }
-
-  Future<List<String>> getGroupMembers(String groupId) async {
-    final info = await getGroupInfo(groupId);
-    return info?.members ?? <String>[];
   }
 
   /// Removes this device from the group and deletes all local chat data.

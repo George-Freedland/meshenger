@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
@@ -19,6 +20,13 @@ Future<String> myContactQrPayload(String address) async {
     return 'meshenger:$address';
   }
 }
+
+/// mobile_scanner has no camera support on Windows or Linux.
+bool get _canScanQr =>
+    kIsWeb ||
+    defaultTargetPlatform == TargetPlatform.android ||
+    defaultTargetPlatform == TargetPlatform.iOS ||
+    defaultTargetPlatform == TargetPlatform.macOS;
 
 /// QR payloads are `meshenger:<address>[:<x25519 key>]`. This returns
 /// just the address; [extractScannedKey] pulls the optional key.
@@ -109,16 +117,18 @@ Future<bool> showAddContactDialog(BuildContext context) async {
                               maxLines: 3,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            tooltip: 'Scan QR with camera',
-                            icon: const Icon(Icons.qr_code_scanner),
-                            onPressed: () {
-                              setModalState(() {
-                                showScanner = !showScanner;
-                              });
-                            },
-                          ),
+                          if (_canScanQr) ...[
+                            const SizedBox(width: 8),
+                            IconButton(
+                              tooltip: 'Scan QR with camera',
+                              icon: const Icon(Icons.qr_code_scanner),
+                              onPressed: () {
+                                setModalState(() {
+                                  showScanner = !showScanner;
+                                });
+                              },
+                            ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 8),

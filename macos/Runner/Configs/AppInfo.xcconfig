@@ -11,4 +11,4 @@ PRODUCT_NAME = Meshenger
 PRODUCT_BUNDLE_IDENTIFIER = com.georgefreedland.meshenger
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 George Freedland. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 George Freedland. Licensed under GPL-3.0.

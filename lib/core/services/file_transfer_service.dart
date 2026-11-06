@@ -436,18 +436,6 @@ class FileTransferService {
     return _byId[tid];
   }
 
-  Future<List<FileTransfer>> listForChat(String chatKey) async {
-    await _ensureLoaded();
-    return _byId.values.where((t) => t.peer == chatKey).toList()
-      ..sort((a, b) => a.createdMs.compareTo(b.createdMs));
-  }
-
-  /// Transfers that are moving or waiting on someone, for badges.
-  Future<int> activeCount() async {
-    await _ensureLoaded();
-    return _byId.values.where((t) => !t.isTerminal).length;
-  }
-
   Future<Directory> _partDir() async {
     final fp = IdentityScope.activeFingerprint;
     if (fp == null) throw StateError('No active identity');

@@ -31,7 +31,7 @@ class SafetyService {
   static const _termsKey = 'terms_accepted_v1';
 
   /// Identities blocked for every user, added in app updates once a report
-  /// is confirmed (LAUNCH.md, "Handling reports").
+  /// is confirmed.
   static const Set<String> builtInBlocked = <String>{};
 
   final StreamController<void> _changed = StreamController<void>.broadcast();

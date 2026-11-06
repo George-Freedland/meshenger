@@ -1,5 +1,5 @@
 name: meshenger
-description: Offline Bluetooth-based messenger with crypto identity.
+description: Offline, end-to-end encrypted messenger that relays messages over a Bluetooth mesh.
 publish_to: "none"
 version: 1.0.0+3
 
@@ -10,55 +10,49 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Navigation
-  go_router: any
+  go_router: ^17.1.0
 
-  # Secure storage for encrypted keys
-  flutter_secure_storage: any
+  # Identity: keys in the OS keychain; Ed25519, X25519 and AES-GCM
+  flutter_secure_storage: ^10.3.1
+  cryptography: ^2.9.0
+  uuid: ^4.5.2
 
-  # Cryptographic primitives (Ed25519, X25519, etc.)
-  cryptography: any
-
-  # UUIDs for message / device identifiers
-  uuid: any
-
-  # QR scanning for contact / identity sharing (future)
-  mobile_scanner: any
-
-  # QR code rendering
-  qr_flutter: any
-
-  # Simple local persistence (web/mobile/desktop)
-  shared_preferences: any
+  # Bluetooth LE, central and peripheral (patched platform plugins below)
   bluetooth_low_energy: ^6.2.1
 
-  # Media: pick images (camera on mobile, files on desktop)
-  image_picker: any
+  # Contact QR codes: showing and scanning
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.1.4
 
-  # Generic file import for the Storage app
-  file_selector: any
+  # Settings and chats; files on disk
+  shared_preferences: ^2.5.4
+  path_provider: ^2.1.5
 
-  # Voice memos / push-to-talk recording
-  record: any
-
-  # App-support directory for the media library
-  path_provider: any
-  flutter_local_notifications: ^22.3.0
-  flutter_widget_from_html_core: ^0.17.4
-  url_launcher: ^6.3.3
+  # Photos, files, voice recording, thumbnails
+  image_picker: ^1.2.3
+  file_selector: ^1.1.0
+  record: ^6.2.1
   image: ^4.12.0
+
   # Every song, video, voice note and alert tone (libmpv)
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
+
+  # Network pages, links, saving and sharing files
+  flutter_widget_from_html_core: ^0.17.4
+  url_launcher: ^6.3.3
   share_plus: ^13.3.1
+
+  flutter_local_notifications: ^22.3.0
+  # Only while a Mesh Map location setting is on
   geolocator: ^14.1.2
   cupertino_icons: ^2.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: any
+  flutter_lints: ^6.0.0
   url_launcher_platform_interface: ^2.3.2
   plugin_platform_interface: ^2.1.8
   flutter_launcher_icons: ^0.14.4
@@ -66,19 +60,19 @@ dev_dependencies:
   msix: ^3.18.0
 
 dependency_overrides:
-  # Patched copy: passes the discovered Bluetooth address type to
-  # FromBluetoothAddressAsync so Windows can connect to macOS/iOS peripherals
-  # (they use random addressing; the plugin's default assumes public and
-  # silently fails). See packages/bluetooth_low_energy_windows/windows.
+  # Patched copies; CONTRIBUTING.md lists every change.
+  # Windows: connects to macOS/iOS peripherals (random addresses), delivers
+  # callbacks on the platform thread, restarts advertising when Windows
+  # stops it, and asks for fast connections while streaming a transfer.
   bluetooth_low_energy_windows:
     path: packages/bluetooth_low_energy_windows
-  # Patched copy: holds writes without response until CoreBluetooth has
-  # room (it silently drops them otherwise), keeps separate writes apart,
-  # and asks for low-latency connections while pushing a transfer.
+  # macOS/iOS: holds writes without response until CoreBluetooth has room
+  # (it silently drops them otherwise), keeps separate writes apart, and
+  # asks for low-latency connections while pushing a transfer.
   bluetooth_low_energy_darwin:
     path: packages/bluetooth_low_energy_darwin
-  # Patched copy: asks for a high-priority (fast) connection while
-  # streaming a transfer, and lets it go when idle.
+  # Android: asks for a high-priority (fast) connection while streaming a
+  # transfer, and lets it go when idle.
   bluetooth_low_energy_android:
     path: packages/bluetooth_low_energy_android
 
@@ -113,7 +107,7 @@ flutter_launcher_icons:
 
 # Microsoft Store package (on Windows: dart run msix:create). Replace the
 # two PARTNER_CENTER values with Partner Center → your app → Product
-# identity (see LAUNCH.md 3.5). The Store signs the package itself.
+# identity (see CONTRIBUTING.md). The Store signs the package itself.
 msix_config:
   display_name: Meshenger
   publisher_display_name: George Freedland
@@ -122,6 +116,7 @@ msix_config:
   # The Store needs the last number to be 0; bump the first three per release.
   msix_version: 1.0.0.0
   logo_path: assets/branding/icon.png
-  # Bluetooth, plus mic and camera for voice and photos. No internet.
+  # Bluetooth, mic and camera for voice and photos, location for the Mesh
+  # Map. No internet.
   capabilities: bluetooth,microphone,webcam,location
   store: true

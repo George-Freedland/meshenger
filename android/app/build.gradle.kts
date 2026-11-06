@@ -7,7 +7,7 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Release signing key (see LAUNCH.md). Without android/key.properties,
+// Release signing key (see CONTRIBUTING.md). Without android/key.properties,
 // release builds fall back to the debug key so `flutter run --release` works.
 val keystoreProperties = Properties().apply {
     val file = rootProject.file("key.properties")

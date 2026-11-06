@@ -74,8 +74,6 @@ class ChatMessage {
     this.viewed = false,
   });
 
-  bool get hasMedia => kind != null && mediaId != null;
-
   ChatMessage copyWith({
     String? text,
     MessageStatus? status,

@@ -142,7 +142,7 @@
       <div class="card"><h3>💬 Chats and calls</h3><p>Groups, photos, voice notes, push-to-talk calls, and files of any size.</p></div>
       <div class="card"><h3>🎵 Drop a song</h3><p>Post a song to everyone nearby. They see the cover art and play it right there.</p></div>
       <div class="card"><h3>🌐 Your own website</h3><p>Your public key is your website. Write pages in HTML that travel from phone to phone.</p></div>
-      <div class="card"><h3>🗺️ Live mesh map</h3><p>See who's in range and how far away the rest of the mesh reaches.</p></div>
+      <div class="card"><h3>🗺️ Live mesh map</h3><p>See who's in range and how far the mesh reaches, on a radar or a 3D globe.</p></div>
       <div class="card"><h3>🛰️ $15 relays</h3><p>Put a Raspberry Pi on a windowsill and your mesh reaches further.</p></div>
       <div class="card"><h3>👻 Invisible mode</h3><p>Disappear from everyone's map and still send and receive.</p></div>
     </div>
@@ -158,10 +158,10 @@
       <a class="dl" data-os="windows" data-file="Meshenger-Windows-x64.zip"><strong>Windows</strong><span>Windows 10 and 11, 64-bit · .zip</span></a>
       <a class="dl" data-os="android" data-file="Meshenger-Android.apk"><strong>Android</strong><span>Install the .apk</span></a>
       <a class="dl" data-os="ios" id="ios-download"><strong>iPhone and iPad</strong><span>Public beta on TestFlight</span></a>
-      <a class="dl" data-os="linux" href="https://github.com/George-Freedland/meshenger#linux"><strong>Linux</strong><span>Build from source (beta: finds others, can't be found yet)</span></a>
-      <a class="dl" data-file="meshenger-relay-linux-arm64"><strong>Raspberry Pi relay</strong><span>Headless gateway · 64-bit Pi OS</span></a>
+      <a class="dl" data-os="linux" href="https://github.com/George-Freedland/meshenger/blob/main/CONTRIBUTING.md#linux"><strong>Linux</strong><span>Build from source (beta: finds others, can't be found yet)</span></a>
+      <a class="dl" href="https://github.com/George-Freedland/meshenger/blob/main/RASPBERRY_PI.md"><strong>Raspberry Pi relay</strong><span>Extends everyone's range · setup guide</span></a>
     </div>
-    <p class="note">Windows may say "Windows protected your PC" the first time: click <b>More info</b>, then <b>Run anyway</b>. On Android, allow installing from your browser when asked. <a id="all-releases" href="#">All versions and release notes</a></p>
+    <p class="note">On Windows, right-click the zip and choose <b>Extract All</b>, then open <b>meshenger.exe</b>. Windows may say "Windows protected your PC" the first time: click <b>More info</b>, then <b>Run anyway</b>. On Android, allow installing from your browser when asked. <a id="all-releases" href="#">All versions and release notes</a></p>
   </div>
 </section>
 
@@ -183,7 +183,7 @@
         <ul>
           <li>People nearby can see your nickname and public key (turn on Invisible mode to hide)</li>
           <li>Relays can see which public keys a message is from and to</li>
-          <li>Global posts and your website are public by design</li>
+          <li>Global posts and your website are public by design, and so is your location if you turn on sharing (it's off by default)</li>
           <li>Not independently audited yet. Don't bet your safety on it</li>
         </ul>
       </div>
@@ -198,7 +198,9 @@
     <details><summary>How far does it reach?</summary><p>One Bluetooth hop is roughly 10–50 m. Every other device running Meshenger extends that, so the more people around you use it, the further it reaches. Relays on a Raspberry Pi help fill the gaps.</p></details>
     <details><summary>What if my friend is out of range?</summary><p>Your message waits and is delivered automatically when a path appears: they come back in range, or someone walks between you.</p></details>
     <details><summary>Does it work in the background?</summary><p>Partly. iPhones and Android phones limit Bluetooth when apps are in the background, so keep Meshenger open for the best range. Laptops and Raspberry Pi relays run all the time.</p></details>
+    <details><summary>Do I need to pair devices in Bluetooth settings?</summary><p>No. Just open Meshenger on both. It never pairs, and an old pairing between two devices can stop them from seeing each other, so remove it if they don't connect.</p></details>
     <details><summary>Is it free?</summary><p>Yes. No ads, no tracking, no in-app purchases.</p></details>
+    <details><summary>Is it open source?</summary><p>Yes. The code is on <a href="https://github.com/George-Freedland/meshenger">GitHub</a> under the GPL-3.0 license, so anyone can check how it works.</p></details>
     <details><summary>Why does my computer warn me when I open it?</summary><p>New apps from independent developers can trigger a warning until enough people have installed them. Downloads only ever come from this page and the GitHub releases page.</p></details>
   </div>
 </section>
@@ -206,6 +208,8 @@
 <div class="wrap">
   <footer>
     <a href="https://github.com/George-Freedland/meshenger/blob/main/PRIVACY.md">Privacy</a>
+    <a href="https://github.com/George-Freedland/meshenger/blob/main/TERMS.md">Terms</a>
+    <a href="https://github.com/George-Freedland/meshenger/blob/main/RASPBERRY_PI.md">Raspberry Pi</a>
     <a href="https://github.com/George-Freedland/meshenger">Source</a>
     <a href="mailto:george.meshenger@gmail.com">Contact</a>
     <span>© 2026 Meshenger</span>
@@ -234,8 +238,33 @@
     : /Mac/.test(ua) ? 'mac'
     : /Win/.test(ua) ? 'windows'
     : /Linux/.test(ua) ? 'linux' : '';
-  const mine = os && document.querySelector('.dl[data-os="' + os + '"]:not(.soon)');
-  if (mine) mine.classList.add('recommended');
+  function recommend() {
+    document.querySelectorAll('.dl.recommended').forEach(a => a.classList.remove('recommended'));
+    const mine = os && document.querySelector('.dl[data-os="' + os + '"]:not(.soon)');
+    if (mine) mine.classList.add('recommended');
+  }
+  recommend();
+
+  // Buttons for files the latest release doesn't have yet say so instead of
+  // leading to a 404. Rate-limited or offline: the links stay as they are.
+  fetch(REPO.replace('https://github.com/', 'https://api.github.com/repos/') + '/releases/latest')
+    .then(r => r.ok ? r.json() : r.status === 404 ? { assets: [] } : null)
+    .then(release => {
+      if (!release) return;
+      const published = new Set((release.assets || []).map(asset => asset.name));
+      document.querySelectorAll('.dl[data-file]').forEach(a => {
+        if (published.has(a.dataset.file)) return;
+        a.classList.add('soon');
+        a.removeAttribute('href');
+        a.querySelector('span').textContent = 'Coming soon';
+      });
+      if (release.tag_name) {
+        document.getElementById('all-releases').textContent =
+          'All versions and release notes (latest: ' + release.tag_name + ')';
+      }
+      recommend();
+    })
+    .catch(() => {});
 </script>
 </body>
 </html>

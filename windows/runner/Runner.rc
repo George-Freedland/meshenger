@@ -93,7 +93,7 @@ BEGIN
             VALUE "FileDescription", "Meshenger" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "meshenger" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 George Freedland. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 George Freedland. Licensed under GPL-3.0." "\0"
             VALUE "OriginalFilename", "meshenger.exe" "\0"
             VALUE "ProductName", "Meshenger" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"

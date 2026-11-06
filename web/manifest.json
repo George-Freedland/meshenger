@@ -5,7 +5,7 @@
     "display": "standalone",
     "background_color": "#05070A",
     "theme_color": "#05070A",
-    "description": "A new Flutter project.",
+    "description": "Offline, end-to-end encrypted messenger that relays messages over a Bluetooth mesh.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

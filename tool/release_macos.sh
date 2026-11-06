@@ -7,7 +7,7 @@
 # must be signed and notarized or macOS refuses to open them:
 #
 #   export SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
-#   export NOTARY_PROFILE=meshenger-notary   # see LAUNCH.md
+#   export NOTARY_PROFILE=meshenger-notary   # see CONTRIBUTING.md
 #   tool/release_macos.sh
 #
 # MAC_ARCHS=arm64 builds for Apple silicon only (default: Intel + Apple
