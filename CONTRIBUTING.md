@@ -171,7 +171,7 @@ The APK is arm64 only, because the video player bundles its own decoders for eac
 
 ### macOS
 
-Unsigned builds are fine on your own Mac, but downloads must be signed with a **Developer ID Application** certificate and notarized, or macOS refuses to open them. One-time setup: create the certificate in Xcode (**Settings → Accounts → Manage Certificates → + → Developer ID Application**), create an app-specific password at [account.apple.com](https://account.apple.com), and store it:
+Unsigned builds are fine on your own Mac, but downloads must be signed with a **Developer ID Application** certificate and notarized, or macOS refuses to open them. One-time setup: create the certificate in Xcode (**Settings → Accounts → Manage Certificates → + → Developer ID Application**). Only the team's Account Holder can; if Xcode refuses anyway, make a certificate signing request with Keychain Access (**Certificate Assistant → Request a Certificate From a Certificate Authority**, saved to disk), upload it at [developer.apple.com](https://developer.apple.com/account/resources/certificates/add) as a Developer ID Application certificate, and double-click the download to install it in the **login** keychain. Then create an app-specific password at [account.apple.com](https://account.apple.com), and store it:
 
 ```bash
 xcrun notarytool store-credentials meshenger-notary \
